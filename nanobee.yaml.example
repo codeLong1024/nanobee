@@ -1,0 +1,41 @@
+# Nanobee 配置文件示例
+# 复制此文件为 nanobee.yaml 并填入你的 API 密钥
+
+# 插件目录（相对于工作目录）
+plugin_dirs:
+  - nanobee/builtin
+  - plugins
+
+agents:
+  defaults:
+    # 模型名称，格式：provider/model-name
+    model: "anthropic/claude-sonnet-4-20250514"
+    # 最大输出 token 数
+    max_tokens: 8192
+    # 上下文窗口大小
+    context_window_tokens: 65536
+    # 温度参数（0-1，越高越随机）
+    temperature: 0.1
+
+# Provider 配置
+providers:
+  # Anthropic (Claude)
+  anthropic:
+    api_key: "sk-ant-your-api-key-here"
+    # 可选：自定义 API 端点
+    # api_base: "https://api.anthropic.com"
+
+  # OpenAI 兼容接口（支持 GPT、本地模型等）
+  # openai_compat:
+  #   api_key: "your-api-key"
+  #   api_base: "https://your-api-endpoint.com/v1"
+
+  # OpenAI 官方
+  # openai:
+  #   api_key: "sk-your-openai-key"
+
+  # 自定义 OpenAI 兼容端点
+  # custom:
+  #   api_key: "your-api-key"
+  #   api_base: "http://localhost:8000/v1"
+

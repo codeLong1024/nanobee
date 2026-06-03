@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=64.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nanobee"
+version = "0.1.0"
+description = "极简 AI Agent 框架"
+readme = "README.md"
+requires-python = ">=3.11"
+keywords = ["agent", "ai", "framework", "plugin"]
+license = {text = "MIT"}
+dependencies = [
+    "click>=8.0.0",
+    "pydantic>=2.0.0",
+    "pydantic-settings>=2.0.0",
+    "python-dotenv>=1.0.0",
+    "PyYAML>=6.0",
+    "toml>=0.10.2",
+    "httpx>=0.24.0",
+    "tiktoken>=0.5.0",
+    "jinja2>=3.1.0",
+    "json_repair>=0.59.0",
+    "openai>=1.0.0",
+]
+
+[project.scripts]
+nanobee = "nanobee.cli.main:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["nanobee*", "tests*"]
+
+

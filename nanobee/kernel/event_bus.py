@@ -1,0 +1,59 @@
+"""
+事件总线 - 事件发布/订阅机制
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import Any, Callable
+
+logger = logging.getLogger(__name__)
+
+
+class EventBus:
+    """事件总线"""
+
+    def __init__(self):
+        self._subscribers: dict[str, list[Callable]] = {}
+
+    def subscribe(self, event: str, handler: Callable) -> None:
+        """订阅事件
+
+        Args:
+            event: 事件名称
+            handler: 事件处理器
+        """
+        if event not in self._subscribers:
+            self._subscribers[event] = []
+        self._subscribers[event].append(handler)
+
+    async def publish(self, event: str, data: Any = None) -> None:
+        """发布事件
+
+        Args:
+            event: 事件名称
+            data: 事件数据
+        """
+        handlers = self._subscribers.get(event, [])
+        if not handlers:
+            return
+        # 快照复制，防止迭代过程中订阅列表被修改
+        for handler in list(handlers):
+            if not hasattr(handler, "__call__"):
+                continue
+            try:
+                result = handler(data)
+                if hasattr(result, "__await__"):
+                    await result
+            except Exception:
+                logger.exception("事件处理器 %s 处理事件 %s 出错", handler, event)
+
+    def unsubscribe(self, event: str, handler: Callable) -> None:
+        """取消订阅
+
+        Args:
+            event: 事件名称
+            handler: 事件处理器
+        """
+        if event in self._subscribers:
+            self._subscribers[event].remove(handler)

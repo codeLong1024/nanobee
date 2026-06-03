@@ -1,0 +1,10 @@
+[plugin]
+name = "channel-cli"
+version = "1.0.0"
+description = "命令行交互通道"
+author = "nanobee-team"
+type = "channel"
+
+[config]
+prompt_prefix = "🐝 "
+history_size = 50
