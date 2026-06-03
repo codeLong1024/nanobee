@@ -137,5 +137,5 @@ TODO: MVP 后实现
         with open(output_path, "w", encoding="utf-8") as f:
             f.write(default_content)
 
-        logger.info(f"已创建默认 core.md: {output_path}")
+        logger.info("已创建默认 core.md: %s", output_path)
         return output_path

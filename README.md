@@ -33,20 +33,20 @@
 
 | 插件 | 类型 | 状态 | 说明 |
 |------|------|------|------|
-| `channel-cli` | Channel | ✅ 已完成 | 命令行交互通道，支持 `input()` 循环 |
-| `tool-echo` | Tool | ✅ 已完成 | 回显测试工具 |
-| `memory-file` | Memory | ✅ 已完成 | 基于 JSONL 文件的记忆存储 |
-| `channel-http` | Channel | 🚧 存根 | HTTP 渠道插件（待完善） |
-| `tool-fs` | Tool | 🚧 存根 | 文件系统工具（待实现） |
-| `tool-mcp` | Tool | 🚧 存根 | MCP 协议桥接工具（待实现） |
-| `tool-shell` | Tool | 🚧 存根 | Shell 执行工具（待实现） |
-| `tool-web` | Tool | 🚧 存根 | Web 搜索/抓取工具（待实现） |
+| `channel_cli` | Channel | ✅ 已完成 | 命令行交互通道，支持 `input()` 循环 |
+| `tool_echo` | Tool | ✅ 已完成 | 回显测试工具 |
+| `memory_file` | Memory | ✅ 已完成 | 基于 JSONL 文件的记忆存储 |
+| `channel_http` | Channel | 🚧 存根 | HTTP 渠道插件（待完善） |
+| `tool_fs` | Tool | 🚧 存根 | 文件系统工具（待实现） |
+| `tool_mcp` | Tool | 🚧 存根 | MCP 协议桥接工具（待实现） |
+| `tool_shell` | Tool | 🚧 存根 | Shell 执行工具（待实现） |
+| `tool_web` | Tool | 🚧 存根 | Web 搜索/抓取工具（待实现） |
 
 ### 待实现
 
 - [ ] 插件自动发现与热加载
-- [ ] `channel-http` 插件完善（HTTP API 通道）
-- [ ] `tool-fs`、`tool-shell`、`tool-web`、`tool-mcp` 插件实现
+- [ ] `channel_http` 插件完善（HTTP API 通道）
+- [ ] `tool_fs`、`tool_shell`、`tool_web`、`tool_mcp` 插件实现
 - [ ] 插件市场机制（`hub search/install`）
 - [ ] 插件管理 CLI（`plugin create/enable/disable`）
 - [ ] 上下文自动压缩（Compaction）
@@ -90,14 +90,14 @@ nanobee/
 │   ├── model_presets.py # 模型预设管理
 │   └── tools/           # 工具注册与 MCP 桥接
 ├── builtin/             # 内置插件
-│   ├── channel-cli/     # CLI 渠道插件 ✅
-│   ├── channel-http/    # HTTP 渠道插件 🚧
-│   ├── memory-file/     # 文件存储记忆插件 ✅
-│   ├── tool-echo/       # 回显测试工具 ✅
-│   ├── tool-fs/         # 文件系统工具 🚧
-│   ├── tool-mcp/        # MCP 工具 🚧
-│   ├── tool-shell/      # Shell 工具 🚧
-│   └── tool-web/        # Web 工具 🚧
+│   ├── channel_cli/     # CLI 渠道插件 ✅
+│   ├── channel_http/    # HTTP 渠道插件 🚧
+│   ├── memory_file/     # 文件存储记忆插件 ✅
+│   ├── tool_echo/       # 回显测试工具 ✅
+│   ├── tool_fs/         # 文件系统工具 🚧
+│   ├── tool_mcp/        # MCP 工具 🚧
+│   ├── tool_shell/      # Shell 工具 🚧
+│   └── tool_web/        # Web 工具 🚧
 ├── cli/                 # 命令行入口
 │   ├── main.py          # 主 CLI
 │   ├── hub.py           # 插件市场子命令
@@ -235,7 +235,7 @@ ChannelPlugin (CLI/HTTP/...) ──▶ EventBus ──▶ NanobeeKernel
 from nanobee.plugins.tool import ToolPlugin
 
 class MyToolPlugin(ToolPlugin):
-    name = "tool-my-tool"
+    name = "tool_my_tool"
     version = "1.0.0"
 
     def get_tools(self) -> list[dict]:
@@ -266,7 +266,7 @@ class MyToolPlugin(ToolPlugin):
 from nanobee.plugins.channel import ChannelPlugin
 
 class MyChannelPlugin(ChannelPlugin):
-    name = "channel-my-channel"
+    name = "channel_my_channel"
     version = "1.0.0"
 
     async def start(self) -> None:

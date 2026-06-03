@@ -153,7 +153,7 @@ class OpenAITranscriptionProvider:
             "https://api.openai.com/v1/audio/transcriptions",
         )
         self.language = language or None
-        logger.debug("OpenAI transcription endpoint: {}", self.api_url)
+        logger.debug("OpenAI transcription endpoint: %s", self.api_url)
 
     async def transcribe(self, file_path: str | Path) -> str:
         if not self.api_key:
@@ -161,7 +161,7 @@ class OpenAITranscriptionProvider:
             return ""
         path = Path(file_path)
         if not path.exists():
-            logger.error("Audio file not found: {}", file_path)
+            logger.error("Audio file not found: %s", file_path)
             return ""
         return await _post_transcription_with_retry(
             self.api_url,
@@ -192,7 +192,7 @@ class GroqTranscriptionProvider:
             "https://api.groq.com/openai/v1/audio/transcriptions",
         )
         self.language = language or None
-        logger.debug("Groq transcription endpoint: {}", self.api_url)
+        logger.debug("Groq transcription endpoint: %s", self.api_url)
 
     async def transcribe(self, file_path: str | Path) -> str:
         """
@@ -210,7 +210,7 @@ class GroqTranscriptionProvider:
 
         path = Path(file_path)
         if not path.exists():
-            logger.error("Audio file not found: {}", file_path)
+            logger.error("Audio file not found: %s", file_path)
             return ""
 
         return await _post_transcription_with_retry(

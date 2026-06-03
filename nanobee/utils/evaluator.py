@@ -83,7 +83,7 @@ async def evaluate_response(
         args = llm_response.tool_calls[0].arguments
         should_notify = args.get("should_notify", True)
         reason = args.get("reason", "")
-        logger.info("evaluate_response: should_notify={}, reason={}", should_notify, reason)
+        logger.info("evaluate_response: should_notify=%s, reason=%s", should_notify, reason)
         return bool(should_notify)
 
     except Exception:

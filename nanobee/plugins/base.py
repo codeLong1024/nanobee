@@ -65,7 +65,7 @@ class NanobeePlugin(ABC):
             kernel: NanobeeKernel 实例
         """
         self.kernel = kernel
-        logger.info(f"插件 {self._metadata.name} 初始化完成")
+        logger.info("插件 %s 初始化完成", self._metadata.name)
 
     def on_load(self) -> None:
         """插件加载后调用（注册工具、注册事件等）"""
@@ -74,12 +74,12 @@ class NanobeePlugin(ABC):
     def on_enable(self) -> None:
         """插件启用时调用"""
         self._enabled = True
-        logger.info(f"插件 {self._metadata.name} 已启用")
+        logger.info("插件 %s 已启用", self._metadata.name)
 
     def on_disable(self) -> None:
         """插件禁用时调用"""
         self._enabled = False
-        logger.info(f"插件 {self._metadata.name} 已禁用")
+        logger.info("插件 %s 已禁用", self._metadata.name)
 
     def on_unload(self) -> None:
         """插件卸载前调用（清理资源）"""
@@ -88,7 +88,7 @@ class NanobeePlugin(ABC):
     def destroy(self) -> None:
         """销毁插件（由 PluginManager 调用）"""
         self.on_unload()
-        logger.info(f"插件 {self._metadata.name} 已销毁")
+        logger.info("插件 %s 已销毁", self._metadata.name)
 
     # ---- 工具方法 ----
 

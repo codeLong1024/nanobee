@@ -10,10 +10,10 @@ from nanobee.plugins.tool import ToolPlugin
 logger = logging.getLogger(__name__)
 
 
-class EchoToolPlugin(ToolPlugin):
+class ToolEchoPlugin(ToolPlugin):
     """回显工具"""
 
-    name = "tool-echo"
+    name = "tool_echo"
     version = "1.0.0"
 
     def get_tools(self) -> list[dict[str, Any]]:

@@ -77,6 +77,10 @@ class NanobeeKernel:
         for name in self.plugin_manager.list_plugins():
             self.plugin_manager.enable(name)
 
+        # 3.1 注册工具插件到 AgentLoop（必须在插件加载完成后调用）
+        if self._agent_loop:
+            self._agent_loop._register_plugin_tools()
+
         # 4. 启动通道插件
         channels = self.plugin_manager.get_by_type("channel")
         for channel in channels:

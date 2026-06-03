@@ -1,5 +1,5 @@
 [plugin]
-name = "memory-file"
+name = "memory_file"
 version = "1.0.0"
 description = "基于 jsonl 文件的记忆插件"
 author = "nanobee-team"

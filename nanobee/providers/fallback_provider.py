@@ -172,7 +172,7 @@ class FallbackProvider(LLMProvider):
                     primary_model, self._primary_failures,
                 )
         else:
-            logger.debug("Primary model '{}' circuit open; skipping", primary_model)
+            logger.debug("Primary model '%s' circuit open; skipping", primary_model)
 
         last_response: LLMResponse | None = None
         primary_skipped = not self._primary_available()

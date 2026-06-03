@@ -256,10 +256,17 @@ class AgentLoop:
         )
 
     def _register_plugin_tools(self) -> None:
-        """从 PluginManager 注册工具插件到 ToolRegistry。"""
+        """从 PluginManager 注册工具插件到 ToolRegistry。
+
+        注意：此方法需要在插件加载完成后调用（即在 Kernel.boot() 之后）。
+        如果在插件加载前调用，会注册 0 个工具。
+        """
         if self.plugin_manager is None:
             return
         tool_plugins = self.plugin_manager.get_by_type("tool")
+        if not tool_plugins:
+            # 插件尚未加载，跳过注册（在 boot() 中会重新注册）
+            return
         registered: list[str] = []
         for plugin in tool_plugins:
             try:
@@ -270,7 +277,7 @@ class AgentLoop:
                     registered.append(adapter.name)
             except Exception:
                 logger.exception("注册工具插件 {} 失败", getattr(plugin, "name", "unknown"))
-        logger.info("注册了 {} 个工具插件: {}", len(registered), registered)
+        logger.info("注册了 %s 个工具插件: %s", len(registered), registered)
 
     async def _connect_mcp(self) -> None:
         """连接配置的 MCP 服务器（一次性，懒加载）。"""
@@ -289,7 +296,7 @@ class AgentLoop:
             logger.warning("MCP 连接被取消（下次消息时重试）")
             self._mcp_stacks.clear()
         except BaseException as e:
-            logger.warning("MCP 服务器连接失败（下次消息时重试）: {}", e)
+            logger.warning("MCP 服务器连接失败（下次消息时重试）: %s", e)
             self._mcp_stacks.clear()
         finally:
             self._mcp_connecting = False
@@ -399,12 +406,12 @@ class AgentLoop:
         ))
 
         if result.stop_reason == "max_iterations":
-            logger.warning("达到最大迭代次数 ({})", self.max_iterations)
+            logger.warning("达到最大迭代次数 (%s)", self.max_iterations)
             if on_stream and on_stream_end:
                 await on_stream(result.final_content or "")
                 await on_stream_end(resuming=False)
         elif result.stop_reason == "error":
-            logger.error("LLM 返回错误: {}", (result.final_content or "")[:200])
+            logger.error("LLM 返回错误: %s", (result.final_content or "")[:200])
 
         # 发射事件
         if self.event_bus:
@@ -436,7 +443,7 @@ class AgentLoop:
                     raise
                 continue
             except Exception as e:
-                logger.warning("消费入站消息出错: {}, 继续处理...", e)
+                logger.warning("消费入站消息出错: %s, 继续处理...", e)
                 continue
 
             effective_key = self._effective_context_id(msg)
@@ -445,9 +452,9 @@ class AgentLoop:
                 try:
                     self._pending_queues[effective_key].put_nowait(msg)
                 except asyncio.QueueFull:
-                    logger.warning("上下文 {} 待处理队列已满，回退为排队任务", effective_key)
+                    logger.warning("上下文 %s 待处理队列已满，回退为排队任务", effective_key)
                 else:
-                    logger.info("后续消息已路由到上下文 {} 的待处理队列", effective_key)
+                    logger.info("后续消息已路由到上下文 %s 的待处理队列", effective_key)
                     continue
 
             task = asyncio.create_task(self._dispatch(msg))
@@ -514,7 +521,7 @@ class AgentLoop:
                     else:
                         logger.debug("消息处理返回 None，不发送响应")
                 except asyncio.CancelledError:
-                    logger.info("上下文 {} 的任务被取消", context_id)
+                    logger.info("上下文 %s 的任务被取消", context_id)
                     raise
                 except Exception:
                     logger.exception("处理上下文 {} 的消息出错", context_id)
@@ -534,7 +541,7 @@ class AgentLoop:
                         break
                     leftover += 1
                 if leftover:
-                    logger.info("上下文 {} 有 {} 条剩余消息被丢弃", context_id, leftover)
+                    logger.info("上下文 %s 有 %s 条剩余消息被丢弃", context_id, leftover)
 
     async def _publish_outbound(self, msg: OutboundMessage) -> None:
         """发布出站消息（由通道插件调用）。"""
@@ -552,7 +559,7 @@ class AgentLoop:
             try:
                 await stack.aclose()
             except (RuntimeError, BaseExceptionGroup):
-                logger.debug("MCP 服务器 '{}' 清理错误（可忽略）", name)
+                logger.debug("MCP 服务器 '%s' 清理错误（可忽略）", name)
         self._mcp_stacks.clear()
 
     def stop(self) -> None:
@@ -634,7 +641,7 @@ class AgentLoop:
                 duration_ms=duration, event=event,
             ))
             logger.debug(
-                "[turn {}] 状态 {} 耗时 {:.1f}ms -> 事件 {}",
+                "[turn %s] 状态 %s 耗时 %.1fms -> 事件 %s",
                 ctx.turn_id, ctx.state.name, duration, event,
             )
 
@@ -646,7 +653,7 @@ class AgentLoop:
             ctx.state = next_state
 
         logger.debug(
-            "[turn {}] Turn 完成，经过 {} 个状态",
+            "[turn %s] Turn 完成，经过 %s 个状态",
             ctx.turn_id, len(ctx.trace),
         )
         return ctx.outbound
@@ -663,7 +670,7 @@ class AgentLoop:
             msg = ctx.msg
 
         preview = msg.content[:80] + "..." if len(msg.content) > 80 else msg.content
-        logger.info("处理来自 {}:{} 的消息: {}", msg.channel, msg.sender_id, preview)
+        logger.info("处理来自 %s:%s 的消息: %s", msg.channel, msg.sender_id, preview)
 
         # 灵魂校验
         if self.event_bus:
@@ -773,7 +780,7 @@ class AgentLoop:
         content = final_content or EMPTY_FINAL_RESPONSE_MESSAGE
 
         preview = content[:120] + "..." if len(content) > 120 else content
-        logger.info("回复 {}: {}: {}", msg.channel, msg.sender_id, preview)
+        logger.info("回复 %s: %s: %s", msg.channel, msg.sender_id, preview)
 
         meta = dict(msg.metadata or {})
         if on_stream is not None and stop_reason not in {"error", "tool_error"}:
@@ -834,7 +841,7 @@ class AgentLoop:
         self.context_window_tokens = snapshot.context_window_tokens
         self.runner.provider = provider
         self._provider_signature = snapshot.signature
-        logger.info("运行时模型切换: {} -> {}", old_model, model)
+        logger.info("运行时模型切换: %s -> %s", old_model, model)
 
     @property
     def model_preset(self) -> str | None:

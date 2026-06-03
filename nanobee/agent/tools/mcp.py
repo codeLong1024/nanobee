@@ -214,13 +214,13 @@ class MCPToolWrapper(Tool):
                 task = asyncio.current_task()
                 if task is not None and task.cancelling() > 0:
                     raise
-                logger.warning("MCP tool '{}' was cancelled by server/SDK", self._name)
+                logger.warning("MCP tool '%s' was cancelled by server/SDK", self._name)
                 return "(MCP tool call was cancelled)"
             except Exception as exc:
                 if _is_transient(exc):
                     if attempt == 0:
                         logger.warning(
-                            "MCP tool '{}' hit transient error ({}), retrying once...",
+                            "MCP tool '%s' hit transient error (%s), retrying once...",
                             self._name,
                             type(exc).__name__,
                         )
@@ -228,13 +228,13 @@ class MCPToolWrapper(Tool):
                         continue
                     # Second transient failure — give up with retry-specific message
                     logger.exception(
-                        "MCP tool '{}' failed after retry: {}",
+                        "MCP tool '%s' failed after retry: %s",
                         self._name,
                         type(exc).__name__,
                     )
                     return f"(MCP tool call failed after retry: {type(exc).__name__})"
                 logger.exception(
-                    "MCP tool '{}' failed: {}: {}",
+                    "MCP tool '%s' failed: %s: %s",
                     self._name,
                     type(exc).__name__,
                     exc,
@@ -305,26 +305,26 @@ class MCPResourceWrapper(Tool):
                 task = asyncio.current_task()
                 if task is not None and task.cancelling() > 0:
                     raise
-                logger.warning("MCP resource '{}' was cancelled by server/SDK", self._name)
+                logger.warning("MCP resource '%s' was cancelled by server/SDK", self._name)
                 return "(MCP resource read was cancelled)"
             except Exception as exc:
                 if _is_transient(exc):
                     if attempt == 0:
                         logger.warning(
-                            "MCP resource '{}' hit transient error ({}), retrying once...",
+                            "MCP resource '%s' hit transient error (%s), retrying once...",
                             self._name,
                             type(exc).__name__,
                         )
                         await asyncio.sleep(1)
                         continue
                     logger.exception(
-                        "MCP resource '{}' failed after retry: {}",
+                        "MCP resource '%s' failed after retry: %s",
                         self._name,
                         type(exc).__name__,
                     )
                     return f"(MCP resource read failed after retry: {type(exc).__name__})"
                 logger.exception(
-                    "MCP resource '{}' failed: {}: {}",
+                    "MCP resource '%s' failed: %s: %s",
                     self._name,
                     type(exc).__name__,
                     exc,
@@ -411,11 +411,11 @@ class MCPPromptWrapper(Tool):
                 task = asyncio.current_task()
                 if task is not None and task.cancelling() > 0:
                     raise
-                logger.warning("MCP prompt '{}' was cancelled by server/SDK", self._name)
+                logger.warning("MCP prompt '%s' was cancelled by server/SDK", self._name)
                 return "(MCP prompt call was cancelled)"
             except McpError as exc:
                 logger.exception(
-                    "MCP prompt '{}' failed: code={} message={}",
+                    "MCP prompt '%s' failed: code=%s message=%s",
                     self._name,
                     exc.error.code,
                     exc.error.message,
@@ -425,20 +425,20 @@ class MCPPromptWrapper(Tool):
                 if _is_transient(exc):
                     if attempt == 0:
                         logger.warning(
-                            "MCP prompt '{}' hit transient error ({}), retrying once...",
+                            "MCP prompt '%s' hit transient error (%s), retrying once...",
                             self._name,
                             type(exc).__name__,
                         )
                         await asyncio.sleep(1)
                         continue
                     logger.exception(
-                        "MCP prompt '{}' failed after retry: {}",
+                        "MCP prompt '%s' failed after retry: %s",
                         self._name,
                         type(exc).__name__,
                     )
                     return f"(MCP prompt call failed after retry: {type(exc).__name__})"
                 logger.exception(
-                    "MCP prompt '{}' failed: {}: {}",
+                    "MCP prompt '%s' failed: %s: %s",
                     self._name,
                     type(exc).__name__,
                     exc,
@@ -491,7 +491,7 @@ async def connect_mcp_servers(
                         "sse" if cfg.url.rstrip("/").endswith("/sse") else "streamableHttp"
                     )
                 else:
-                    logger.warning("MCP server '{}': no command or url configured, skipping", name)
+                    logger.warning("MCP server '%s': no command or url configured, skipping", name)
                     await server_stack.aclose()
                     return name, None
 
@@ -509,7 +509,7 @@ async def connect_mcp_servers(
                 read, write = await server_stack.enter_async_context(stdio_client(params))
             elif transport_type == "sse":
                 if not await _probe_http_url(cfg.url):
-                    logger.warning("MCP server '{}': {} unreachable, skipping", name, cfg.url)
+                    logger.warning("MCP server '%s': %s unreachable, skipping", name, cfg.url)
                     await server_stack.aclose()
                     return name, None
 
@@ -535,7 +535,7 @@ async def connect_mcp_servers(
                 )
             elif transport_type == "streamableHttp":
                 if not await _probe_http_url(cfg.url):
-                    logger.warning("MCP server '{}': {} unreachable, skipping", name, cfg.url)
+                    logger.warning("MCP server '%s': %s unreachable, skipping", name, cfg.url)
                     await server_stack.aclose()
                     return name, None
 
@@ -550,7 +550,7 @@ async def connect_mcp_servers(
                     streamable_http_client(cfg.url, http_client=http_client)
                 )
             else:
-                logger.warning("MCP server '{}': unknown transport type '{}'", name, transport_type)
+                logger.warning("MCP server '%s': unknown transport type '%s'", name, transport_type)
                 await server_stack.aclose()
                 return name, None
 
@@ -572,14 +572,14 @@ async def connect_mcp_servers(
                     and wrapped_name not in enabled_tools
                 ):
                     logger.debug(
-                        "MCP: skipping tool '{}' from server '{}' (not in enabledTools)",
+                        "MCP: skipping tool '%s' from server '%s' (not in enabledTools)",
                         wrapped_name,
                         name,
                     )
                     continue
                 wrapper = MCPToolWrapper(session, name, tool_def, tool_timeout=cfg.tool_timeout)
                 registry.register(wrapper)
-                logger.debug("MCP: registered tool '{}' from server '{}'", wrapper.name, name)
+                logger.debug("MCP: registered tool '%s' from server '%s'", wrapper.name, name)
                 registered_count += 1
                 if enabled_tools:
                     if tool_def.name in enabled_tools:
@@ -591,8 +591,8 @@ async def connect_mcp_servers(
                 unmatched_enabled_tools = sorted(enabled_tools - matched_enabled_tools)
                 if unmatched_enabled_tools:
                     logger.warning(
-                        "MCP server '{}': enabledTools entries not found: {}. Available raw names: {}. "
-                        "Available wrapped names: {}",
+                        "MCP server '%s': enabledTools entries not found: %s. Available raw names: %s. "
+                        "Available wrapped names: %s",
                         name,
                         ", ".join(unmatched_enabled_tools),
                         ", ".join(available_raw_names) or "(none)",
@@ -608,10 +608,10 @@ async def connect_mcp_servers(
                     registry.register(wrapper)
                     registered_count += 1
                     logger.debug(
-                        "MCP: registered resource '{}' from server '{}'", wrapper.name, name
+                        "MCP: registered resource '%s' from server '%s'", wrapper.name, name
                     )
             except Exception as e:
-                logger.debug("MCP server '{}': resources not supported or failed: {}", name, e)
+                logger.debug("MCP server '%s': resources not supported or failed: %s", name, e)
 
             try:
                 prompts_result = await session.list_prompts()
@@ -621,12 +621,12 @@ async def connect_mcp_servers(
                     )
                     registry.register(wrapper)
                     registered_count += 1
-                    logger.debug("MCP: registered prompt '{}' from server '{}'", wrapper.name, name)
+                    logger.debug("MCP: registered prompt '%s' from server '%s'", wrapper.name, name)
             except Exception as e:
-                logger.debug("MCP server '{}': prompts not supported or failed: {}", name, e)
+                logger.debug("MCP server '%s': prompts not supported or failed: %s", name, e)
 
             logger.info(
-                "MCP server '{}': connected, {} capabilities registered", name, registered_count
+                "MCP server '%s': connected, %s capabilities registered", name, registered_count
             )
             return name, server_stack
 

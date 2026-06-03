@@ -11,10 +11,10 @@ from nanobee.plugins.channel import ChannelPlugin
 logger = logging.getLogger(__name__)
 
 
-class CLIPlugin(ChannelPlugin):
+class ChannelCLIPlugin(ChannelPlugin):
     """命令行交互通道"""
 
-    name = "channel-cli"
+    name = "channel_cli"
     version = "1.0.0"
 
     def __init__(self, metadata=None):

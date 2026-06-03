@@ -112,7 +112,7 @@ class GitStore:
                 author=b"nanobee <nanobee@dream>",
                 committer=b"nanobee <nanobee@dream>",
             )
-            logger.info("Git store initialized at {}", self._workspace)
+            logger.info("Git store initialized at %s", self._workspace)
             return True
         except Exception:
             logger.exception("Git store init failed for {}", self._workspace)
@@ -148,7 +148,7 @@ class GitStore:
             if sha_bytes is None:
                 return None
             sha = sha_bytes.hex()[:8]
-            logger.debug("Git auto-commit: {} ({})", sha, message)
+            logger.debug("Git auto-commit: %s (%s)", sha, message)
             return sha
         except Exception:
             logger.exception("Git auto-commit failed: {}", message)
@@ -338,7 +338,7 @@ class GitStore:
 
             full_sha = self._resolve_sha(commit)
             if not full_sha:
-                logger.warning("Git revert: SHA not found: {}", commit)
+                logger.warning("Git revert: SHA not found: %s", commit)
                 return None
 
             with Repo(str(self._workspace)) as repo:
@@ -347,7 +347,7 @@ class GitStore:
                     return None
 
                 if not commit_obj.parents:
-                    logger.warning("Git revert: cannot revert root commit {}", commit)
+                    logger.warning("Git revert: cannot revert root commit %s", commit)
                     return None
 
                 # Use the parent's tree — this undoes the commit's changes

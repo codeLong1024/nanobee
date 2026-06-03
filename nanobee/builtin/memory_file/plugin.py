@@ -12,10 +12,10 @@ from nanobee.plugins.memory import MemoryPlugin
 logger = logging.getLogger(__name__)
 
 
-class FileMemoryPlugin(MemoryPlugin):
+class MemoryFilePlugin(MemoryPlugin):
     """基于 jsonl 文件的记忆存储"""
 
-    name = "memory-file"
+    name = "memory_file"
     version = "1.0.0"
 
     def __init__(self, metadata=None):
@@ -95,7 +95,7 @@ class FileMemoryPlugin(MemoryPlugin):
             for entry in entries:
                 f.write(json.dumps(entry, ensure_ascii=False) + "\n")
         if deleted:
-            logger.info(f"已删除记忆: {key}")
+            logger.info("已删除记忆: %s", key)
         return deleted
 
     async def list_all(self, memory_type: str | None = None) -> list[str]:

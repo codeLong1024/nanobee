@@ -45,7 +45,7 @@ class SoulGuard:
         """
         if not self.core_md_path.exists():
             # 自动创建默认 core.md
-            logger.warning(f"灵魂文件不存在，正在创建默认文件: {self.core_md_path}")
+            logger.warning("灵魂文件不存在，正在创建默认文件: %s", self.core_md_path)
             from nanobee.kernel.core_parser import CoreMDParser
             CoreMDParser.create_default(self.core_md_path)
 
@@ -61,7 +61,7 @@ class SoulGuard:
 
         # 保存当前哈希
         self._expected_hash = current_hash
-        logger.info(f"灵魂文件校验通过（哈希: {current_hash[:16]}...）")
+        logger.info("灵魂文件校验通过（哈希: %s...）", current_hash[:16])
 
         # Layer 1：设置文件权限
         self._set_readonly()
@@ -83,14 +83,14 @@ class SoulGuard:
             if platform.system() != "Windows":
                 # Unix: chmod 444
                 os.chmod(self.core_md_path, 0o444)
-                logger.info(f"已设置灵魂文件为只读（chmod 444）: {self.core_md_path}")
+                logger.info("已设置灵魂文件为只读（chmod 444）: %s", self.core_md_path)
             else:
                 # Windows: 设置只读属性
                 import stat
                 os.chmod(self.core_md_path, stat.S_IREAD)
-                logger.info(f"已设置灵魂文件为只读（Windows）: {self.core_md_path}")
+                logger.info("已设置灵魂文件为只读（Windows）: %s", self.core_md_path)
         except Exception as e:
-            logger.warning(f"设置灵魂文件只读失败: {e}")
+            logger.warning("设置灵魂文件只读失败: %s", e)
 
     def is_core_md_write_attempt(self, path: str | Path) -> bool:
         """检查是否尝试写入灵魂文件
@@ -115,7 +115,7 @@ class SoulGuard:
             True 表示允许写入，False 表示拦截
         """
         if self.is_core_md_write_attempt(path):
-            logger.error(f"拦截到对灵魂文件的写入尝试！路径: {path}")
+            logger.error("拦截到对灵魂文件的写入尝试！路径: %s", path)
             # 发射灵魂 violation 事件
             await self.kernel.event_bus.publish("soul.violation", {
                 "path": str(path),

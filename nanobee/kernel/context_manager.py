@@ -74,7 +74,7 @@ class ConversationContext:
         self._messages.clear()
         if self.history_file.exists():
             self.history_file.unlink()
-        logger.info(f"上下文 {self.context_id} 已清空")
+        logger.info("上下文 %s 已清空", self.context_id)
 
 
 class ContextManager:
@@ -109,7 +109,7 @@ class ContextManager:
         if context_id not in self._contexts:
             base_dir = self.contexts_base_dir / context_id
             self._contexts[context_id] = ConversationContext(context_id, base_dir)
-            logger.info(f"创建上下文: {context_id}（目录: {base_dir}）")
+            logger.info("创建上下文: %s（目录: %s）", context_id, base_dir)
 
         return self._contexts[context_id]
 
@@ -151,7 +151,7 @@ class ContextManager:
         import shutil
         if base_dir.exists():
             shutil.rmtree(base_dir)
-        logger.info(f"移除上下文: {context_id}")
+        logger.info("移除上下文: %s", context_id)
         return True
 
     def list_contexts(self) -> list[str]:

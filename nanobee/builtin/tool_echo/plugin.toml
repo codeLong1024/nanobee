@@ -1,5 +1,5 @@
 [plugin]
-name = "tool-echo"
+name = "tool_echo"
 version = "1.0.0"
 description = "回显测试工具"
 author = "nanobee-team"

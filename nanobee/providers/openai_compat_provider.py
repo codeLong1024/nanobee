@@ -128,10 +128,10 @@ def _float_env(name: str, default: float) -> float:
     try:
         value = float(raw)
     except (TypeError, ValueError):
-        logger.warning("Ignoring invalid {}={!r}; using {}", name, raw, default)
+        logger.warning("Ignoring invalid %s=%r; using %s", name, raw, default)
         return default
     if value <= 0:
-        logger.warning("Ignoring non-positive {}={!r}; using {}", name, raw, default)
+        logger.warning("Ignoring non-positive %s=%r; using %s", name, raw, default)
         return default
     return value
 

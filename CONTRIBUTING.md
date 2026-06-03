@@ -22,7 +22,7 @@
 ### 2. 克隆仓库
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/nanobee.git
+git clone https://github.com/codeLong1024/nanobee.git
 cd nanobee
 ```
 
@@ -321,7 +321,7 @@ my-plugin/
 
 ```toml
 [plugin]
-name = "tool-my-tool"
+name = "tool_my_tool"
 version = "1.0.0"
 description = "我的工具插件描述"
 author = "Your Name"
@@ -402,7 +402,7 @@ nanobee plugin create my-plugin
 
 ### 报告 Bug
 
-在报告 Bug 之前，请搜索 [现有 Issue](https://github.com/YOUR_REPO/issues) 避免重复。
+在报告 Bug 之前，请搜索 [现有 Issue](https://github.com/codeLong1024/nanobee/issues) 避免重复。
 
 报告 Bug 时请提供：
 

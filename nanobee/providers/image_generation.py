@@ -657,7 +657,7 @@ class GeminiImageGenerationClient(ImageGenerationProvider):
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
             detail = _http_error_detail(response)
-            logger.error("Gemini Imagen generation failed (HTTP {}): {}", response.status_code, detail)
+            logger.error("Gemini Imagen generation failed (HTTP %s): %s", response.status_code, detail)
             raise ImageGenerationError(
                 f"Gemini Imagen generation failed (HTTP {response.status_code}): {detail}"
             ) from exc
@@ -706,7 +706,7 @@ class GeminiImageGenerationClient(ImageGenerationProvider):
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
             detail = _http_error_detail(response)
-            logger.error("Gemini image generation failed (HTTP {}): {}", response.status_code, detail)
+            logger.error("Gemini image generation failed (HTTP %s): %s", response.status_code, detail)
             raise ImageGenerationError(
                 f"Gemini image generation failed (HTTP {response.status_code}): {detail}"
             ) from exc
@@ -999,7 +999,7 @@ class OpenAIImageGenerationClient(ImageGenerationProvider):
 
         body.update(self.extra_body)
 
-        logger.info("OpenAI Images API request: POST {}/images/generations body={}", self.api_base, body)
+        logger.info("OpenAI Images API request: POST %s/images/generations body=%s", self.api_base, body)
 
         response = await self._http_post(
             f"{self.api_base}/images/generations",
@@ -1011,13 +1011,13 @@ class OpenAIImageGenerationClient(ImageGenerationProvider):
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
             detail = response.text[:1000]
-            logger.error("OpenAI Images API error ({}): {}", response.status_code, detail)
+            logger.error("OpenAI Images API error (%s): %s", response.status_code, detail)
             raise ImageGenerationError(
                 f"OpenAI image generation failed (HTTP {response.status_code}): {detail}"
             ) from exc
 
         payload = response.json()
-        logger.info("OpenAI Images API response ({}): {}", response.status_code,
+        logger.info("OpenAI Images API response (%s): %s", response.status_code,
                        {k: v for k, v in payload.items() if k != "data"})
 
         client = self._client
@@ -1117,7 +1117,7 @@ class CodexImageGenerationClient(ImageGenerationProvider):
         }
         body.update(self.extra_body)
 
-        logger.info("Codex Responses API request: POST {}/codex/responses body={}",
+        logger.info("Codex Responses API request: POST %s/codex/responses body=%s",
                        self.api_base, {k: v for k, v in body.items() if k != "input"})
 
         response = await self._http_post(
@@ -1130,7 +1130,7 @@ class CodexImageGenerationClient(ImageGenerationProvider):
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
             detail = response.text[:1000]
-            logger.error("Codex Responses API error ({}): {}", response.status_code, detail)
+            logger.error("Codex Responses API error (%s): %s", response.status_code, detail)
             raise ImageGenerationError(
                 f"Codex image generation failed (HTTP {response.status_code}): {detail}"
             ) from exc
@@ -1274,7 +1274,7 @@ async def _parse_codex_sse_images(
                         continue
                     ev_type = event.get("type", "")
                     if ev_type in ("error", "response.failed"):
-                        logger.error("Codex SSE failure: {}", raw[:2000])
+                        logger.error("Codex SSE failure: %s", raw[:2000])
                     _collect_images_from_sse_event(event, images)
                     _collect_text_from_sse_event(event, text_parts)
             continue
