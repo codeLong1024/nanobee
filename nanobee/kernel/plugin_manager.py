@@ -13,7 +13,7 @@ from typing import Any, Type
 import toml
 
 from nanobee.plugins.base import NanobeePlugin, PluginMetadata
-from nanobee.plugins.channel import ChannelPlugin
+from nanobee.channel.base import ChannelPlugin
 from nanobee.plugins.memory import MemoryPlugin
 from nanobee.plugins.tool import ToolPlugin
 

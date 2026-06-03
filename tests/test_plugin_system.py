@@ -7,7 +7,7 @@ import pytest
 from nanobee.kernel.plugin_manager import PluginManager, PluginDescriptor
 from nanobee.plugins.base import NanobeePlugin, PluginMetadata
 from nanobee.plugins.tool import ToolPlugin
-from nanobee.plugins.channel import ChannelPlugin
+from nanobee.channel.base import ChannelPlugin
 from nanobee.plugins.memory import MemoryPlugin
 
 
@@ -45,8 +45,22 @@ class MockChannelPlugin(ChannelPlugin):
     async def stop(self):
         pass
 
-    async def send(self, message, **kwargs):
-        self.last_message = message
+    async def send(self, message, context_id="default"):
+        from nanobee.channel.message import OutboundMessage
+        if isinstance(message, str):
+            message = OutboundMessage(
+                channel=self.metadata.name,
+                chat_id=context_id.split(":", 1)[-1],
+                content=message,
+            )
+        self.last_message = message.content if hasattr(message, "content") else str(message)
+
+    async def _process_incoming(
+        self,
+        message,
+        context_manager,
+    ):
+        return []
 
 
 def test_plugin_metadata():
