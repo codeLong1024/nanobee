@@ -102,6 +102,11 @@ class AgentRunSpec:
     checkpoint_callback: Any | None = None
     injection_callback: Any | None = None
     llm_timeout_s: float | None = None
+    sandbox: Any | None = None
+    filtered_tool_names: list[str] | None = None
+    plugin_hooks: dict[str, list[Any]] | None = None
+    # plugin_hooks 格式: {"pre_invoke": [callable(context, name, args) → args],
+    #                      "post_invoke": [callable(context, name, result) → result]}
 
 
 @dataclass(slots=True)
@@ -609,10 +614,20 @@ class AgentRunner:
         if timeout_s is not None and timeout_s <= 0:
             timeout_s = None
 
+        # 获取工具定义并应用过滤
+        tool_definitions = spec.tools.get_definitions()
+        if spec.filtered_tool_names is not None:
+            allowed = set(spec.filtered_tool_names)
+            from nanobee.kernel.tool_collector import ToolCollector
+            tool_definitions = [
+                d for d in tool_definitions
+                if ToolCollector._schema_name(d) in allowed
+            ]
+
         kwargs = self._build_request_kwargs(
             spec,
             messages,
-            tools=spec.tools.get_definitions(),
+            tools=tool_definitions,
         )
         wants_streaming = hook.wants_streaming()
         wants_progress_streaming = (
@@ -865,11 +880,58 @@ class AgentRunner:
                     params if isinstance(params, dict) else None,
                 ) for file_edit_tracker in file_edit_trackers],
             )
+
+        # 执行时过滤：检查工具是否在允许列表中
+        if spec.filtered_tool_names is not None and tool_call.name not in spec.filtered_tool_names:
+            event = {
+                "name": tool_call.name,
+                "status": "error",
+                "detail": f"tool not found: {tool_call.name}",
+            }
+            return f"Error: Tool '{tool_call.name}' not found. Available: {', '.join(spec.filtered_tool_names)}" + hint, event, None
+
+        # 沙箱拦截：在工具执行前清洗路径参数
+        if spec.sandbox is not None and isinstance(params, dict):
+            try:
+                params = spec.sandbox.sanitize_params(tool_call.name, params)
+            except PermissionError as e:
+                event = {
+                    "name": tool_call.name,
+                    "status": "error",
+                    "detail": f"sandbox: {e}",
+                }
+                return str(e) + hint, event, None
+
+        # Plugin Hook: on_pre_invoke — 工具执行前拦截
+        if spec.plugin_hooks and isinstance(params, dict):
+            for hook_fn in spec.plugin_hooks.get("pre_invoke", []):
+                try:
+                    params = await hook_fn(tool_call.name, params)
+                except PermissionError as e:
+                    event = {
+                        "name": tool_call.name,
+                        "status": "error",
+                        "detail": f"plugin-hook: {e}",
+                    }
+                    return str(e) + hint, event, None
+                except Exception as e:
+                    logger.exception("on_pre_invoke hook 执行出错: %s", e)
+                    # 不阻止工具执行，仅记录日志
+
         try:
             if tool is not None:
                 result = await tool.execute(**params)
             else:
                 result = await spec.tools.execute(tool_call.name, params)
+
+            # Plugin Hook: on_post_invoke — 工具执行后拦截
+            if spec.plugin_hooks:
+                for hook_fn in spec.plugin_hooks.get("post_invoke", []):
+                    try:
+                        result = await hook_fn(tool_call.name, result)
+                    except Exception as e:
+                        logger.exception("on_post_invoke hook 执行出错: %s", e)
+                        # 不阻止结果返回，仅记录日志
         except asyncio.CancelledError:
             raise
         except BaseException as exc:

@@ -9,6 +9,26 @@ from nanobee.kernel.core_parser import CoreMDParser
 
 logger = logging.getLogger(__name__)
 
+# 插件类型 → 提示词段标题映射
+_PLUGIN_TYPE_STAGE_MAP: dict[str, str] = {
+    "memory": "## 记忆",
+    "skill": "## 技能",
+    "knowledge": "## 知识库",
+}
+
+
+def _map_plugin_stage(plugin: Any) -> str:
+    """将插件映射到提示词段标题。
+
+    优先级：插件显式声明的 stage > plugin_type > 兜底。
+    """
+    stage = getattr(plugin, "stage", None)
+    if stage:
+        return f"## {stage}"
+    plugin_type = getattr(plugin, "plugin_type", "unknown") or \
+                  getattr(getattr(plugin, "metadata", None), "plugin_type", "unknown")
+    return _PLUGIN_TYPE_STAGE_MAP.get(plugin_type, f"## {plugin_type}")
+
 
 class PipelineStage:
     """管道阶段基类"""
@@ -128,3 +148,63 @@ class ContextPipeline:
             context = await stage.process(context)
 
         return context.get("system_prompt", "")
+
+    async def build_with_plugins(
+        self,
+        context: dict[str, Any],
+        user_context: Any,
+        plugins: list[Any],
+    ) -> str:
+        """使用插件 Hook 构建系统提示词（Phase 2 增强版）。
+
+        组装顺序：
+        1. [P0] Soul 段：框架内置（core.md Soul 节）— 由现有 Stage 产生
+        2. [P10-P30] 业务段：遍历插件调用 contribute_to_prompt，按 plugin_type 分组
+           - ## 记忆：memory 类型插件
+           - ## 技能：skill 类型插件
+           - ## 知识库：knowledge 类型插件
+        3. [P40] Rules 段：框架内置（core.md Rules 节）— 由现有 Stage 产生
+
+        每个段有内容时才注入，无内容时跳过。
+        向后兼容：不提供 plugins 或 plugins 为空时，行为同 build()。
+
+        Args:
+            context: 上下文字典（同 build()）
+            user_context: 当前用户上下文（UserContext 实例）
+            plugins: 已启用的插件列表
+
+        Returns:
+            构建完成的系统提示词
+        """
+        # 1. 先执行框架内置 Stage（Soul, Rules, Memory）
+        system_prompt = await self.build(context)
+
+        if not plugins:
+            return system_prompt
+
+        # 2. 收集插件贡献，按段标题分组
+        stages_content: dict[str, list[str]] = {}
+        for plugin in plugins:
+            try:
+                content = plugin.contribute_to_prompt(user_context)
+            except Exception:
+                logger.exception("插件 %s.contribute_to_prompt 出错", getattr(plugin, "name", "?"))
+                continue
+            if content:
+                stage = _map_plugin_stage(plugin)
+                stages_content.setdefault(stage, []).append(content)
+
+        if not stages_content:
+            return system_prompt
+
+        # 3. 按固定顺序组装插件段
+        plugin_sections: list[str] = []
+        for stage in ["## 记忆", "## 技能", "## 知识库"]:
+            contents = stages_content.get(stage)
+            if contents:
+                plugin_sections.append(stage + "\n" + "\n\n".join(contents))
+
+        if plugin_sections:
+            system_prompt += "\n\n" + "\n\n".join(plugin_sections)
+
+        return system_prompt

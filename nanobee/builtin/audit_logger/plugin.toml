@@ -1,0 +1,6 @@
+[plugin]
+name = "audit_logger"
+version = "1.0.0"
+description = "极简参考插件：监听 on_message_completed 输出审计日志"
+author = "nanobee"
+type = "audit"

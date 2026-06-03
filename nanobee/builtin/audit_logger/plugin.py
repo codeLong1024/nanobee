@@ -1,0 +1,62 @@
+"""
+audit_logger 参考插件 —— 监听 on_message_completed 输出审计日志
+
+Phase 3 参考插件：纯监听型插件，不贡献提示词或工具，
+仅在每轮 Agent 交互完成后通过 logging 记录交互摘要。
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+from nanobee.plugins.base import NanobeePlugin
+
+logger = logging.getLogger(__name__)
+
+
+class AuditLoggerPlugin(NanobeePlugin):
+    """极简审计日志插件：在每轮对话完成时记录交互摘要。
+
+    不实现 ``contribute_to_prompt`` / ``contribute_to_tools``，
+    仅通过 ``on_message_completed`` 监听对话完成事件。
+    内部维护 ``call_count`` 用于测试验证。
+    """
+
+    name = "audit_logger"
+    version = "1.0.0"
+    plugin_type = "audit"
+
+    def __init__(self, metadata: Any = None) -> None:
+        super().__init__(metadata)
+        self._call_count = 0
+
+    async def on_message_completed(
+        self,
+        context: Any,
+        messages: list[dict[str, Any]],
+    ) -> None:
+        """记录本轮交互摘要。
+
+        统计本轮总消息数和工具调用次数。
+
+        Args:
+            context: UserContext 实例
+            messages: 本轮完整的消息列表
+        """
+        self._call_count += 1
+        user_id = getattr(context, "user_id", "?")
+        tool_calls = sum(1 for m in messages if isinstance(m, dict) and "tool_calls" in m)
+
+        logger.info(
+            "[audit] user=%s | round=%d | messages=%d | tool_calls=%d",
+            user_id,
+            self._call_count,
+            len(messages),
+            tool_calls,
+        )
+
+    @property
+    def call_count(self) -> int:
+        """获取被调用次数，用于测试验证。"""
+        return self._call_count

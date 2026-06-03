@@ -96,6 +96,7 @@ class Config(BaseModel):
     agents: AgentsConfig = AgentsConfig()
     providers: dict[str, AgentProviderConfig] = {}
     mcp_servers: dict[str, dict[str, Any]] = {}
+    routing: dict[str, str] = {}
 
     def resolve_preset(self, name: str | None) -> ModelPresetConfig:
         """按名称解析模型预设，返回 None 时使用默认预设。"""

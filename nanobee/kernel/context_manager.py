@@ -1,86 +1,22 @@
-"""上下文管理器 - 管理 Agent 的对话上下文"""
+"""上下文管理器 - 管理多租户用户上下文"""
 
 from __future__ import annotations
 
-import json
 import logging
+import shutil
 from pathlib import Path
 from typing import Any
 
+from nanobee.kernel.user_context import ConversationContext, UserContext
+
 logger = logging.getLogger(__name__)
-
-
-class ConversationContext:
-    """对话上下文
-
-    每个上下文对应一个独立的对话会话，拥有独立的：
-    - 消息历史（history.jsonl）
-    - 记忆目录（memory/）
-    - 工作目录（work/）
-    """
-
-    def __init__(self, context_id: str, base_dir: Path):
-        """初始化上下文
-
-        Args:
-            context_id: 上下文唯一 ID
-            base_dir: 上下文基础目录
-        """
-        self.context_id = context_id
-        self.base_dir = base_dir
-        self.work_dir = base_dir / "work"
-        self.memory_dir = base_dir / "memory"
-        self.history_file = base_dir / "history.jsonl"
-
-        # 创建目录结构
-        self.work_dir.mkdir(parents=True, exist_ok=True)
-        self.memory_dir.mkdir(parents=True, exist_ok=True)
-
-        self._messages: list[dict[str, Any]] = []
-        self._load_history()
-
-    def _load_history(self) -> None:
-        """从 history.jsonl 加载历史消息"""
-        if not self.history_file.exists():
-            return
-        with open(self.history_file, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    self._messages.append(json.loads(line))
-
-    def add_message(self, role: str, content: str) -> None:
-        """添加消息到历史
-
-        Args:
-            role: 角色（user / assistant / system）
-            content: 消息内容
-        """
-        message = {"role": role, "content": content}
-        self._messages.append(message)
-        self._persist_message(message)
-
-    def _persist_message(self, message: dict[str, Any]) -> None:
-        """持久化消息到 history.jsonl"""
-        with open(self.history_file, "a", encoding="utf-8") as f:
-            f.write(json.dumps(message, ensure_ascii=False) + "\n")
-
-    def get_messages(self) -> list[dict[str, Any]]:
-        """获取所有消息"""
-        return self._messages.copy()
-
-    def clear(self) -> None:
-        """清空上下文（保留目录结构）"""
-        self._messages.clear()
-        if self.history_file.exists():
-            self.history_file.unlink()
-        logger.info("上下文 %s 已清空", self.context_id)
 
 
 class ContextManager:
     """上下文管理器
 
-    负责管理多个对话上下文的创建、切换、销毁。
+    负责管理多个用户上下文的创建、切换、销毁。
+    每个用户拥有独立的 UserContext（目录隔离 + 元数据 + 历史）。
     """
 
     def __init__(self, kernel: Any):
@@ -90,53 +26,71 @@ class ContextManager:
             kernel: NanobeeKernel 实例
         """
         self.kernel = kernel
-        self._contexts: dict[str, ConversationContext] = {}
+        self._contexts: dict[str, UserContext] = {}
 
         # 上下文基础目录
         work_dir = Path(kernel.config.get("work_dir", "."))
         self.contexts_base_dir = work_dir / "contexts"
         self.contexts_base_dir.mkdir(parents=True, exist_ok=True)
 
-    async def get_or_create(self, context_id: str) -> ConversationContext:
-        """获取或创建上下文
+    async def get_or_create(self, user_id: str) -> UserContext:
+        """获取或创建用户上下文
+
+        创建时自动生成默认的 context.yaml 元数据。
+        不加载历史消息（懒加载），仅加载元数据。
 
         Args:
-            context_id: 上下文 ID
+            user_id: 用户唯一标识
 
         Returns:
-            对话上下文实例
+            用户上下文实例
         """
-        if context_id not in self._contexts:
-            base_dir = self.contexts_base_dir / context_id
-            self._contexts[context_id] = ConversationContext(context_id, base_dir)
-            logger.info("创建上下文: %s（目录: %s）", context_id, base_dir)
+        if user_id not in self._contexts:
+            base_dir = self.contexts_base_dir / user_id
+            base_dir.mkdir(parents=True, exist_ok=True)
+            ctx = UserContext(user_id, base_dir)
+            ctx._ensure_meta_file()
+            self._contexts[user_id] = ctx
+            logger.info("创建用户上下文: %s（目录: %s）", user_id, base_dir)
 
-        return self._contexts[context_id]
+        return self._contexts[user_id]
 
-    async def switch(self, context_id: str) -> ConversationContext:
-        """切换到指定上下文（别名：get_or_create）
+    async def get_metadata(self, user_id: str) -> dict[str, Any]:
+        """仅获取用户元数据，不加载历史
 
         Args:
-            context_id: 上下文 ID
+            user_id: 用户唯一标识
 
         Returns:
-            对话上下文实例
+            元数据字典（不包含历史消息）
         """
-        return await self.get_or_create(context_id)
+        ctx = await self.get_or_create(user_id)
+        return ctx.metadata.to_dict()
 
-    async def remove(self, context_id: str) -> bool:
-        """移除上下文（同时删除目录）
+    async def switch(self, user_id: str) -> UserContext:
+        """切换到指定用户上下文
 
         Args:
-            context_id: 上下文 ID
+            user_id: 用户标识
+
+        Returns:
+            用户上下文实例
+        """
+        return await self.get_or_create(user_id)
+
+    async def remove(self, user_id: str) -> bool:
+        """移除用户上下文（同时删除目录）
+
+        Args:
+            user_id: 用户标识
 
         Returns:
             是否移除成功
         """
-        if context_id not in self._contexts:
+        if user_id not in self._contexts:
             return False
 
-        ctx = self._contexts.pop(context_id)
+        ctx = self._contexts.pop(user_id)
 
         # 安全检查：只允许删除 contexts_base_dir 下的子目录
         base_dir = ctx.base_dir.resolve()
@@ -148,12 +102,11 @@ class ContextManager:
             )
             return False
 
-        import shutil
         if base_dir.exists():
             shutil.rmtree(base_dir)
-        logger.info("移除上下文: %s", context_id)
+        logger.info("移除用户上下文: %s", user_id)
         return True
 
     def list_contexts(self) -> list[str]:
-        """列出所有上下文 ID"""
+        """列出所有用户上下文 ID"""
         return list(self._contexts.keys())

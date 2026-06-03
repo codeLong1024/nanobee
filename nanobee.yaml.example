@@ -66,3 +66,8 @@ providers:
 #   #   headers:
 #   #     X-API-Key: "your-api-key"
 
+# 路由配置（多租户映射）
+# 格式："{channel}:{chat_id}" → user_id
+# routing:
+#   "cli:default": "user-alice"
+#   "http:chat-123": "user-bob"

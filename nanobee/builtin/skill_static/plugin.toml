@@ -1,0 +1,6 @@
+[plugin]
+name = "skill_static"
+version = "1.0.0"
+description = "极简参考插件：读取 context/{user_id}/skills.md 原样注入 ## 技能 段"
+author = "nanobee"
+type = "echo"

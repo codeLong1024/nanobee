@@ -12,7 +12,7 @@ import asyncio
 import dataclasses
 import os
 import time
-from contextlib import AsyncExitStack, nullcontext
+from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from pathlib import Path
@@ -40,10 +40,12 @@ from nanobee.utils.runtime import EMPTY_FINAL_RESPONSE_MESSAGE
 
 if TYPE_CHECKING:
     from nanobee.config.schema import AgentDefaults, ModelPresetConfig
-    from nanobee.kernel.context_manager import ContextManager
-    from nanobee.kernel.context_pipeline import ContextPipeline
-    from nanobee.kernel.event_bus import EventBus
-    from nanobee.kernel.plugin_manager import PluginManager
+from nanobee.kernel.context_manager import ContextManager
+from nanobee.kernel.context_pipeline import ContextPipeline
+from nanobee.kernel.event_bus import EventBus
+from nanobee.kernel.lock_manager import LockManager
+from nanobee.kernel.plugin_manager import PluginManager
+from nanobee.kernel.router import ContextRouter, UnknownRouteError
 
 
 # 入站消息数据类
@@ -174,6 +176,7 @@ class AgentLoop:
         context_pipeline: ContextPipeline,
         event_bus: EventBus | None = None,
         plugin_manager: PluginManager | None = None,
+        router: ContextRouter | None = None,
         model: str | None = None,
         max_iterations: int = 10,
         context_window_tokens: int | None = None,
@@ -194,6 +197,7 @@ class AgentLoop:
         self.context_pipeline = context_pipeline
         self.event_bus = event_bus
         self.plugin_manager = plugin_manager
+        self._router = router or ContextRouter()
         self._provider_snapshot_loader = provider_snapshot_loader
         self._preset_snapshot_loader = preset_snapshot_loader
 
@@ -220,18 +224,14 @@ class AgentLoop:
         self._mcp_connected = False
         self._mcp_connecting = False
 
-        # 上下文级互斥锁：同一上下文串行，不同上下文并行
-        self._context_locks: dict[str, asyncio.Lock] = {}
+        # 上下文级互斥锁：按用户粒度隔离并发
+        # 同一 user_id 串行，不同 user_id 并行
+        _max = int(os.environ.get("NANOBEE_MAX_CONCURRENT_REQUESTS", "3"))
+        self._lock_manager = LockManager(max_concurrent=_max)
         # 每个上下文的活跃任务列表
         self._active_tasks: dict[str, list[asyncio.Task]] = {}
         # 每个上下文的待处理消息队列（中轮注入）
         self._pending_queues: dict[str, asyncio.Queue] = {}
-
-        # 并发控制：NANOBEE_MAX_CONCURRENT_REQUESTS，<=0 不限
-        _max = int(os.environ.get("NANOBEE_MAX_CONCURRENT_REQUESTS", "3"))
-        self._concurrency_gate: asyncio.Semaphore | None = (
-            asyncio.Semaphore(_max) if _max > 0 else None
-        )
 
         self._register_plugin_tools()
         self._current_iteration: int = 0
@@ -252,6 +252,7 @@ class AgentLoop:
             context_pipeline=kernel.context_pipeline,
             event_bus=kernel.event_bus,
             plugin_manager=kernel.plugin_manager,
+            router=getattr(kernel, "router", None),
             **extra,
         )
 
@@ -278,6 +279,82 @@ class AgentLoop:
             except Exception:
                 logger.exception("注册工具插件 %s 失败", getattr(plugin, "name", "unknown"))
         logger.info("注册了 %s 个工具插件: %s", len(registered), registered)
+
+    # ---- Phase 2: 插件 Hook 集成 ----
+
+    def _get_enabled_plugins(self) -> list[Any]:
+        """获取所有已启用的插件。"""
+        if self.plugin_manager is None:
+            return []
+        return [
+            self.plugin_manager._plugins[name]
+            for name in self.plugin_manager.list_plugins()
+            if self.plugin_manager._plugins[name].is_enabled
+        ]
+
+    def _collect_plugin_prompts(self, user_ctx: Any) -> str:
+        """收集所有已启用插件贡献的提示词内容。
+
+        Args:
+            user_ctx: 当前用户上下文（UserContext 实例）
+
+        Returns:
+            拼装后的插件贡献文本，无贡献时返回空字符串
+        """
+        contributions: list[str] = []
+        for plugin in self._get_enabled_plugins():
+            try:
+                content = plugin.contribute_to_prompt(user_ctx)
+                if content:
+                    contributions.append(content)
+            except Exception:
+                logger.exception("插件 %s.contribute_to_prompt 出错", getattr(plugin, "name", "?"))
+        return "\n\n".join(contributions) if contributions else ""
+
+    def _collect_plugin_tools(
+        self,
+        user_ctx: Any,
+        current_tool_names: list[str],
+    ) -> list[str]:
+        """让所有已启用插件修改工具列表。
+
+        Args:
+            user_ctx: 当前用户上下文（UserContext 实例）
+            current_tool_names: 当前已注册的工具名称列表
+
+        Returns:
+            插件修改后的工具名称列表
+        """
+        tool_names = list(current_tool_names)
+        for plugin in self._get_enabled_plugins():
+            try:
+                tool_names = plugin.contribute_to_tools(user_ctx, tool_names)
+            except Exception:
+                logger.exception("插件 %s.contribute_to_tools 出错", getattr(plugin, "name", "?"))
+        return tool_names
+
+    async def _notify_plugins_message_completed(
+        self,
+        context_id: str,
+        messages: list[dict[str, Any]],
+    ) -> None:
+        """通知所有已启用插件对话轮次已完成。
+
+        Args:
+            context_id: 用户上下文 ID
+            messages: 本轮完整的消息列表
+        """
+        try:
+            user_ctx = await self.context_manager.get_or_create(context_id)
+        except Exception:
+            logger.debug("获取用户上下文失败，跳过 on_message_completed 通知")
+            return
+
+        for plugin in self._get_enabled_plugins():
+            try:
+                await plugin.on_message_completed(user_ctx, messages)
+            except Exception:
+                logger.exception("插件 %s.on_message_completed 出错", getattr(plugin, "name", "?"))
 
     async def _connect_mcp(self) -> None:
         """连接配置的 MCP 服务器（一次性，懒加载）。"""
@@ -306,8 +383,21 @@ class AgentLoop:
             self._mcp_connecting = False
 
     def _effective_context_id(self, msg: InboundMessage) -> str:
-        """返回用于任务路由和中轮注入的上下文 ID。"""
-        return msg.context_id
+        """返回用于任务路由和中轮注入的上下文 ID（即 user_id）。
+
+        路由优先级：
+        1. msg.context_id_override 显式指定
+        2. 路由器根据 channel:chat_id 查找
+        3. 未知路由直接抛出异常
+        """
+        try:
+            return self._router.resolve(
+                msg.channel, msg.chat_id,
+                override=msg.context_id_override,
+            )
+        except UnknownRouteError:
+            # 保持向后兼容：如果没有路由器配置，降级使用 msg.context_id
+            return msg.context_id
 
     def _replay_token_budget(self) -> int:
         """从上下文窗口大小推算历史重放的 token 预算。"""
@@ -327,13 +417,19 @@ class AgentLoop:
         history: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
         """构建 LLM 的初始消息列表。"""
-        # 使用 ContextPipeline 构建系统提示词
+        # 使用 ContextPipeline 构建系统提示词（含插件 Hook 贡献）
         pipeline_context: dict[str, Any] = {
             "context_id": msg.context_id,
             "messages": history,
             "system_prompt": "",
         }
-        system_prompt = await self.context_pipeline.build(pipeline_context)
+
+        # 获取用户上下文和已启用插件，用于 build_with_plugins()
+        user_ctx = await self.context_manager.get_or_create(msg.context_id)
+        plugins = self._get_enabled_plugins()
+        system_prompt = await self.context_pipeline.build_with_plugins(
+            pipeline_context, user_ctx, plugins,
+        )
 
         # 构建消息列表：system + history + current_message
         messages: list[dict[str, Any]] = []
@@ -360,6 +456,8 @@ class AgentLoop:
         initial_messages: list[dict],
         *,
         context_id: str,
+        sandbox: Any | None = None,
+        filtered_tool_names: list[str] | None = None,
         on_progress: Callable[..., Awaitable[None]] | None = None,
         on_stream: Callable[[str], Awaitable[None]] | None = None,
         on_stream_end: Callable[..., Awaitable[None]] | None = None,
@@ -389,6 +487,29 @@ class AgentLoop:
         if self._extra_hooks:
             hook = CompositeHook(list(self._extra_hooks))
 
+        # 构造插件 Hook 闭包列表（on_pre_invoke / on_post_invoke）
+        plugin_hooks: dict[str, list[Any]] | None = None
+        enabled_plugins = self._get_enabled_plugins()
+        if enabled_plugins:
+            try:
+                user_ctx_for_hooks = await self.context_manager.get_or_create(context_id)
+                pre_invoke_fns: list[Any] = []
+                post_invoke_fns: list[Any] = []
+                for p in enabled_plugins:
+                    pre_invoke_fns.append(
+                        lambda name, args, _p=p, _ctx=user_ctx_for_hooks: _p.on_pre_invoke(_ctx, name, args)
+                    )
+                    post_invoke_fns.append(
+                        lambda name, result, _p=p, _ctx=user_ctx_for_hooks: _p.on_post_invoke(_ctx, name, result)
+                    )
+                if pre_invoke_fns or post_invoke_fns:
+                    plugin_hooks = {
+                        "pre_invoke": pre_invoke_fns,
+                        "post_invoke": post_invoke_fns,
+                    }
+            except Exception:
+                logger.debug("构造 plugin_hooks 失败，跳过工具 Hook")
+
         result = await self.runner.run(AgentRunSpec(
             initial_messages=initial_messages,
             tools=self.tools,
@@ -407,6 +528,9 @@ class AgentLoop:
             stream_progress_deltas=on_stream is not None,
             retry_wait_callback=on_retry_wait,
             injection_callback=_drain_pending,
+            sandbox=sandbox,
+            filtered_tool_names=filtered_tool_names,
+            plugin_hooks=plugin_hooks,
         ))
 
         if result.stop_reason == "max_iterations":
@@ -426,6 +550,12 @@ class AgentLoop:
                 "tools_used": result.tools_used,
                 "usage": result.usage,
             })
+
+        # 通知插件对话轮次已完成（后台执行，不阻塞主流程）
+        task = asyncio.create_task(
+            self._notify_plugins_message_completed(context_id, result.messages)
+        )
+        task.add_done_callback(lambda t: t.exception() if t.exception() else None)
 
         return result.final_content, result.tools_used, result.messages, result.stop_reason, result.had_injections
 
@@ -475,17 +605,15 @@ class AgentLoop:
         raise NotImplementedError("子类或集成层需要实现此方法")
 
     async def _dispatch(self, msg: InboundMessage) -> None:
-        """处理消息：同上下文串行，跨上下文并行。"""
+        """处理消息：同用户串行，跨用户并行。"""
         context_id = self._effective_context_id(msg)
-        lock = self._context_locks.setdefault(context_id, asyncio.Lock())
-        gate = self._concurrency_gate or nullcontext()
 
         # 注册待处理队列
         pending = asyncio.Queue(maxsize=20)
         self._pending_queues[context_id] = pending
 
         try:
-            async with lock, gate:
+            async with self._lock_manager.acquire(context_id):
                 try:
                     on_stream = on_stream_end = None
                     if msg.metadata.get("_wants_stream"):
@@ -717,11 +845,47 @@ class AgentLoop:
 
         return "ok"
 
+    async def _build_sandbox(self, user_id: str) -> Any | None:
+        """根据用户上下文构建沙箱"""
+        from nanobee.kernel.sandbox import ContextSandbox
+        try:
+            user_ctx = await self.context_manager.get_or_create(user_id)
+            return ContextSandbox(user_ctx.context_root)
+        except Exception:
+            logger.debug("无法构建沙箱（非多租户模式）: %s", user_id)
+            return None
+
     async def _state_run(self, ctx: TurnContext) -> str:
         """运行 Agent 迭代循环。"""
+        sandbox = await self._build_sandbox(ctx.context_id)
+
+        # 获取用户上下文
+        user_ctx = await self.context_manager.get_or_create(ctx.context_id)
+
+        # 让插件修改工具列表（在 ToolCollector 过滤之前）
+        plugin_modified_tool_names = self._collect_plugin_tools(
+            user_ctx, self.tools.tool_names,
+        )
+
+        # 构建 ToolCollector：用户白/黑名单 + 插件修改后的列表
+        filtered_tool_names: list[str] | None = None
+        try:
+            from nanobee.kernel.tool_collector import ToolCollector
+            collector = ToolCollector(
+                tool_names=plugin_modified_tool_names,
+                whitelist=user_ctx.whitelist,
+                blacklist=user_ctx.blacklist,
+            )
+            if collector.has_restrictions:
+                filtered_tool_names = collector.allowed_tools
+        except Exception:
+            logger.debug("构建 ToolCollector 失败，使用全部工具")
+
         result = await self._run_agent_loop(
             ctx.initial_messages,
             context_id=ctx.context_id,
+            sandbox=sandbox,
+            filtered_tool_names=filtered_tool_names,
             on_progress=ctx.on_progress,
             on_stream=ctx.on_stream,
             on_stream_end=ctx.on_stream_end,
