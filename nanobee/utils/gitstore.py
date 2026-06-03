@@ -115,7 +115,7 @@ class GitStore:
             logger.info("Git store initialized at %s", self._workspace)
             return True
         except Exception:
-            logger.exception("Git store init failed for {}", self._workspace)
+            logger.exception("Git store init failed for %s", self._workspace)
             return False
 
     # -- daily operations ------------------------------------------------------
@@ -151,7 +151,7 @@ class GitStore:
             logger.debug("Git auto-commit: %s (%s)", sha, message)
             return sha
         except Exception:
-            logger.exception("Git auto-commit failed: {}", message)
+            logger.exception("Git auto-commit failed: %s", message)
             return None
 
     # -- internal helpers ------------------------------------------------------
@@ -268,7 +268,7 @@ class GitStore:
 
             annotated = porcelain.annotate(str(self._workspace), file_path)
         except Exception:
-            logger.exception("Git line_ages annotate failed for {}", file_path)
+            logger.exception("Git line_ages annotate failed for %s", file_path)
             return []
 
         if not annotated:
@@ -369,7 +369,7 @@ class GitStore:
             msg = f"revert: undo {commit}"
             return self.auto_commit(msg)
         except Exception:
-            logger.exception("Git revert failed for {}", commit)
+            logger.exception("Git revert failed for %s", commit)
             return None
 
     @staticmethod

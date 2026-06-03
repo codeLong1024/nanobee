@@ -122,14 +122,14 @@ class EchoToolPlugin(ToolPlugin):
 async def test_e2e_memory_file_plugin(tmp_path):
     """测试 memory-file 插件的基本读写操作"""
     import importlib
-    _mod = importlib.import_module("nanobee.builtin.memory-file.plugin")
-    FileMemoryPlugin = _mod.FileMemoryPlugin
+    _mod = importlib.import_module("nanobee.builtin.memory_file.plugin")
+    MemoryFilePlugin = _mod.MemoryFilePlugin
     del importlib, _mod
 
     meta = tmp_path / "meta"
     meta.mkdir()
 
-    plugin = FileMemoryPlugin()
+    plugin = MemoryFilePlugin()
     plugin.initialize({"work_dir": str(tmp_path)})
 
     # 存储和检索

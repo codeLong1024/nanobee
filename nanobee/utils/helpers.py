@@ -353,7 +353,7 @@ def maybe_persist_tool_result(
     try:
         _cleanup_tool_result_buckets(root, bucket)
     except Exception:
-        logger.exception("Failed to clean stale tool result buckets in {}", root)
+        logger.exception("Failed to clean stale tool result buckets in %s", root)
     path = bucket / f"{safe_filename(tool_call_id)}.{suffix}"
     if not path.exists():
         if suffix == "json" and isinstance(content, list):
@@ -625,6 +625,6 @@ def sync_workspace_templates(workspace: Path, silent: bool = False) -> list[str]
         )
         gs.init()
     except Exception:
-        logger.exception("Failed to initialize git store for {}", workspace)
+        logger.exception("Failed to initialize git store for %s", workspace)
 
     return added

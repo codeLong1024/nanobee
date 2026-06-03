@@ -38,7 +38,6 @@
 | `memory_file` | Memory | ✅ 已完成 | 基于 JSONL 文件的记忆存储 |
 | `channel_http` | Channel | 🚧 存根 | HTTP 渠道插件（待完善） |
 | `tool_fs` | Tool | 🚧 存根 | 文件系统工具（待实现） |
-| `tool_mcp` | Tool | 🚧 存根 | MCP 协议桥接工具（待实现） |
 | `tool_shell` | Tool | 🚧 存根 | Shell 执行工具（待实现） |
 | `tool_web` | Tool | 🚧 存根 | Web 搜索/抓取工具（待实现） |
 
@@ -46,7 +45,7 @@
 
 - [ ] 插件自动发现与热加载
 - [ ] `channel_http` 插件完善（HTTP API 通道）
-- [ ] `tool_fs`、`tool_shell`、`tool_web`、`tool_mcp` 插件实现
+- [ ] `tool_fs`、`tool_shell`、`tool_web` 插件实现
 - [ ] 插件市场机制（`hub search/install`）
 - [ ] 插件管理 CLI（`plugin create/enable/disable`）
 - [ ] 上下文自动压缩（Compaction）
@@ -95,7 +94,6 @@ nanobee/
 │   ├── memory_file/     # 文件存储记忆插件 ✅
 │   ├── tool_echo/       # 回显测试工具 ✅
 │   ├── tool_fs/         # 文件系统工具 🚧
-│   ├── tool_mcp/        # MCP 工具 🚧
 │   ├── tool_shell/      # Shell 工具 🚧
 │   └── tool_web/        # Web 工具 🚧
 ├── cli/                 # 命令行入口

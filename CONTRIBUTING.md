@@ -52,6 +52,31 @@ git checkout -b fix/your-bug-fix
 - **pip** 或 **uv**（推荐使用 uv）
 - **git** >= 2.30
 
+### ⚠️ 必须使用虚拟环境
+
+**所有开发和运行必须在虚拟环境中进行！**
+
+```bash
+# 1. 创建虚拟环境
+python3 -m venv .venv
+
+# 2. 激活虚拟环境
+source .venv/bin/activate  # Linux/macOS
+# 或
+.venv\Scripts\activate     # Windows
+
+# 3. 安装开发依赖
+pip install -e ".[dev]"
+
+# 4. 验证安装
+python -m pytest tests/ -v
+```
+
+**重要提醒：**
+- 所有 Python 命令必须在激活虚拟环境后执行
+- 不要在全局 Python 环境中安装项目依赖
+- 虚拟环境路径 `.venv/` 已添加到 `.gitignore`
+
 ### 推荐工具
 
 - **pre-commit** — 自动代码格式化与检查

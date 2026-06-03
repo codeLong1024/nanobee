@@ -276,22 +276,26 @@ class AgentLoop:
                     self.tools.register(adapter)
                     registered.append(adapter.name)
             except Exception:
-                logger.exception("注册工具插件 {} 失败", getattr(plugin, "name", "unknown"))
+                logger.exception("注册工具插件 %s 失败", getattr(plugin, "name", "unknown"))
         logger.info("注册了 %s 个工具插件: %s", len(registered), registered)
 
     async def _connect_mcp(self) -> None:
         """连接配置的 MCP 服务器（一次性，懒加载）。"""
+        logger.info("MCP: 检查是否需要连接服务器 (connected=%s, connecting=%s, servers=%s)", 
+                    self._mcp_connected, self._mcp_connecting, bool(self._mcp_servers))
         if self._mcp_connected or self._mcp_connecting or not self._mcp_servers:
             return
         self._mcp_connecting = True
         from nanobee.agent.tools.mcp import connect_mcp_servers
 
         try:
+            logger.info("MCP: 开始连接 %s 个服务器", len(self._mcp_servers))
             self._mcp_stacks = await connect_mcp_servers(self._mcp_servers, self.tools)
             if self._mcp_stacks:
                 self._mcp_connected = True
+                logger.info("MCP: 成功连接 %s 个服务器", len(self._mcp_stacks))
             else:
-                logger.warning("没有 MCP 服务器成功连接（下次消息时重试）")
+                logger.warning("MCP: 没有 MCP 服务器成功连接（下次消息时重试）")
         except asyncio.CancelledError:
             logger.warning("MCP 连接被取消（下次消息时重试）")
             self._mcp_stacks.clear()
@@ -524,7 +528,7 @@ class AgentLoop:
                     logger.info("上下文 %s 的任务被取消", context_id)
                     raise
                 except Exception:
-                    logger.exception("处理上下文 {} 的消息出错", context_id)
+                    logger.exception("处理上下文 %s 的消息出错", context_id)
                     await self._publish_outbound(OutboundMessage(
                         channel=msg.channel, chat_id=msg.chat_id,
                         content="Sorry, I encountered an error.",

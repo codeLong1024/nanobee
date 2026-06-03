@@ -106,6 +106,10 @@ class NanobeeKernel:
         for channel in channels:
             await channel.stop()
 
+        # 关闭 MCP 连接（AgentLoop 内置能力）
+        if self._agent_loop is not None:
+            await self._agent_loop.close_mcp()
+
         # 卸载所有插件
         self.plugin_manager.unload_all()
 
@@ -132,7 +136,11 @@ class NanobeeKernel:
                 "或通过 set_agent_loop() 设置 Agent Loop。"
             )
 
-        # 通过 AgentLoop.process_direct 处理消息
+        # 连接 MCP 服务器（在消息处理前确保 MCP 工具已注册）
+        if self._agent_loop is not None:
+            await self._agent_loop._connect_mcp()
+
+        # 通过 AgentLoop._process_message 处理消息
         from nanobee.agent.loop import InboundMessage
 
         msg = InboundMessage(
@@ -166,6 +174,11 @@ class NanobeeKernel:
             **extra: 传递给 AgentLoop 的额外参数
         """
         actual_provider = provider
+
+        # 从配置中提取 mcp_servers（如果未在 extra 中指定）
+        if "mcp_servers" not in extra:
+            extra["mcp_servers"] = self.config.get("mcp_servers", {})
+
         self._agent_loop = AgentLoop.from_kernel(
             kernel=self,
             provider=actual_provider,

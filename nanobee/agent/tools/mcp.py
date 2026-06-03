@@ -15,6 +15,26 @@ logger = logging.getLogger(__name__)
 
 from nanobee.agent.tools.base import Tool
 from nanobee.agent.tools.registry import ToolRegistry
+from pydantic import BaseModel
+
+
+class MCPServerConfig(BaseModel):
+    """MCP 服务器配置模型。"""
+
+    type: str | None = None
+    url: str | None = None
+    command: str | None = None
+    args: list[str] | None = None
+    env: dict[str, str] | None = None
+    enabled_tools: list[str] | None = None
+    tool_timeout: int = 30
+    headers: dict[str, str] | None = None
+
+
+def _dict_to_mcp_config(cfg_dict: dict[str, Any]) -> MCPServerConfig:
+    """将字典转换为 MCP 服务器配置模型。"""
+    return MCPServerConfig(**cfg_dict)
+from pydantic import BaseModel
 
 # Transient connection errors that warrant a single retry.
 # These typically happen when an MCP server restarts or a network
@@ -558,7 +578,7 @@ async def connect_mcp_servers(
             await session.initialize()
 
             tools = await session.list_tools()
-            enabled_tools = set(cfg.enabled_tools)
+            enabled_tools = set(cfg.enabled_tools or ["*"])
             allow_all_tools = "*" in enabled_tools
             registered_count = 0
             matched_enabled_tools: set[str] = set()
@@ -647,7 +667,7 @@ async def connect_mcp_servers(
                     " Hint: this looks like stdio protocol pollution. Make sure the MCP server writes "
                     "only JSON-RPC to stdout and sends logs/debug output to stderr instead."
                 )
-            logger.exception("MCP server '{}': failed to connect: {}", name, hint)
+            logger.exception("MCP server '%s': failed to connect: %s", name, hint)
             with suppress(Exception):
                 await server_stack.aclose()
             return name, None
@@ -655,10 +675,13 @@ async def connect_mcp_servers(
     server_stacks: dict[str, AsyncExitStack] = {}
 
     for name, cfg in mcp_servers.items():
+        # 将字典转换为 Pydantic 模型
+        if isinstance(cfg, dict):
+            cfg = _dict_to_mcp_config(cfg)
         try:
             result = await connect_single_server(name, cfg)
         except Exception as e:
-            logger.exception("MCP server '{}' connection failed: {}", name, e)
+            logger.exception("MCP server '%s' connection failed: %s", name, e)
             continue
         if result is not None and result[1] is not None:
             server_stacks[result[0]] = result[1]

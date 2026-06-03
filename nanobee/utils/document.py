@@ -95,7 +95,7 @@ def _extract_pdf(path: Path) -> str:
             pages.append(f"--- Page {i} ---\n{text}")
         return _truncate("\n\n".join(pages), _MAX_TEXT_LENGTH)
     except Exception as e:
-        logger.exception("Failed to extract PDF {}", path)
+        logger.exception("Failed to extract PDF %s", path)
         return f"[error: failed to extract PDF: {e!s}]"
 
 
@@ -110,7 +110,7 @@ def _extract_docx(path: Path) -> str:
         paragraphs: list[str] = [p.text for p in doc.paragraphs if p.text.strip()]
         return _truncate("\n\n".join(paragraphs), _MAX_TEXT_LENGTH)
     except Exception as e:
-        logger.exception("Failed to extract DOCX {}", path)
+        logger.exception("Failed to extract DOCX %s", path)
         return f"[error: failed to extract DOCX: {e!s}]"
 
 
@@ -137,7 +137,7 @@ def _extract_xlsx(path: Path) -> str:
         finally:
             wb.close()
     except Exception as e:
-        logger.exception("Failed to extract XLSX {}", path)
+        logger.exception("Failed to extract XLSX %s", path)
         return f"[error: failed to extract XLSX: {e!s}]"
 
 
@@ -158,7 +158,7 @@ def _extract_pptx(path: Path) -> str:
                 slides.append(f"--- Slide {i} ---\n" + "\n".join(slide_text))
         return _truncate("\n\n".join(slides), _MAX_TEXT_LENGTH)
     except Exception as e:
-        logger.exception("Failed to extract PPTX {}", path)
+        logger.exception("Failed to extract PPTX %s", path)
         return f"[error: failed to extract PPTX: {e!s}]"
 
 
@@ -197,7 +197,7 @@ def _extract_text_file(path: Path) -> str:
             content = path.read_text(encoding="latin-1")
         return _truncate(content, _MAX_TEXT_LENGTH)
     except Exception as e:
-        logger.exception("Failed to read text file {}", path)
+        logger.exception("Failed to read text file %s", path)
         return f"[error: failed to read file: {e!s}]"
 
 

@@ -95,7 +95,7 @@ class CompositeHook(AgentHook):
             try:
                 await getattr(h, method_name)(*args, **kwargs)
             except Exception:
-                logger.exception("AgentHook.{} error in {}", method_name, type(h).__name__)
+                logger.exception("AgentHook.%s error in %s", method_name, type(h).__name__)
 
     async def before_iteration(self, context: AgentHookContext) -> None:
         await self._for_each_hook_safe("before_iteration", context)
