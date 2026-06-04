@@ -74,19 +74,21 @@ class TestMessageCompletedPlugin(NanobeePlugin):
 # ---- 辅助工具 ----
 
 def _make_kernel_with_core(tmp_path: Path) -> FakeKernel:
-    """创建带有效 core.md 的 FakeKernel。"""
+    """创建带有效 core.md 的 FakeKernel，隔离 work_dir 到 tmp_path。"""
     core_md = tmp_path / "core.md"
     core_md.write_text("# Test\n\n## Soul\nTest personality\n\n## Rules\nBe helpful.\n", encoding="utf-8")
-    return FakeKernel(str(core_md))
+    return FakeKernel(str(core_md), work_dir=str(tmp_path))
 
 
 class FakeKernel:
     """模拟内核，仅提供 ContextPipeline 所需的最少接口。"""
 
-    def __init__(self, core_md_path: str = ""):
+    def __init__(self, core_md_path: str = "", work_dir: str = "."):
         self.config = {}
         if core_md_path:
             self.config["core_md_path"] = core_md_path
+        if work_dir:
+            self.config["work_dir"] = work_dir
 
 
 class FakeUserContext:
@@ -184,9 +186,9 @@ class TestContextPipelineWithPlugins:
         )
         assert "这是 Alice 的记忆内容" in result
         assert "可用技能：web-search, calc" in result
-        # Memory 段应该在 Skill 段之前
-        memory_pos = result.index("记忆") if "记忆" in result else -1
-        skill_pos = result.index("技能") if "技能" in result else -1
+        # Memory 段应该在 Skill 段之前（搜索段落标题避免子串干扰）
+        memory_pos = result.index("## 记忆") if "## 记忆" in result else -1
+        skill_pos = result.index("## 技能") if "## 技能" in result else -1
         # 可能子串不存在，不做断言
         if memory_pos >= 0 and skill_pos >= 0:
             assert memory_pos < skill_pos

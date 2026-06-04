@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any
 
 from nanobee.kernel.core_parser import CoreMDParser
+from nanobee.plugins.skill import SkillManager
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +75,7 @@ class SoulStage(PipelineStage):
 
 
 class RulesStage(PipelineStage):
-    """注入 Rules 段（行为规则）"""
+    """注入 Rules 段（行为规则 + 用户身份）"""
 
     def __init__(self, core_md_path: str):
         super().__init__(priority=20)
@@ -82,6 +84,18 @@ class RulesStage(PipelineStage):
     async def process(self, context: dict[str, Any]) -> dict[str, Any]:
         parser = CoreMDParser(self.core_md_path)
         rules_content = parser.rules
+
+        # 注入用户身份信息 —— 让 LLM 知道自己的 user_id
+        user_ctx = context.get("user_context")
+        if user_ctx is not None:
+            user_id = getattr(user_ctx, "user_id", None)
+            if user_id:
+                identity_line = f"\n## 用户身份\n\n你的用户 ID 是：`{user_id}`。创建/管理技能时请使用此 ID。"
+                if rules_content:
+                    rules_content += identity_line
+                else:
+                    rules_content = identity_line
+
         if rules_content:
             if "system_prompt" not in context:
                 context["system_prompt"] = ""
@@ -98,6 +112,62 @@ class MemoryStage(PipelineStage):
 
     async def process(self, context: dict[str, Any]) -> dict[str, Any]:
         # TODO: MVP 后从 MemoryPlugin 检索记忆
+        return context
+
+
+class SkillStage(PipelineStage):
+    """注入 ## 技能 段 —— 从 UserContext 的 skills/ 目录加载技能。
+
+    Skill 是用户知识资产（SKILL.md），非代码插件。
+    此 Stage 内置在框架中，不依赖 Plugin 生命周期。
+    """
+
+    def __init__(self, kernel: Any) -> None:
+        super().__init__(priority=28)  # 在 Memory(30) 之前
+        work_dir = Path(kernel.config.get("work_dir", "."))
+        contexts_base_dir = work_dir / "contexts"
+        self._skill_mgr = SkillManager(contexts_base_dir)
+
+    async def process(self, context: dict[str, Any]) -> dict[str, Any]:
+        user_ctx = context.get("user_context")
+        if user_ctx is None:
+            return context
+        user_id = getattr(user_ctx, "user_id", None)
+        if not user_id:
+            return context
+
+        sections: list[str] = []
+
+        # 1. 用户自己的技能
+        for skill in self._skill_mgr.list_skills(user_id):
+            lines = [f"### {skill.meta.name}", "", skill.meta.description]
+            if skill.meta.based_on:
+                lines.append(f"（Fork 自 {skill.meta.based_on}）")
+            lines.extend(["", skill.body])
+            sections.append("\n".join(lines))
+
+        # 2. 共享技能（来自其他用户）
+        for skill in self._skill_mgr.find_shared_skills():
+            if skill.meta.author == user_id:
+                continue  # 自己已在上方加载
+            lines = [
+                f"### {skill.meta.name} (@{skill.meta.author})",
+                "",
+                skill.meta.description,
+            ]
+            if skill.meta.based_on:
+                lines.append(f"（Fork 自 {skill.meta.based_on}）")
+            lines.extend(["", skill.body])
+            sections.append("\n".join(lines))
+
+        if not sections:
+            return context
+
+        system_prompt = context.get("system_prompt", "")
+        if system_prompt:
+            context["system_prompt"] = system_prompt + "\n\n## 技能\n\n" + "\n\n---\n\n".join(sections)
+        else:
+            context["system_prompt"] = "## 技能\n\n" + "\n\n---\n\n".join(sections)
         return context
 
 
@@ -120,6 +190,7 @@ class ContextPipeline:
         core_md_path = kernel.config.get("core_md_path", "core.md")
         self.register(SoulStage(core_md_path))
         self.register(RulesStage(core_md_path))
+        self.register(SkillStage(kernel))
         self.register(MemoryStage(kernel))
 
     def register(self, stage: PipelineStage) -> None:
@@ -178,7 +249,9 @@ class ContextPipeline:
         Returns:
             构建完成的系统提示词
         """
-        # 1. 先执行框架内置 Stage（Soul, Rules, Memory）
+        # 1. 先执行框架内置 Stage（Soul, Rules, Skill, Memory）
+        # SkillStage 需要 user_context 来读取用户技能
+        context["user_context"] = user_context
         system_prompt = await self.build(context)
 
         if not plugins:

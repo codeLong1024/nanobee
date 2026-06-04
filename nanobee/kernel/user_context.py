@@ -67,6 +67,7 @@ class ConversationContext:
         self.base_dir = base_dir
         self.work_dir = base_dir / "work"
         self.memory_dir = base_dir / "memory"
+        self.skills_dir = base_dir / "skills"
         self.history_file = base_dir / "history.jsonl"
 
         # 创建目录结构

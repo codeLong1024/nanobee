@@ -171,17 +171,23 @@ class NanobeeKernel:
         self._booted = False
         logger.info("Nanobee 内核已关闭")
 
-    async def handle_message(self, message: str, context_id: str = "default") -> str:
+    async def handle_message(
+        self,
+        message: str,
+        context_id: str = "default",
+        sender_id: str = "user",
+    ) -> str:
         """处理用户消息（阻塞式，无流式回调）。
 
         Args:
             message: 用户消息
             context_id: 上下文 ID
+            sender_id: 发送者 ID，作为 context 目录标识
 
         Returns:
             Agent 回复
         """
-        return await self._handle_message_impl(message, context_id)
+        return await self._handle_message_impl(message, context_id, sender_id=sender_id)
 
     async def handle_message_streaming(
         self,
@@ -190,6 +196,7 @@ class NanobeeKernel:
         *,
         on_stream: Any = None,
         on_stream_end: Any = None,
+        sender_id: str = "user",
     ) -> str:
         """处理用户消息（支持流式回调）。
 
@@ -201,12 +208,15 @@ class NanobeeKernel:
             context_id: 上下文 ID
             on_stream: 每段文本增量回调，签名 async (delta: str) -> None
             on_stream_end: 流结束回调，签名 async (*, resuming: bool) -> None
+            sender_id: 发送者 ID，作为 context 目录标识
 
         Returns:
             Agent 回复（完整文本）
         """
         hook = _StreamHook(on_stream=on_stream, on_stream_end=on_stream_end)
-        return await self._handle_message_impl(message, context_id, extra_hook=hook)
+        return await self._handle_message_impl(
+            message, context_id, extra_hook=hook, sender_id=sender_id,
+        )
 
     async def _handle_message_impl(
         self,
@@ -214,6 +224,7 @@ class NanobeeKernel:
         context_id: str,
         *,
         extra_hook: Any = None,
+        sender_id: str = "user",
     ) -> str:
         """处理用户消息的公共实现。
 
@@ -221,6 +232,7 @@ class NanobeeKernel:
             message: 用户消息
             context_id: 上下文 ID
             extra_hook: 可选的流式 Hook，桥接到 AgentLoop 的流式系统
+            sender_id: 发送者 ID，作为 context 目录标识
 
         Returns:
             Agent 回复
@@ -241,7 +253,7 @@ class NanobeeKernel:
 
         msg = InboundMessage(
             channel="direct",
-            sender_id="user",
+            sender_id=sender_id,
             chat_id=context_id,
             content=message,
         )
@@ -249,8 +261,10 @@ class NanobeeKernel:
         if extra_hook is not None:
             self._agent_loop._extra_hooks.append(extra_hook)
 
+        # 不传入 context_id 参数,让 _process_message 使用 msg.context_id
+        # 这样可以确保使用 sender_id 作为唯一标识(参考 nanobot 设计)
         try:
-            response = await self._agent_loop._process_message(msg, context_id=context_id)
+            response = await self._agent_loop._process_message(msg)
         finally:
             if extra_hook is not None and extra_hook in self._agent_loop._extra_hooks:
                 self._agent_loop._extra_hooks.remove(extra_hook)

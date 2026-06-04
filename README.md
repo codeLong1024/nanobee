@@ -29,8 +29,9 @@
 🔧 Phase 2 Hook 机制          ✅ 完成（17 测试）
 🔧 Phase 3 参考插件            ✅ 完成（18 测试）
 🔧 Phase 4 工具插件            ✅ 完成（21 测试）
+🔧 Skill 数据模型与管理器      ✅ 完成（31 测试）
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-总计 169 测试全部通过
+总计 200 测试全部通过
 ```
 
 ### 已完成功能
@@ -39,7 +40,8 @@
 - **Agent 循环** — 完整状态机驱动（RESTORE → BUILD → RUN → SAVE → RESPOND）
 - **多租户隔离内核** — LockManager 并发锁、UserContext 元数据、ContextRouter 路由、ContextSandbox 沙箱、ToolCollector 过滤
 - **Plugin Hook 机制** — 5 个核心契约接口，插件可在关键切面注入逻辑
-3 个参考插件（memory_echo / skill_static / audit_logger）端到端验证
+2 个参考插件（memory_echo / audit_logger）端到端验证
+- **技能管理** — Skill 数据模型 + SkillManager，用户通过对话创建/编辑/删除技能
 - **上下文管理** — 按用户物理隔离的目录结构与上下文元数据
 - **灵魂守卫** — 三层保护（chmod 444 + 写入拦截 + SHA-256）
 - **插件管理器** — 扫描、加载、启用/禁用生命周期
@@ -58,7 +60,6 @@
 | `tool_web` | Tool | ✅ | Web 工具（web_search, web_fetch） |
 | `memory_file` | Memory | ✅ | JSONL 文件记忆存储 |
 | `memory_echo` | Echo | ✅ | Phase 3 参考：读取 memory.txt 注入记忆段 |
-| `skill_static` | Echo | ✅ | Phase 3 参考：读取 skills.md 注入技能段 |
 | `audit_logger` | Audit | ✅ | Phase 3 参考：on_message_completed 审计日志 |
 | `channel_http` | Channel | 🚧 | HTTP 通道（待完善） |
 
@@ -124,13 +125,14 @@ ChannelPlugin ──▶ EventBus ──▶ NanobeeKernel
 
 ```
 [P0]  Soul 段     ← core.md Soul 节（框架内置）
-[P10] 记忆段       ← 遍历插件 contribute_to_prompt → stage="记忆"
-[P20] 技能段       ← 遍历插件 contribute_to_prompt → stage="技能"
-[P30] 知识库段     ← 遍历插件 contribute_to_prompt → stage="知识库"
+[P28] 技能段       ← SkillStage：从 skills/ 目录读取用户技能文档注入
+[P30] 记忆段       ← 遍历插件 contribute_to_prompt → stage="记忆"
 [P40] Rules 段     ← core.md Rules 节 + 用户隔离铁律（框架内置）
 ```
 
 每个段有内容才注入，无内容跳过。框架只做**拼装**，不做任何业务理解。
+
+技能不再是插件 —— 技能是**用户知识资产**（SKILL.md 文件），由用户通过 `create_skill` / `fork_skill` 等工具在对话中创建和管理。
 
 ## 插件开发
 
@@ -190,7 +192,8 @@ python -m pytest tests/ --cov=nanobee --cov-report=term-missing
 | `test_tool_fs.py` | 21 | 文件系统工具（read/write/edit/list） |
 | `test_phase1_acceptance.py` | 9 | 多租户隔离验收 |
 | `test_phase2_acceptance.py` | 17 | Hook 机制验收 |
-| `test_phase3_acceptance.py` | 18 | 参考插件验收 |
+| `test_phase3_acceptance.py` | 18 | 参考插件 + SkillStage 验收 |
+| `test_skill.py` | 31 | Skill 数据模型 / 管理器 |
 
 ## 目录结构
 
@@ -206,7 +209,6 @@ nanobee/
 │   ├── channel_http/    # HTTP 通道 🚧
 │   ├── memory_echo/     # 记忆回显参考插件
 │   ├── memory_file/     # JSONL 记忆存储
-│   ├── skill_static/    # 静态技能参考插件
 │   ├── tool_echo/       # 回显测试工具
 │   ├── tool_fs/         # 文件系统工具
 │   ├── tool_shell/      # Shell 命令工具
@@ -229,10 +231,8 @@ nanobee/
 │   ├── hook_mixin.py    # PluginHookMixin（Hook 契约文档）
 │   ├── channel.py       # ChannelPlugin 接口
 │   ├── memory.py        # MemoryPlugin 接口
-│   ├── skill.py         # SkillPlugin 接口
+│   ├── skill.py         # Skill 数据模型 + SkillManager（用户知识资产）
 │   ├── tool.py          # ToolPlugin 接口
-│   ├── dream.py         # DreamPlugin 接口
-│   └── knowledge.py     # KnowledgePlugin 接口
 ├── providers/           # LLM 提供商实现
 ├── security/            # 安全策略（占位）
 ├── templates/           # 模板文件

@@ -65,8 +65,21 @@ class InboundMessage:
 
     @property
     def context_id(self) -> str:
-        """获取上下文 ID。"""
-        return self.context_id_override or f"{self.channel}:{self.chat_id}"
+        """获取上下文 ID。
+
+        优先级:
+        1. context_id_override 显式指定
+        2. sender_id (用户唯一标识,如钉钉 staffId)
+        3. channel:chat_id (兜底兼容)
+
+        参考 nanobot_channel_dingtalk 的设计,使用 sender_id 作为唯一标识,
+        避免创建重复的 contexts 目录。
+        """
+        if self.context_id_override:
+            return self.context_id_override
+        if self.sender_id:
+            return self.sender_id
+        return f"{self.channel}:{self.chat_id}"
 
 
 # 出站消息数据类
@@ -238,6 +251,7 @@ class AgentLoop:
         self._pending_queues: dict[str, asyncio.Queue] = {}
 
         self._register_plugin_tools()
+        self._register_skill_tools()
         self._current_iteration: int = 0
 
     @classmethod
@@ -284,7 +298,29 @@ class AgentLoop:
                 logger.exception("注册工具插件 %s 失败", getattr(plugin, "name", "unknown"))
         logger.info("注册了 %s 个工具插件: %s", len(registered), registered)
 
-    # ---- Phase 2: 插件 Hook 集成 ----
+    def _register_skill_tools(self) -> None:
+        """注册技能管理工具（不依赖插件系统，直接操作 SKILL.md）。
+
+        这些工具让用户通过对话创建/编辑/删除自己的技能。
+        """
+        if self.context_manager is None:
+            return
+        from nanobee.agent.tools.skill_manager import (
+            CreateSkillTool, DeleteSkillTool, ForkSkillTool,
+            ListSkillsTool, UpdateSkillTool,
+        )
+        from nanobee.plugins.skill import SkillManager
+
+        skill_mgr = SkillManager(self.context_manager.contexts_base_dir)
+        for tool in [
+            CreateSkillTool(skill_mgr),
+            ListSkillsTool(skill_mgr),
+            UpdateSkillTool(skill_mgr),
+            DeleteSkillTool(skill_mgr),
+            ForkSkillTool(skill_mgr),
+        ]:
+            self.tools.register(tool)
+        logger.info("技能管理工具已注册")
 
     def _get_enabled_plugins(self) -> list[Any]:
         """获取所有已启用的插件。"""
@@ -618,8 +654,13 @@ class AgentLoop:
         raise NotImplementedError("子类或集成层需要实现此方法")
 
     async def _dispatch(self, msg: InboundMessage) -> None:
-        """处理消息：同用户串行，跨用户并行。"""
-        context_id = self._effective_context_id(msg)
+        """处理消息：同用户串行，跨用户并行。
+
+        使用 msg.sender_id 作为 context_id (用户唯一标识),
+        参考 nanobot_channel_dingtalk 的设计,避免创建重复目录。
+        """
+        # 优先使用 sender_id 作为 context_id
+        context_id = msg.sender_id or self._effective_context_id(msg)
 
         # 注册待处理队列
         pending = asyncio.Queue(maxsize=20)

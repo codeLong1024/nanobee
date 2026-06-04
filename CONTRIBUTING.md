@@ -368,9 +368,7 @@ nanobee plugin create my-plugin
 | ChannelPlugin | `nanobee.plugins.channel.ChannelPlugin` | 通信渠道（CLI、HTTP、Telegram 等） |
 | ToolPlugin | `nanobee.plugins.tool.ToolPlugin` | 工具调用（文件、Shell、Web 等） |
 | MemoryPlugin | `nanobee.plugins.memory.MemoryPlugin` | 记忆存储（文件、数据库、Redis 等） |
-| SkillPlugin | `nanobee.plugins.skill.SkillPlugin` | 技能定义 |
-| KnowledgePlugin | `nanobee.plugins.knowledge.KnowledgePlugin` | 知识库查询 |
-| DreamPlugin | `nanobee.plugins.dream.DreamPlugin` | 后台梦境任务 |
+| Skill | `nanobee.plugins.skill.SkillManager` | 用户知识资产（SKILL.md 文档，非插件） |
 
 详见 [README.md#插件开发](README.md#插件开发) 中的完整示例。
 
