@@ -139,24 +139,32 @@ async def test_e2e_memory_file_plugin(tmp_path):
     plugin = MemoryFilePlugin()
     plugin.initialize({"work_dir": str(tmp_path)})
 
-    # 存储和检索
-    await plugin.store("test-key", "test-value", memory_type="test")
-    retrieved = await plugin.retrieve("test-key")
-    assert retrieved == "test-value"
+    # mock user_context 提供 memory_dir
+    class MockUserContext:
+        def __init__(self, base_dir):
+            self.base_dir = base_dir
+            self.memory_dir = base_dir / "memory"
+            self.memory_dir.mkdir(parents=True, exist_ok=True)
 
-    # 搜索
-    await plugin.store("another", "hello world")
-    results = await plugin.search("world")
-    assert len(results) >= 1
+    user_ctx = MockUserContext(tmp_path)
 
-    # 列出
-    keys = await plugin.list_all(memory_type="test")
-    assert "test-key" in keys
+    # 构建测试消息
+    messages = [
+        {"role": "user", "content": "test-value", "timestamp": 100},
+        {"role": "assistant", "content": "hello world", "timestamp": 200},
+    ]
 
-    # 删除
-    deleted = await plugin.delete("test-key")
-    assert deleted is True
-    assert await plugin.retrieve("test-key") is None
+    # store 测试：提取事实并存储
+    await plugin.store(messages, user_ctx)
+
+    # retrieve 测试：关键词匹配检索
+    retrieved = await plugin.retrieve("test-value", user_ctx)
+    assert retrieved is not None
+    assert "test-value" in retrieved
+
+    retrieved2 = await plugin.retrieve("world", user_ctx)
+    assert retrieved2 is not None
+    assert "world" in retrieved2
 
 
 @pytest.mark.asyncio

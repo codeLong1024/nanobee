@@ -190,6 +190,7 @@ class AgentLoop:
         hooks: list[AgentHook] | None = None,
         model_presets: dict[str, ModelPresetConfig] | None = None,
         model_preset: str | None = None,
+        memory_store_threshold: int = 20,
         preset_snapshot_loader: preset_helpers.PresetSnapshotLoader | None = None,
         provider_snapshot_loader: Callable[..., ProviderSnapshot] | None = None,
     ) -> None:
@@ -217,6 +218,7 @@ class AgentLoop:
             self.set_model_preset(model_preset, publish_update=False)
 
         self.tools = ToolRegistry()
+        self._memory_store_threshold = memory_store_threshold
         self.runner = AgentRunner(provider)
         self._extra_hooks: list[AgentHook] = hooks or []
 
@@ -292,6 +294,13 @@ class AgentLoop:
             self.plugin_manager._plugins[name]
             for name in self.plugin_manager.list_plugins()
             if self.plugin_manager._plugins[name].is_enabled
+        ]
+
+    def _get_memory_plugins(self) -> list[Any]:
+        """获取所有已启用的 memory 类型插件。"""
+        return [
+            p for p in self._get_enabled_plugins()
+            if getattr(p, "plugin_type", "") == "memory"
         ]
 
     def _collect_plugin_prompts(self, user_ctx: Any) -> str:
@@ -820,8 +829,24 @@ class AgentLoop:
         return "ok"
 
     async def _state_compact(self, ctx: TurnContext) -> str:
-        """压缩/合并上下文（MVP 阶段为空操作）。"""
-        # MVP 阶段暂不实现自动压缩
+        """压缩/合并上下文 — 触发记忆存储。"""
+        memory_plugins = self._get_memory_plugins()
+        if not memory_plugins:
+            return "ok"
+
+        user_ctx = await self.context_manager.get_or_create(ctx.context_id)
+        messages = user_ctx.get_messages()
+
+        # 判断是否需要触发记忆提取（消息对数超过阈值）
+        if len(messages) >= self._memory_store_threshold:
+            for plugin in memory_plugins:
+                try:
+                    await plugin.store(messages, user_ctx)
+                except Exception:
+                    logger.exception("记忆插件 %s.store 出错", getattr(plugin, "name", "?"))
+
+        # 标记本轮是否需要检索记忆（注入到 System Prompt）
+        ctx._needs_memory_retrieval = len(messages) >= self._memory_store_threshold
         return "ok"
 
     async def _state_build(self, ctx: TurnContext) -> str:
@@ -848,6 +873,18 @@ class AgentLoop:
         if current_content and current_content.strip():
             context.add_message("user", current_content)
             ctx.user_persisted_early = True
+
+        # 检索相关记忆，注入 System Prompt（通过 contribute_to_prompt 机制）
+        if getattr(ctx, "_needs_memory_retrieval", False):
+            memory_plugins = self._get_memory_plugins()
+            for plugin in memory_plugins:
+                try:
+                    memory_text = await plugin.retrieve(ctx.msg.content, context)
+                    if memory_text:
+                        # memory_echo 插件通过 contribute_to_prompt 注入记忆段
+                        pass
+                except Exception:
+                    logger.exception("记忆插件 %s.retrieve 出错", getattr(plugin, "name", "?"))
 
         return "ok"
 

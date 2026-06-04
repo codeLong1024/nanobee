@@ -16,6 +16,8 @@ agents:
     context_window_tokens: 65536
     # 温度参数（0-1，越高越随机）
     temperature: 0.1
+    # 记忆存储阈值（消息对数，超过此值时触发记忆提取与检索）
+    # memory_store_threshold: 20
 
 # Provider 配置
 providers:

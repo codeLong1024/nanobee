@@ -285,6 +285,12 @@ class NanobeeKernel:
         # 从配置中提取 mcp_servers（如果未在 extra 中指定）
         if "mcp_servers" not in extra:
             extra["mcp_servers"] = self.config.get("mcp_servers", {})
+        # 从配置中提取 memory_store_threshold（如果未在 extra 中指定）
+        if "memory_store_threshold" not in extra:
+            agents_config = self.config.get("agents", {})
+            defaults = agents_config.get("defaults", {}) if isinstance(agents_config, dict) else {}
+            memory_val = defaults.get("memory_store_threshold", 20)
+            extra["memory_store_threshold"] = int(memory_val)
 
         self._agent_loop = AgentLoop.from_kernel(
             kernel=self,
