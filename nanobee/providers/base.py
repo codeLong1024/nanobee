@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import random
 import re
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
@@ -781,6 +782,9 @@ class LLMProvider(ABC):
 
             base_delay = delays[min(attempt - 1, len(delays) - 1)]
             delay = self._extract_retry_after_from_response(response) or base_delay
+            # 添加随机 jitter：±25% 的随机抖动，避免 thundering herd
+            jitter = random.uniform(-delay * 0.25, delay * 0.25)
+            delay = max(0.1, delay + jitter)
             if persistent:
                 delay = min(delay, self._PERSISTENT_MAX_DELAY)
 

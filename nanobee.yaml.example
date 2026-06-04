@@ -1,10 +1,10 @@
 # Nanobee 配置文件示例
 # 复制此文件为 nanobee.yaml 并填入你的 API 密钥
 
-# 插件目录（相对于工作目录）
-plugin_dirs:
-  - nanobee/builtin
-  - plugins
+# 插件目录（相对于工作目录，建议使用绝对路径或相对于 ~/.nanobee 的路径）
+# 内置插件会自动加载，无需手动配置
+# plugin_dirs:
+#   - ~/.nanobee/plugins
 
 agents:
   defaults:

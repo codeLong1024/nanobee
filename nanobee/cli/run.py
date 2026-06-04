@@ -14,6 +14,7 @@ import click
 from nanobee.config.loader import load_config
 from nanobee.kernel import NanobeeKernel
 from nanobee.providers.factory import make_provider
+from nanobee.utils.observability import setup_structured_logging
 
 logger = logging.getLogger(__name__)
 
@@ -38,10 +39,9 @@ logger = logging.getLogger(__name__)
 )
 def run(config: str | None, plugin_dir: str | None, verbose: bool) -> None:
     """启动 Agent 会话"""
-    if verbose:
-        logging.basicConfig(level=logging.DEBUG)
-    else:
-        logging.basicConfig(level=logging.WARNING)
+    log_level = logging.DEBUG if verbose else logging.WARNING
+    setup_structured_logging(level=log_level)
+    logger.debug("CLI run 命令已启动，verbose=%s", verbose)
 
     # 自动发现配置文件：未指定时查找工作目录下的 nanobee.yaml
     config_path: Path | None

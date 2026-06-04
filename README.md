@@ -212,7 +212,8 @@ nanobee/
 ├── cli/                 # 命令行入口
 ├── config/              # 配置加载与 Schema
 ├── kernel/              # 微内核核心
-│   ├── __init__.py      # NanobeeKernel
+│   ├── __init__.py      # 统一导出
+│   ├── kernel.py        # NanobeeKernel
 │   ├── context_manager.py  # 上下文管理器
 │   ├── context_pipeline.py # 提示词构建管道
 │   ├── lock_manager.py     # 按用户并发锁

@@ -95,7 +95,12 @@ class ContextManager:
         # 安全检查：只允许删除 contexts_base_dir 下的子目录
         base_dir = ctx.base_dir.resolve()
         allowed = self.contexts_base_dir.resolve()
-        if not str(base_dir).startswith(str(allowed) + "/") and base_dir != allowed:
+        try:
+            base_dir.relative_to(allowed)
+            if base_dir == allowed:
+                logger.error("安全拦截：不允许删除 contexts 根目录: %s", base_dir)
+                return False
+        except ValueError:
             logger.error(
                 "安全拦截：base_dir %s 不在允许的 %s 下",
                 base_dir, allowed,

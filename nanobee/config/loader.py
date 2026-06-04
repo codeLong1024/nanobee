@@ -63,6 +63,7 @@ def load_config(config_path: Path | None = None) -> Config:
     providers = {
         name: AgentProviderConfig(**provider_data)
         for name, provider_data in providers_raw.items()
+        if isinstance(provider_data, dict)
     }
 
     # 将 model_presets 展开
@@ -70,6 +71,7 @@ def load_config(config_path: Path | None = None) -> Config:
     presets = {
         name: ModelPresetConfig(**preset_data)
         for name, preset_data in presets_raw.items()
+        if isinstance(preset_data, dict)
     }
 
     config = Config(**raw)

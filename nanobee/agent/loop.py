@@ -28,6 +28,7 @@ from nanobee.agent.runner import _MAX_INJECTIONS_PER_TURN, AgentRunner, AgentRun
 from nanobee.agent.tools.registry import ToolRegistry, ToolPluginAdapter
 from nanobee.providers.base import LLMProvider
 from nanobee.providers.factory import ProviderSnapshot
+from nanobee.utils.observability import generate_trace_id, set_trace_id
 from nanobee.utils.document import extract_documents
 from nanobee.utils.helpers import (
     build_assistant_message,
@@ -135,6 +136,7 @@ class TurnContext:
     turn_wall_started_at: float = field(default_factory=time.time)
     turn_latency_ms: int | None = None
 
+    trace_id: str = field(default_factory=generate_trace_id)
     trace: list[StateTraceEntry] = field(default_factory=list)
 
 
@@ -456,6 +458,7 @@ class AgentLoop:
         initial_messages: list[dict],
         *,
         context_id: str,
+        trace_id: str | None = None,
         sandbox: Any | None = None,
         filtered_tool_names: list[str] | None = None,
         on_progress: Callable[..., Awaitable[None]] | None = None,
@@ -521,6 +524,7 @@ class AgentLoop:
             concurrent_tools=True,
             workspace=self.workspace,
             context_id=context_id,
+            trace_id=trace_id or generate_trace_id(),
             context_window_tokens=self.context_window_tokens,
             context_block_limit=self.context_block_limit,
             provider_retry_mode=self.provider_retry_mode,
@@ -748,6 +752,8 @@ class AgentLoop:
             on_stream_end=on_stream_end,
             pending_queue=pending_queue,
         )
+        # 设置当前协程的 Trace ID，贯穿整个处理链路
+        set_trace_id(ctx.trace_id)
 
         # 状态机驱动循环
         while ctx.state is not TurnState.DONE:
@@ -884,6 +890,7 @@ class AgentLoop:
         result = await self._run_agent_loop(
             ctx.initial_messages,
             context_id=ctx.context_id,
+            trace_id=ctx.trace_id,
             sandbox=sandbox,
             filtered_tool_names=filtered_tool_names,
             on_progress=ctx.on_progress,

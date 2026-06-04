@@ -13,18 +13,23 @@ from typing import Any, Type
 import toml
 
 from nanobee.plugins.base import NanobeePlugin, PluginMetadata
-from nanobee.channel.base import ChannelPlugin
 from nanobee.plugins.memory import MemoryPlugin
 from nanobee.plugins.tool import ToolPlugin
 
 logger = logging.getLogger(__name__)
 
-# 插件类型 → 接口类的映射
-PLUGIN_TYPE_MAP: dict[str, Type[NanobeePlugin]] = {
-    "tool": ToolPlugin,
-    "channel": ChannelPlugin,
-    "memory": MemoryPlugin,
-}
+
+def _resolve_plugin_base(plugin_type: str) -> type[NanobeePlugin]:
+    """惰性加载插件基类，避免 module-level 循环导入。"""
+    _MAP: dict[str, type[NanobeePlugin]] = {
+        "tool": ToolPlugin,
+        "memory": MemoryPlugin,
+    }
+    if plugin_type in _MAP:
+        return _MAP[plugin_type]
+    # 延迟加载 ChannelPlugin 以避免 channel.base → kernel → agent.loop → plugin_manager 环路
+    from nanobee.channel.base import ChannelPlugin  # type: ignore[import-untyped]
+    return ChannelPlugin
 
 
 class PluginDescriptor:
@@ -151,7 +156,11 @@ class PluginManager:
             return None
 
         try:
-            module_name = f"nanobee.plugins.{name}"
+            # 从插件目录路径派生出唯一的模块名，避免硬编码
+            relative_plugin_dir = descriptor.plugin_dir.resolve()
+            sanitized = "_".join(relative_plugin_dir.parts[-3:]) if len(relative_plugin_dir.parts) >= 3 \
+                        else "_".join(relative_plugin_dir.parts)
+            module_name = f"_nanobee_plugins.{sanitized}.{name}"
             spec = importlib.util.spec_from_file_location(module_name, main_module)
             if spec is None or spec.loader is None:
                 logger.error("插件 %s 的文件无法加载为 Python 模块: %s", name, main_module)
@@ -181,7 +190,7 @@ class PluginManager:
 
     def _find_plugin_class(self, module: Any, plugin_type: str) -> Type[NanobeePlugin] | None:
         """在模块中查找插件类"""
-        expected_base = PLUGIN_TYPE_MAP.get(plugin_type, NanobeePlugin)
+        expected_base = _resolve_plugin_base(plugin_type)
         for attr_name in dir(module):
             attr = getattr(module, attr_name)
             if (
@@ -220,7 +229,7 @@ class PluginManager:
 
     def get_by_type(self, plugin_type: str) -> list[NanobeePlugin]:
         """按类型获取插件列表"""
-        expected_base = PLUGIN_TYPE_MAP.get(plugin_type, NanobeePlugin)
+        expected_base = _resolve_plugin_base(plugin_type)
         return [p for p in self._plugins.values() if isinstance(p, expected_base)]
 
     def list_plugins(self) -> list[str]:

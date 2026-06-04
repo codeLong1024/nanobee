@@ -93,6 +93,7 @@ class AgentRunSpec:
     fail_on_tool_error: bool = False
     workspace: Path | None = None
     context_id: str | None = None
+    trace_id: str | None = None
     context_window_tokens: int | None = None
     context_block_limit: int | None = None
     provider_retry_mode: str = "standard"

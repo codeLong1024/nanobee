@@ -51,6 +51,14 @@ class SoulGuard:
 
         # Layer 3：哈希校验
         current_hash = self._compute_hash()
+        hash_file = self.core_md_path.with_suffix(self.core_md_path.suffix + ".sha256")
+
+        if hash_file.exists():
+            with open(hash_file, "r", encoding="utf-8") as hf:
+                self._expected_hash = hf.read().strip()
+        else:
+            self._expected_hash = None
+
         if self._expected_hash is not None and current_hash != self._expected_hash:
             raise SoulViolationError(
                 f"灵魂文件哈希校验失败！\n"
@@ -59,8 +67,10 @@ class SoulGuard:
                 f"文件可能已被篡改: {self.core_md_path}"
             )
 
-        # 保存当前哈希
+        # 持久化当前哈希
         self._expected_hash = current_hash
+        with open(hash_file, "w", encoding="utf-8") as hf:
+            hf.write(current_hash)
         logger.info("灵魂文件校验通过（哈希: %s...）", current_hash[:16])
 
         # Layer 1：设置文件权限

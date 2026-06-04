@@ -25,8 +25,10 @@ def _map_plugin_stage(plugin: Any) -> str:
     stage = getattr(plugin, "stage", None)
     if stage:
         return f"## {stage}"
-    plugin_type = getattr(plugin, "plugin_type", "unknown") or \
-                  getattr(getattr(plugin, "metadata", None), "plugin_type", "unknown")
+    plugin_type = getattr(plugin, "plugin_type", None)
+    if plugin_type is None:
+        meta = getattr(plugin, "metadata", None)
+        plugin_type = getattr(meta, "plugin_type", "unknown") if meta is not None else "unknown"
     return _PLUGIN_TYPE_STAGE_MAP.get(plugin_type, f"## {plugin_type}")
 
 
