@@ -74,6 +74,19 @@ _BACKFILL_CONTENT = "[Tool result unavailable — call was interrupted or lost]"
 prepare_file_edit_tracker = _prepare_file_edit_tracker
 
 
+def _inject_sandbox_to_plugin(tool: Any, sandbox: Any) -> None:
+    """将 user-context 沙箱注入到插件工具实例中
+
+    确保插件在内部路径校验时也能感知用户上下文边界。
+    按请求注入，不改变插件生命周期。
+    """
+    if hasattr(tool, "_plugin") and hasattr(tool._plugin, "sandbox"):
+        try:
+            tool._plugin.sandbox = sandbox
+        except Exception:
+            logger.debug("无法注入沙箱到插件 %s", getattr(tool._plugin, "name", "?"))
+
+
 @dataclass(slots=True)
 class AgentRunSpec:
     """Agent 单次执行的配置。"""
@@ -902,6 +915,10 @@ class AgentRunner:
                     "detail": f"sandbox: {e}",
                 }
                 return str(e) + hint, event, None
+
+        # 防御纵深层：注入 user-context 沙箱到插件工具
+        if spec.sandbox is not None:
+            _inject_sandbox_to_plugin(tool, spec.sandbox)
 
         # Plugin Hook: on_pre_invoke — 工具执行前拦截
         if spec.plugin_hooks and isinstance(params, dict):

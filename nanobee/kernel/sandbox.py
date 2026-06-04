@@ -14,11 +14,14 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# 包含路径的工具参数名
+# 包含路径的工具参数名（working_dir 特殊处理：只解析不拦截，拦截由 L2 工具层处理）
 _PATH_PARAM_KEYS: frozenset[str] = frozenset({
     "path", "file_path", "directory", "dir", "target_path",
     "source", "destination", "src", "dst", "working_dir",
 })
+
+# working_dir 类参数名 — 只解析为绝对路径，不做沙箱拦截
+_WORKING_DIR_KEYS: frozenset[str] = frozenset({"working_dir"})
 
 
 class SandboxError(PermissionError):
@@ -96,6 +99,8 @@ class ContextSandbox:
         """清洗工具参数中的路径，确保所有路径都在沙箱内
 
         对参数中所有已知的路径字段执行 resolve_safe 校验。
+        working_dir 参数特殊处理：只解析为绝对路径，不做沙箱拦截
+        （拦截由 L2 工具层处理，因为 working_dir 可能指向项目根）。
 
         Args:
             tool_name: 工具名称（用于日志）
@@ -112,7 +117,13 @@ class ContextSandbox:
 
         cleaned: dict[str, Any] = {}
         for key, value in params.items():
-            if key in _PATH_PARAM_KEYS and isinstance(value, str):
+            if key in _WORKING_DIR_KEYS and isinstance(value, str):
+                # working_dir 只解析为绝对路径，不做沙箱拦截
+                try:
+                    cleaned[key] = str(Path(value).resolve())
+                except Exception:
+                    cleaned[key] = value
+            elif key in _PATH_PARAM_KEYS and isinstance(value, str):
                 safe_path = self.resolve_safe(value)
                 cleaned[key] = str(safe_path)
             else:

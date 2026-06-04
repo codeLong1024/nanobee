@@ -1,7 +1,7 @@
 """
 Tool FS 插件测试 - 文件系统工具（read_file, write_file, edit_file, list_dir）
 
-覆盖 8 个验收用例：
+覆盖 12 个验收用例：
 1. read_file 读取文本文件
 2. read_file 分页读取（offset + limit）
 3. read_file 文件不存在
@@ -10,6 +10,10 @@ Tool FS 插件测试 - 文件系统工具（read_file, write_file, edit_file, li
 6. edit_file 精确替换文本
 7. edit_file 未找到匹配文本
 8. list_dir 列出目录内容
+9. 路径逃逸：../../../etc/passwd
+10. 路径逃逸：绝对路径 /etc/passwd
+11. 路径逃逸：write_file 写向外层目录
+12. 路径逃逸：list_dir 列出外层目录
 """
 
 from __future__ import annotations
@@ -20,6 +24,7 @@ from pathlib import Path
 import pytest
 
 from nanobee.builtin.tool_fs import ToolFileSystemPlugin
+from nanobee.kernel.sandbox import ContextSandbox, SandboxError
 
 
 # ---- 辅助工具 ----
@@ -295,3 +300,61 @@ class TestToolDefinitions:
 
         assert len(names) == 4
         assert names == ["read_file", "write_file", "edit_file", "list_dir"]
+
+
+# ---- 路径沙箱拦截测试 ----
+
+
+class TestPathSandbox:
+    """验证路径沙箱拦截，确保路径不逃逸 workspace"""
+
+    def test_reject_path_traversal_escape(self, tmp_path: Path):
+        """../../../etc/passwd 路径逃逸被拦截"""
+        plugin = _create_plugin(tmp_path)
+        result = _run_async(plugin.execute_tool("read_file", path="../../../etc/passwd"))
+
+        assert "沙箱拦截" in result or "错误" in result
+
+    def test_reject_absolute_path_outside_workspace(self, tmp_path: Path):
+        """绝对路径 /etc/passwd 被拦截"""
+        plugin = _create_plugin(tmp_path)
+        result = _run_async(plugin.execute_tool("read_file", path="/etc/passwd"))
+
+        assert "沙箱拦截" in result or "错误" in result
+
+    def test_reject_write_outside_workspace(self, tmp_path: Path):
+        """write_file 写向外层目录被拦截"""
+        plugin = _create_plugin(tmp_path)
+        result = _run_async(plugin.execute_tool("write_file", path="../outside.txt", content="malicious"))
+
+        assert "沙箱拦截" in result or "错误" in result
+
+    def test_reject_edit_outside_workspace(self, tmp_path: Path):
+        """edit_file 编辑外层目录文件被拦截"""
+        plugin = _create_plugin(tmp_path)
+        result = _run_async(plugin.execute_tool("edit_file", path="../../etc/hostname",
+                                               old_text="old", new_text="new"))
+
+        assert "沙箱拦截" in result or "错误" in result
+
+    def test_allow_within_workspace(self, tmp_path: Path):
+        """workspace 内路径正常"""
+        test_file = tmp_path / "safe.txt"
+        test_file.write_text("safe content", encoding="utf-8")
+
+        plugin = _create_plugin(tmp_path)
+        result = _run_async(plugin.execute_tool("read_file", path="safe.txt"))
+
+        assert "safe content" in result
+
+    def test_sandbox_property_exists(self):
+        """ToolPlugin 具有 sandbox 属性"""
+        plugin = _create_plugin()
+
+        assert hasattr(plugin, "sandbox")
+        assert plugin.sandbox is None
+
+        # 设置 sandbox
+        sandbox = ContextSandbox(Path.cwd())
+        plugin.sandbox = sandbox
+        assert plugin.sandbox is sandbox

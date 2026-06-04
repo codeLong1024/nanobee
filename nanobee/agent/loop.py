@@ -829,7 +829,7 @@ class AgentLoop:
         return "ok"
 
     async def _state_compact(self, ctx: TurnContext) -> str:
-        """压缩/合并上下文 — 触发记忆存储。"""
+        """压缩/合并上下文 — 标记是否需要记忆检索。"""
         memory_plugins = self._get_memory_plugins()
         if not memory_plugins:
             return "ok"
@@ -837,15 +837,8 @@ class AgentLoop:
         user_ctx = await self.context_manager.get_or_create(ctx.context_id)
         messages = user_ctx.get_messages()
 
-        # 判断是否需要触发记忆提取（消息对数超过阈值）
-        if len(messages) >= self._memory_store_threshold:
-            for plugin in memory_plugins:
-                try:
-                    await plugin.store(messages, user_ctx)
-                except Exception:
-                    logger.exception("记忆插件 %s.store 出错", getattr(plugin, "name", "?"))
-
-        # 标记本轮是否需要检索记忆（注入到 System Prompt）
+        # store 已移至 on_message_completed 异步触发，不阻塞主流程
+        # 仅标记本轮是否需要检索记忆（注入到 System Prompt）
         ctx._needs_memory_retrieval = len(messages) >= self._memory_store_threshold
         return "ok"
 

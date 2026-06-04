@@ -21,13 +21,19 @@ logger = logging.getLogger(__name__)
 
 
 _EXCERPT_MAX_CHARS = 200
+_MAX_FACTS = 1000  # 存储上限，超过后触发压缩
+_SCORE_RETENTION = 500  # 压缩后保留条数
+_STORE_THRESHOLD = 20  # 对话达到此长度时触发记忆存储
 
 
 class MemoryFilePlugin(MemoryPlugin):
     """基于 JSONL 的文件记忆存储插件——ADD-only 设计。
 
-    在 store() 时将超过阈值的历史消息提取事实写入 facts.jsonl，
-    在 retrieve() 时通过关键词匹配 + 时间衰减检索相关记忆。
+    store() 提取消息历史中的事实写入 facts.jsonl，
+    retrieve() 通过关键词匹配 + 时间衰减检索相关记忆，
+    on_message_completed() 在对话轮次完成后异步触发 store。
+
+    当 facts.jsonl 超过 _MAX_FACTS 条时自动压缩，按时间戳保留最新 _SCORE_RETENTION 条。
     """
 
     def __init__(self, metadata: Any = None) -> None:
@@ -77,6 +83,43 @@ class MemoryFilePlugin(MemoryPlugin):
                         continue
         return hashes
 
+    @staticmethod
+    def _load_all_entries(facts_path: Path) -> list[dict[str, Any]]:
+        """加载 facts.jsonl 中所有条目"""
+        if not facts_path.exists():
+            return []
+        entries: list[dict[str, Any]] = []
+        with open(facts_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    try:
+                        entries.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        continue
+        return entries
+
+    #  P0 — 容量管理
+
+    async def _compact_facts(self, facts_path: Path) -> None:
+        """压缩 facts.jsonl：按时间戳降序保留新近的 _SCORE_RETENTION 条。"""
+        entries = self._load_all_entries(facts_path)
+        if len(entries) <= _SCORE_RETENTION:
+            return
+
+        entries.sort(key=lambda e: e.get("timestamp", 0), reverse=True)
+        kept = entries[:_SCORE_RETENTION]
+
+        with open(facts_path, "w", encoding="utf-8") as f:
+            for entry in kept:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+        logger.info(
+            "memory_file._compact_facts: 压缩完成，保留 %d 条 (原 %d 条)",
+            len(kept),
+            len(entries),
+        )
+
     # ---- 核心接口 ----
 
     async def store(self, messages: list[dict[str, Any]], user_context: Any) -> None:
@@ -84,6 +127,7 @@ class MemoryFilePlugin(MemoryPlugin):
 
         简单策略：将所有历史消息作为事实提取，用 hash 去重。
         只追加未出现过的新消息到 facts.jsonl。
+        写入后若总条数超过 _MAX_FACTS，触发自动压缩。
         """
         facts_path = self._ensure_facts_path(user_context)
         existing_hashes = self._load_hashes(facts_path)
@@ -114,12 +158,17 @@ class MemoryFilePlugin(MemoryPlugin):
             for line in new_entries:
                 f.write(line + "\n")
 
+        new_total = len(existing_hashes)
         logger.info(
             "memory_file.store: 存储了 %d 条新事实到 %s (总 %d 条)",
             len(new_entries),
             facts_path,
-            len(existing_hashes),
+            new_total,
         )
+
+        # P0：总条数超过上限时触发压缩
+        if new_total > _MAX_FACTS:
+            await self._compact_facts(facts_path)
 
     async def retrieve(
         self,
@@ -181,3 +230,27 @@ class MemoryFilePlugin(MemoryPlugin):
             lines.append(f"- [{role}] {text}")
 
         return "\n".join(lines)
+
+    # ---- P1: 异步 store（通过 on_message_completed Hook） ----
+
+    async def on_message_completed(
+        self,
+        context: Any,
+        messages: list[dict[str, Any]],
+    ) -> None:
+        """对话轮次完成后异步触发 store，不阻塞 AgentLoop。
+
+        获取完整的对话历史，当达到 _STORE_THRESHOLD 时触发记忆存储。
+        """
+        if context is None:
+            return
+
+        try:
+            full_messages = context.get_messages()
+        except Exception:
+            full_messages = messages
+
+        if len(full_messages) < _STORE_THRESHOLD:
+            return
+
+        await self.store(full_messages, context)

@@ -10,13 +10,18 @@ import os
 from pathlib import Path
 from typing import Any
 
+from nanobee.kernel.sandbox import ContextSandbox, SandboxError
 from nanobee.plugins.tool import ToolPlugin
 
 logger = logging.getLogger(__name__)
 
 
 class ToolFileSystemPlugin(ToolPlugin):
-    """文件系统工具插件"""
+    """文件系统工具插件
+
+    使用 ContextSandbox 对路径做二次校验，实现防御纵深。
+    以 workspace 为 context_root 构建沙箱，确保路径不逃逸。
+    """
 
     name = "tool-fs"
     version = "1.0.0"
@@ -24,8 +29,9 @@ class ToolFileSystemPlugin(ToolPlugin):
 
     def __init__(self, metadata: Any = None, workspace: str | None = None):
         super().__init__(metadata)
-        self._workspace = Path(workspace) if workspace else Path.cwd()
-        self._allowed_dir: Path | None = None
+        self._workspace = Path(workspace).resolve() if workspace else Path.cwd().resolve()
+        # 以 workspace 为 context_root 构建沙箱，用于路径边界校验
+        self._workspace_sandbox = ContextSandbox(self._workspace)
 
     def get_tools(self) -> list[dict[str, Any]]:
         """获取工具定义列表（OpenAI function schema 格式）
@@ -230,6 +236,8 @@ class ToolFileSystemPlugin(ToolPlugin):
 
             return result
 
+        except SandboxError as e:
+            return f"错误：沙箱拦截 - {e}"
         except PermissionError as e:
             return f"错误：权限不足 - {e}"
         except Exception as e:
@@ -266,6 +274,8 @@ class ToolFileSystemPlugin(ToolPlugin):
 
             return f"成功写入 {len(content)} 个字符到 {fp}"
 
+        except SandboxError as e:
+            return f"错误：沙箱拦截 - {e}"
         except PermissionError as e:
             return f"错误：权限不足 - {e}"
         except Exception as e:
@@ -341,6 +351,8 @@ class ToolFileSystemPlugin(ToolPlugin):
             fp.write_bytes(new_content.encode("utf-8"))
             return f"成功编辑文件 {fp}"
 
+        except SandboxError as e:
+            return f"错误：沙箱拦截 - {e}"
         except PermissionError as e:
             return f"错误：权限不足 - {e}"
         except Exception as e:
@@ -400,6 +412,8 @@ class ToolFileSystemPlugin(ToolPlugin):
 
             return "\n".join(items)
 
+        except SandboxError as e:
+            return f"错误：沙箱拦截 - {e}"
         except PermissionError as e:
             return f"错误：权限不足 - {e}"
         except Exception as e:
@@ -410,18 +424,24 @@ class ToolFileSystemPlugin(ToolPlugin):
     # ------------------------------------------------------------------
 
     def _resolve_path(self, path: str) -> Path:
-        """解析文件路径，支持相对路径转换为绝对路径
+        """解析文件路径，支持相对路径转换为绝对路径，并通过沙箱校验
 
         Args:
             path: 文件路径（可以是相对或绝对路径）
 
         Returns:
-            解析后的绝对路径
+            解析后的安全绝对路径
+
+        Raises:
+            SandboxError: 路径逃逸 — 不在 workspace 范围内
         """
         p = Path(path)
         if not p.is_absolute():
             p = self._workspace / p
-        return p.resolve()
+        p = p.resolve()
+        # 使用沙箱校验路径是否在 workspace 内
+        self._workspace_sandbox.assert_allowed(p)
+        return p
 
     @staticmethod
     def _find_matches(content: str, old_text: str) -> list[dict[str, Any]]:
