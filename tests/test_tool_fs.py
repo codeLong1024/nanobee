@@ -1,0 +1,297 @@
+"""
+Tool FS 插件测试 - 文件系统工具（read_file, write_file, edit_file, list_dir）
+
+覆盖 8 个验收用例：
+1. read_file 读取文本文件
+2. read_file 分页读取（offset + limit）
+3. read_file 文件不存在
+4. write_file 创建新文件
+5. write_file 覆盖现有文件
+6. edit_file 精确替换文本
+7. edit_file 未找到匹配文本
+8. list_dir 列出目录内容
+"""
+
+from __future__ import annotations
+
+import asyncio
+from pathlib import Path
+
+import pytest
+
+from nanobee.builtin.tool_fs import ToolFileSystemPlugin
+
+
+# ---- 辅助工具 ----
+
+
+def _create_plugin(workspace: Path | None = None) -> ToolFileSystemPlugin:
+    """创建测试插件实例"""
+    ws = workspace or Path.cwd()
+    return ToolFileSystemPlugin(workspace=str(ws))
+
+
+def _run_async(coro):
+    """运行异步协程"""
+    return asyncio.run(coro)
+
+
+# ---- read_file 测试 ----
+
+
+class TestReadFileTool:
+    """验证 read_file 工具功能"""
+
+    def test_read_file_success(self, tmp_path: Path):
+        """read_file 成功读取文本文件"""
+        test_file = tmp_path / "test.txt"
+        test_file.write_text("line1\nline2\nline3\n", encoding="utf-8")
+
+        plugin = _create_plugin(tmp_path)
+        result = _run_async(plugin.execute_tool("read_file", path="test.txt"))
+
+        assert "1| line1" in result
+        assert "2| line2" in result
+        assert "3| line3" in result
+        assert "共 3 行" in result
+
+    def test_read_file_with_pagination(self, tmp_path: Path):
+        """read_file 分页读取"""
+        test_file = tmp_path / "large.txt"
+        test_file.write_text("line1\nline2\nline3\nline4\nline5\n", encoding="utf-8")
+
+        plugin = _create_plugin(tmp_path)
+        result = _run_async(plugin.execute_tool("read_file", path="large.txt", offset=2, limit=2))
+
+        assert "2| line2" in result
+        assert "3| line3" in result
+        assert "共 5 行" in result
+
+    def test_read_file_not_found(self, tmp_path: Path):
+        """read_file 文件不存在时返回错误"""
+        plugin = _create_plugin(tmp_path)
+        result = _run_async(plugin.execute_tool("read_file", path="nonexistent.txt"))
+
+        assert "错误" in result
+        assert "不存在" in result
+
+    def test_read_file_empty(self, tmp_path: Path):
+        """read_file 读取空文件"""
+        test_file = tmp_path / "empty.txt"
+        test_file.write_text("", encoding="utf-8")
+
+        plugin = _create_plugin(tmp_path)
+        result = _run_async(plugin.execute_tool("read_file", path="empty.txt"))
+
+        assert "空文件" in result
+
+    def test_read_file_directory_error(self, tmp_path: Path):
+        """read_file 读取目录时报错"""
+        test_dir = tmp_path / "test_dir"
+        test_dir.mkdir()
+
+        plugin = _create_plugin(tmp_path)
+        result = _run_async(plugin.execute_tool("read_file", path="test_dir"))
+
+        assert "错误" in result
+        assert "不是文件" in result
+
+
+# ---- write_file 测试 ----
+
+
+class TestWriteFileTool:
+    """验证 write_file 工具功能"""
+
+    def test_write_file_create_new(self, tmp_path: Path):
+        """write_file 创建新文件"""
+        plugin = _create_plugin(tmp_path)
+        result = _run_async(plugin.execute_tool("write_file", path="new.txt", content="Hello World"))
+
+        assert "成功写入" in result
+        assert "11 个字符" in result
+
+        test_file = tmp_path / "new.txt"
+        assert test_file.exists()
+        assert test_file.read_text(encoding="utf-8") == "Hello World"
+
+    def test_write_file_overwrite(self, tmp_path: Path):
+        """write_file 覆盖现有文件"""
+        test_file = tmp_path / "existing.txt"
+        test_file.write_text("old content", encoding="utf-8")
+
+        plugin = _create_plugin(tmp_path)
+        result = _run_async(plugin.execute_tool("write_file", path="existing.txt", content="new content"))
+
+        assert "成功写入" in result
+        assert test_file.read_text(encoding="utf-8") == "new content"
+
+    def test_write_file_create_subdir(self, tmp_path: Path):
+        """write_file 创建子目录和文件"""
+        plugin = _create_plugin(tmp_path)
+        result = _run_async(plugin.execute_tool("write_file", path="subdir/nested.txt", content="nested content"))
+
+        assert "成功写入" in result
+        nested_file = tmp_path / "subdir" / "nested.txt"
+        assert nested_file.exists()
+        assert nested_file.read_text(encoding="utf-8") == "nested content"
+
+    def test_write_file_missing_path(self, tmp_path: Path):
+        """write_file 缺少路径参数"""
+        plugin = _create_plugin(tmp_path)
+        result = _run_async(plugin.execute_tool("write_file", path=None, content="test"))
+
+        assert "错误" in result or "失败" in result
+
+
+# ---- edit_file 测试 ----
+
+
+class TestEditFileTool:
+    """验证 edit_file 工具功能"""
+
+    def test_edit_file_success(self, tmp_path: Path):
+        """edit_file 成功替换文本"""
+        test_file = tmp_path / "edit.txt"
+        test_file.write_text("Hello World", encoding="utf-8")
+
+        plugin = _create_plugin(tmp_path)
+        result = _run_async(plugin.execute_tool("edit_file", path="edit.txt", old_text="World", new_text="Python"))
+
+        assert "成功编辑" in result
+        assert test_file.read_text(encoding="utf-8") == "Hello Python"
+
+    def test_edit_file_multiple_matches_warning(self, tmp_path: Path):
+        """edit_file 匹配多个时发出警告"""
+        test_file = tmp_path / "multi.txt"
+        test_file.write_text("aaa\naaa\naaa\n", encoding="utf-8")
+
+        plugin = _create_plugin(tmp_path)
+        result = _run_async(plugin.execute_tool("edit_file", path="multi.txt", old_text="aaa", new_text="bbb"))
+
+        assert "警告" in result
+        assert "匹配了 3 次" in result
+
+    def test_edit_file_replace_all(self, tmp_path: Path):
+        """edit_file 替换所有匹配项"""
+        test_file = tmp_path / "all.txt"
+        test_file.write_text("aaa\naaa\naaa\n", encoding="utf-8")
+
+        plugin = _create_plugin(tmp_path)
+        result = _run_async(plugin.execute_tool("edit_file", path="all.txt", old_text="aaa",
+                                                new_text="bbb", replace_all=True))
+
+        assert "成功编辑" in result
+        assert test_file.read_text(encoding="utf-8") == "bbb\nbbb\nbbb\n"
+
+    def test_edit_file_not_found(self, tmp_path: Path):
+        """edit_file 未找到匹配文本"""
+        test_file = tmp_path / "notfound.txt"
+        test_file.write_text("Hello World", encoding="utf-8")
+
+        plugin = _create_plugin(tmp_path)
+        result = _run_async(plugin.execute_tool("edit_file", path="notfound.txt", old_text="XYZ", new_text="ABC"))
+
+        assert "错误" in result
+        assert "未找到" in result
+
+    def test_edit_file_create_new(self, tmp_path: Path):
+        """edit_file 创建新文件（old_text=''）"""
+        plugin = _create_plugin(tmp_path)
+        result = _run_async(plugin.execute_tool("edit_file", path="new_create.txt", old_text="", new_text="created"))
+
+        assert "成功创建" in result
+        assert (tmp_path / "new_create.txt").read_text(encoding="utf-8") == "created"
+
+
+# ---- list_dir 测试 ----
+
+
+class TestListDirTool:
+    """验证 list_dir 工具功能"""
+
+    def test_list_dir_success(self, tmp_path: Path):
+        """list_dir 成功列出目录"""
+        (tmp_path / "file1.txt").write_text("content1", encoding="utf-8")
+        (tmp_path / "file2.txt").write_text("content2", encoding="utf-8")
+        (tmp_path / "subdir").mkdir()
+
+        plugin = _create_plugin(tmp_path)
+        result = _run_async(plugin.execute_tool("list_dir", path="."))
+
+        assert "file1.txt" in result
+        assert "file2.txt" in result
+        assert "subdir" in result
+
+    def test_list_dir_recursive(self, tmp_path: Path):
+        """list_dir 递归列出目录"""
+        (tmp_path / "file1.txt").write_text("content1", encoding="utf-8")
+        subdir = tmp_path / "subdir"
+        subdir.mkdir()
+        (subdir / "nested.txt").write_text("nested", encoding="utf-8")
+
+        plugin = _create_plugin(tmp_path)
+        result = _run_async(plugin.execute_tool("list_dir", path=".", recursive=True))
+
+        assert "file1.txt" in result
+        assert "nested.txt" in result
+        assert "subdir" in result
+
+    def test_list_dir_not_found(self, tmp_path: Path):
+        """list_dir 目录不存在"""
+        plugin = _create_plugin(tmp_path)
+        result = _run_async(plugin.execute_tool("list_dir", path="nonexistent"))
+
+        assert "错误" in result
+        assert "不存在" in result
+
+    def test_list_dir_empty(self, tmp_path: Path):
+        """list_dir 空目录"""
+        empty_dir = tmp_path / "empty"
+        empty_dir.mkdir()
+
+        plugin = _create_plugin(tmp_path)
+        result = _run_async(plugin.execute_tool("list_dir", path="empty"))
+
+        assert "为空" in result
+
+
+# ---- 工具定义测试 ----
+
+
+class TestToolDefinitions:
+    """验证工具定义元数据"""
+
+    def test_get_tools_returns_four_tools(self):
+        """get_tools 返回 4 个工具定义"""
+        plugin = _create_plugin()
+        tools = plugin.get_tools()
+
+        assert len(tools) == 4
+        tool_names = [t["function"]["name"] for t in tools]
+        assert "read_file" in tool_names
+        assert "write_file" in tool_names
+        assert "edit_file" in tool_names
+        assert "list_dir" in tool_names
+
+    def test_tool_parameters_valid(self):
+        """工具参数定义有效"""
+        plugin = _create_plugin()
+        tools = plugin.get_tools()
+
+        for tool in tools:
+            assert "type" in tool
+            assert tool["type"] == "function"
+            assert "function" in tool
+            func = tool["function"]
+            assert "name" in func
+            assert "description" in func
+            assert "parameters" in func
+
+    def test_list_tool_names(self):
+        """list_tool_names 返回工具名称列表"""
+        plugin = _create_plugin()
+        names = plugin.list_tool_names()
+
+        assert len(names) == 4
+        assert names == ["read_file", "write_file", "edit_file", "list_dir"]

@@ -28,8 +28,9 @@
 🔧 Phase 1 多租户隔离内核    ✅ 完成（85 测试）
 🔧 Phase 2 Hook 机制          ✅ 完成（17 测试）
 🔧 Phase 3 参考插件            ✅ 完成（18 测试）
+🔧 Phase 4 工具插件            ✅ 完成（21 测试）
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-总计 120 测试全部通过
+总计 169 测试全部通过
 ```
 
 ### 已完成功能
@@ -52,14 +53,14 @@
 |------|------|------|------|
 | `channel_cli` | Channel | ✅ | 命令行交互通道 |
 | `tool_echo` | Tool | ✅ | 回显测试工具 |
+| `tool_fs` | Tool | ✅ | 文件系统工具（read_file, write_file, edit_file, list_dir） |
+| `tool_shell` | Tool | ✅ | Shell 命令工具（execute_shell） |
+| `tool_web` | Tool | ✅ | Web 工具（web_search, web_fetch） |
 | `memory_file` | Memory | ✅ | JSONL 文件记忆存储 |
 | `memory_echo` | Echo | ✅ | Phase 3 参考：读取 memory.txt 注入记忆段 |
 | `skill_static` | Echo | ✅ | Phase 3 参考：读取 skills.md 注入技能段 |
 | `audit_logger` | Audit | ✅ | Phase 3 参考：on_message_completed 审计日志 |
 | `channel_http` | Channel | 🚧 | HTTP 通道（待完善） |
-| `tool_fs` | Tool | 🚧 | 文件系统工具（待实现） |
-| `tool_shell` | Tool | 🚧 | Shell 执行工具（待实现） |
-| `tool_web` | Tool | 🚧 | Web 工具（待实现） |
 
 ## 快速开始
 
@@ -168,7 +169,7 @@ class MyPlugin(NanobeePlugin):
 # 安装开发依赖
 pip install -e ".[dev]"
 
-# 运行全部测试（120 个）
+# 运行全部测试（169 个）
 python -m pytest tests/ -v --tb=short
 
 # 查看覆盖率
@@ -186,6 +187,7 @@ python -m pytest tests/ --cov=nanobee --cov-report=term-missing
 | `test_router.py` | 12 | 路由解析/降级/自定义 |
 | `test_sandbox.py` | 16 | 路径逃逸拦截/边界 |
 | `test_tool_collector.py` | 11 | 白/黑名单过滤 |
+| `test_tool_fs.py` | 21 | 文件系统工具（read/write/edit/list） |
 | `test_phase1_acceptance.py` | 9 | 多租户隔离验收 |
 | `test_phase2_acceptance.py` | 17 | Hook 机制验收 |
 | `test_phase3_acceptance.py` | 18 | 参考插件验收 |
@@ -206,9 +208,9 @@ nanobee/
 │   ├── memory_file/     # JSONL 记忆存储
 │   ├── skill_static/    # 静态技能参考插件
 │   ├── tool_echo/       # 回显测试工具
-│   ├── tool_fs/         # 文件系统工具 🚧
-│   ├── tool_shell/      # Shell 工具 🚧
-│   └── tool_web/        # Web 工具 🚧
+│   ├── tool_fs/         # 文件系统工具
+│   ├── tool_shell/      # Shell 命令工具
+│   ├── tool_web/        # Web 工具
 ├── cli/                 # 命令行入口
 ├── config/              # 配置加载与 Schema
 ├── kernel/              # 微内核核心

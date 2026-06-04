@@ -182,3 +182,97 @@ def test_repr(tmp_path: Path):
     sandbox = ContextSandbox(root)
     rep = repr(sandbox)
     assert str(root.resolve()) in rep
+
+
+# ====== 符号链接（symlink）攻击测试 ======
+
+
+def test_resolve_safe_with_internal_symlink_to_external(tmp_path: Path):
+    """内部符号链接指向沙箱外部 → 应抛 SandboxError
+
+    模拟攻击场景：攻击者在沙箱内创建指向 /etc/passwd 的符号链接，
+    期望沙箱能通过 resolve() 解析到外部路径并拦截。
+    """
+    root = tmp_path / "contexts" / "user-a"
+    (root / "subdir").mkdir(parents=True)
+
+    # 沙箱外建一个文件，再在沙箱内创建指向它的符号链接
+    external_file = tmp_path / "external_secret.txt"
+    external_file.write_text("secret data", encoding="utf-8")
+    symlink = root / "subdir" / "link_to_outside"
+    symlink.symlink_to(external_file)
+
+    sandbox = ContextSandbox(root)
+    with pytest.raises(SandboxError, match="路径逃逸拦截"):
+        sandbox.resolve_safe("subdir/link_to_outside")
+
+
+def test_resolve_safe_with_external_symlink_to_internal(tmp_path: Path):
+    """符号链接本身在沙箱外但指向沙箱内 → 应允许通过
+
+    这不是攻击，而是验证 symlink 解析到沙箱内路径时能正常通过。
+    """
+    root = tmp_path / "contexts" / "user-a"
+    root.mkdir(parents=True)
+
+    inside_file = root / "safe.txt"
+    inside_file.write_text("safe content", encoding="utf-8")
+
+    # 在沙箱外创建指向沙箱内文件的符号链接
+    external_symlink = tmp_path / "outside_link"
+    external_symlink.symlink_to(inside_file)
+
+    sandbox = ContextSandbox(root)
+    # 通过符号链接访问沙箱内文件，resolve() 后会落到沙箱内，应通过
+    result = sandbox.resolve_safe(str(external_symlink))
+    assert result == inside_file.resolve()
+
+
+def test_resolve_safe_with_tricky_symlink(tmp_path: Path):
+    """穿越多次 relative_to 仍是同级路径的 symlink"""
+    root = tmp_path / "contexts" / "user-a"
+    (root / "sub").mkdir(parents=True)
+
+    # 沙箱外创建文件，沙箱内 symlink 指向它
+    outside = tmp_path / "outside.txt"
+    outside.write_text("outside", encoding="utf-8")
+    link = root / "sub" / "bad_link"
+    link.symlink_to(outside)
+
+    sandbox = ContextSandbox(root)
+    with pytest.raises(SandboxError, match="路径逃逸拦截"):
+        sandbox.resolve_safe("sub/bad_link")
+
+
+def test_context_root_is_symlink(tmp_path: Path):
+    """context_root 本身是符号链接 → __init__ 中已 resolve，不影响后续检查"""
+    real_root = tmp_path / "real_context" / "user-a"
+    real_root.mkdir(parents=True)
+
+    symlink_root = tmp_path / "symlink_root"
+    symlink_root.symlink_to(real_root)
+
+    sandbox = ContextSandbox(symlink_root)
+    # context_root 属性应返回解析后的真实路径
+    assert sandbox.context_root == real_root.resolve()
+
+    # 沙箱内操作应基于真实路径正常工作（使用绝对路径）
+    inside = real_root / "file.txt"
+    inside.write_text("hello", encoding="utf-8")
+    result = sandbox.resolve_safe(str(inside))
+    assert result == inside.resolve()
+
+
+def test_assert_allowed_with_symlink(tmp_path: Path):
+    """assert_allowed 同样能拦截指向外部的符号链接"""
+    root = tmp_path / "contexts" / "user-a"
+    root.mkdir(parents=True)
+
+    outside = tmp_path / "secret.txt"
+    outside.write_text("secret", encoding="utf-8")
+    link = root / "evil_link"
+    link.symlink_to(outside)
+
+    sandbox = ContextSandbox(root)
+    with pytest.raises(SandboxError, match="路径越界断言失败"):
+        sandbox.assert_allowed(link)

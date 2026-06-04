@@ -1,0 +1,12 @@
+[plugin]
+name = "tool-web"
+version = "1.0.0"
+description = "Web 工具：web_search, web_fetch"
+author = "nanobee-team"
+type = "tool"
+
+[config]
+enabled = true
+max_results = 5
+timeout = 30
+max_chars = 50000
