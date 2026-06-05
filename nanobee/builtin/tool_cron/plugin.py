@@ -105,15 +105,24 @@ class ToolCronPlugin(ToolPlugin):
         # 根据 user_id 切换存储路径
         if user_id:
             self._current_store_path = self._cron_base_dir / f"jobs_{user_id}.json"
-            if self._cron is None:
+            # 如果 user_id 变化或 _cron 未初始化，创建新的 CronService 实例
+            if self._cron is None or getattr(self._cron, "store_path", None) != self._current_store_path:
+                # 停止旧实例
+                if self._cron is not None:
+                    self._cron.stop()
                 self._cron = CronService(
                     store_path=self._current_store_path,
                     on_job=self._on_job_execute,
                     max_sleep_ms=300_000,
                 )
+                # 注意：不在这里调用 start()，因为 on_enable() 已经启动过服务
+                # 如果需要切换用户后重启服务，由外部调用者负责
                 logger.info("Cron 服务存储路径: %s", self._current_store_path)
         else:
             self._current_store_path = None
+            if self._cron is not None:
+                self._cron.stop()
+                self._cron = None
 
     # ------------------------------------------------------------------
     # ToolPlugin 接口

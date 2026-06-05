@@ -25,8 +25,8 @@ class ToolFileSystemPlugin(ToolPlugin):
     """文件系统工具插件
 
     防御纵深 L2 层：插件内部路径校验。
-    sandbox 属性由 runner.py 动态注入（同一次请求的 ContextSandbox 实例）。
-    如果没有注入，回退到 Path.cwd() 作为默认工作目录。
+    sandbox 通过 execute_tool 的请求级参数传递（线程安全）。
+    如果没有传递，回退到 Path.cwd() 作为默认工作目录。
     """
 
     name = "tool-fs"
@@ -35,8 +35,6 @@ class ToolFileSystemPlugin(ToolPlugin):
 
     def __init__(self, metadata: Any = None):
         super().__init__(metadata)
-        # sandbox 属性由 runner.py 注入，初始为 None
-        self.sandbox: ContextSandbox | None = None
 
     def get_tools(self) -> list[dict[str, Any]]:
         """获取工具定义列表（OpenAI function schema 格式）
@@ -159,7 +157,7 @@ class ToolFileSystemPlugin(ToolPlugin):
 
         Args:
             tool_name: 工具名称
-            **kwargs: 工具参数
+            **kwargs: 工具参数，可选包含 _sandbox 键（请求级沙箱实例）
 
         Returns:
             工具执行结果
@@ -167,14 +165,17 @@ class ToolFileSystemPlugin(ToolPlugin):
         Raises:
             ValueError: 工具不存在或参数无效
         """
+        # 从 kwargs 中提取请求级 sandbox（线程安全）
+        request_sandbox = kwargs.pop("_sandbox", None)
+        
         if tool_name == "read_file":
-            return await self._execute_read_file(**kwargs)
+            return await self._execute_read_file(**kwargs, _sandbox=request_sandbox)
         elif tool_name == "write_file":
-            return await self._execute_write_file(**kwargs)
+            return await self._execute_write_file(**kwargs, _sandbox=request_sandbox)
         elif tool_name == "edit_file":
-            return await self._execute_edit_file(**kwargs)
+            return await self._execute_edit_file(**kwargs, _sandbox=request_sandbox)
         elif tool_name == "list_dir":
-            return await self._execute_list_dir(**kwargs)
+            return await self._execute_list_dir(**kwargs, _sandbox=request_sandbox)
         else:
             raise ValueError(f"未知工具: {tool_name}")
 
@@ -187,6 +188,7 @@ class ToolFileSystemPlugin(ToolPlugin):
         path: str | None = None,
         offset: int = 1,
         limit: int | None = None,
+        _sandbox: ContextSandbox | None = None,
         **kwargs: Any,
     ) -> str:
         """读取文件内容
@@ -195,6 +197,7 @@ class ToolFileSystemPlugin(ToolPlugin):
             path: 文件路径
             offset: 起始行号（从 1 开始）
             limit: 最大读取行数
+            _sandbox: 请求级沙箱实例（线程安全）
 
         Returns:
             文件内容字符串，格式为 LINE_NUM|CONTENT
@@ -203,7 +206,7 @@ class ToolFileSystemPlugin(ToolPlugin):
             if not path:
                 return "错误：未知文件路径"
 
-            fp = self._resolve_path(path)
+            fp = self._resolve_path(path, sandbox=_sandbox)
             if not fp.exists():
                 return f"错误：文件不存在: {path}"
             if not fp.is_file():
@@ -256,6 +259,7 @@ class ToolFileSystemPlugin(ToolPlugin):
         self,
         path: str | None = None,
         content: str | None = None,
+        _sandbox: ContextSandbox | None = None,
         **kwargs: Any,
     ) -> str:
         """写入文件内容
@@ -263,6 +267,7 @@ class ToolFileSystemPlugin(ToolPlugin):
         Args:
             path: 文件路径
             content: 写入的内容
+            _sandbox: 请求级沙箱实例（线程安全）
 
         Returns:
             写入结果消息
@@ -273,7 +278,7 @@ class ToolFileSystemPlugin(ToolPlugin):
             if content is None:
                 raise ValueError("未知内容")
 
-            fp = self._resolve_path(path)
+            fp = self._resolve_path(path, sandbox=_sandbox)
             fp.parent.mkdir(parents=True, exist_ok=True)
             fp.write_text(content, encoding="utf-8")
 
@@ -296,6 +301,7 @@ class ToolFileSystemPlugin(ToolPlugin):
         old_text: str | None = None,
         new_text: str | None = None,
         replace_all: bool = False,
+        _sandbox: ContextSandbox | None = None,
         **kwargs: Any,
     ) -> str:
         """编辑文件（精确替换文本）
@@ -305,6 +311,7 @@ class ToolFileSystemPlugin(ToolPlugin):
             old_text: 要查找的文本
             new_text: 替换后的文本
             replace_all: 是否替换所有匹配项
+            _sandbox: 请求级沙箱实例（线程安全）
 
         Returns:
             编辑结果消息
@@ -317,7 +324,7 @@ class ToolFileSystemPlugin(ToolPlugin):
             if new_text is None:
                 raise ValueError("未知 new_text")
 
-            fp = self._resolve_path(path)
+            fp = self._resolve_path(path, sandbox=_sandbox)
 
             # 创建文件语义：old_text='' 且文件不存在 → 创建
             if not fp.exists():
@@ -371,6 +378,7 @@ class ToolFileSystemPlugin(ToolPlugin):
         self,
         path: str | None = None,
         recursive: bool = False,
+        _sandbox: ContextSandbox | None = None,
         **kwargs: Any,
     ) -> str:
         """列出目录内容
@@ -378,6 +386,7 @@ class ToolFileSystemPlugin(ToolPlugin):
         Args:
             path: 目录路径
             recursive: 是否递归列出
+            _sandbox: 请求级沙箱实例（线程安全）
 
         Returns:
             目录内容字符串
@@ -386,7 +395,7 @@ class ToolFileSystemPlugin(ToolPlugin):
             if path is None:
                 raise ValueError("未知路径")
 
-            dp = self._resolve_path(path)
+            dp = self._resolve_path(path, sandbox=_sandbox)
             if not dp.exists():
                 return f"错误：目录不存在: {path}"
             if not dp.is_dir():
@@ -428,14 +437,15 @@ class ToolFileSystemPlugin(ToolPlugin):
     # 工具方法
     # ------------------------------------------------------------------
 
-    def _resolve_path(self, path: str) -> Path:
+    def _resolve_path(self, path: str, *, sandbox: ContextSandbox | None = None) -> Path:
         """解析文件路径，支持相对路径转换为绝对路径，并通过 L2 沙箱校验
 
-        防御纵深 L2 层：使用 runner.py 注入的 sandbox 进行路径边界校验。
-        如果 sandbox 未注入，回退到 Path.cwd() 作为默认工作目录。
+        防御纵深 L2 层：使用请求级 sandbox 进行路径边界校验（线程安全）。
+        如果未传递 sandbox，回退到 Path.cwd() 作为默认工作目录。
 
         Args:
             path: 文件路径（可以是相对或绝对路径）
+            sandbox: 请求级沙箱实例（优先使用），如果为 None 则回退到默认
 
         Returns:
             解析后的安全绝对路径
@@ -449,9 +459,9 @@ class ToolFileSystemPlugin(ToolPlugin):
             p = Path.cwd() / p
         p = p.resolve()
 
-        # L2 沙箱校验：使用注入的 sandbox，如果没有则回退到默认
-        if self.sandbox is not None:
-            self.sandbox.assert_allowed(p)
+        # L2 沙箱校验：使用请求级 sandbox（线程安全），如果没有则回退到默认
+        if sandbox is not None:
+            sandbox.assert_allowed(p)
         else:
             # 回退：使用 Path.cwd() 作为默认 context_root
             default_sandbox = ContextSandbox(Path.cwd())

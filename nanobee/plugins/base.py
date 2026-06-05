@@ -11,6 +11,8 @@ from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field
 
+from .hook_mixin import PluginHookMixin
+
 logger = logging.getLogger(__name__)
 
 
@@ -26,10 +28,11 @@ class PluginMetadata(BaseModel):
     permissions: list[str] = Field(default_factory=list)
 
 
-class NanobeePlugin(ABC):
+class NanobeePlugin(PluginHookMixin, ABC):
     """插件基类
 
     所有插件必须继承此类，并实现必要的生命周期方法。
+    继承 PluginHookMixin 以获得 5 个生命周期 Hook 的默认实现。
     """
 
     # 类级元数据（可通过 plugin.toml 覆盖）
@@ -118,84 +121,4 @@ class NanobeePlugin(ABC):
 
     def uninstall(self) -> None:
         """卸载插件（清理安装时创建的内容）"""
-        pass
-
-    # ---- Hook 方法（Phase 2） ----
-    # 插件可以覆盖这些方法，在 Agent 生命周期的关键切面注入逻辑。
-    # 所有方法都有默认空实现，插件只需覆盖需要的。
-
-    def contribute_to_prompt(self, context: Any) -> str | None:
-        """向 System Prompt 注入文本。
-
-        Args:
-            context: 当前用户上下文（UserContext 实例）
-
-        Returns:
-            注入的文本段，返回 None 或空字符串表示不注入
-        """
-        return None
-
-    def contribute_to_tools(
-        self,
-        context: Any,
-        current_tool_names: list[str],
-    ) -> list[str]:
-        """动态增删工具列表。
-
-        Args:
-            context: 当前用户上下文（UserContext 实例）
-            current_tool_names: 当前已注册的工具名称列表
-
-        Returns:
-            修改后的工具名称列表
-        """
-        return current_tool_names
-
-    async def on_pre_invoke(
-        self,
-        context: Any,
-        tool_name: str,
-        args: dict[str, Any],
-    ) -> dict[str, Any]:
-        """工具执行前拦截。
-
-        Args:
-            context: 当前用户上下文（UserContext 实例）
-            tool_name: 工具名称
-            args: 工具参数字典
-
-        Returns:
-            可修改后的参数字典
-        """
-        return args
-
-    async def on_post_invoke(
-        self,
-        context: Any,
-        tool_name: str,
-        result: Any,
-    ) -> Any:
-        """工具执行后拦截。
-
-        Args:
-            context: 当前用户上下文（UserContext 实例）
-            tool_name: 工具名称
-            result: 工具返回结果
-
-        Returns:
-            可修改后的结果
-        """
-        return result
-
-    async def on_message_completed(
-        self,
-        context: Any,
-        messages: list[dict[str, Any]],
-    ) -> None:
-        """对话轮次结束后的生命周期 Hook。
-
-        Args:
-            context: 当前用户上下文（UserContext 实例）
-            messages: 本轮完整的消息列表
-        """
         pass

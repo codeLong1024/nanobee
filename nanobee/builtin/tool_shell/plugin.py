@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from nanobee.kernel.sandbox import ContextSandbox
 from nanobee.plugins.tool import ToolPlugin
 
 logger = logging.getLogger(__name__)
@@ -142,7 +143,7 @@ class ToolShellPlugin(ToolPlugin):
 
         Args:
             tool_name: 工具名称
-            **kwargs: 工具参数
+            **kwargs: 工具参数，可选包含 _sandbox 键（请求级沙箱实例）
 
         Returns:
             工具执行结果
@@ -150,8 +151,11 @@ class ToolShellPlugin(ToolPlugin):
         Raises:
             ValueError: 工具不存在
         """
+        # 从 kwargs 中提取请求级 sandbox（线程安全）
+        request_sandbox = kwargs.pop("_sandbox", None)
+        
         if tool_name == "execute_shell":
-            return await self._execute_shell(**kwargs)
+            return await self._execute_shell(**kwargs, _sandbox=request_sandbox)
         raise ValueError(f"未知工具: {tool_name}")
 
     def _execute_shell_desc(self) -> str:
@@ -175,6 +179,7 @@ class ToolShellPlugin(ToolPlugin):
         timeout: int | None = None,
         shell: str | None = None,
         login: bool | None = None,
+        _sandbox: ContextSandbox | None = None,
         **kwargs: Any,
     ) -> str:
         """执行 shell 命令
@@ -185,6 +190,7 @@ class ToolShellPlugin(ToolPlugin):
             timeout: 超时秒数
             shell: shell 解释器
             login: 登录 shell 模式
+            _sandbox: 请求级沙箱实例（线程安全）
 
         Returns:
             命令输出
@@ -192,7 +198,7 @@ class ToolShellPlugin(ToolPlugin):
         if not command:
             return "错误：缺少命令参数。提供 command。"
 
-        prepared = self._prepare_command(command, working_dir, timeout, shell, login)
+        prepared = self._prepare_command(command, working_dir, timeout, shell, login, sandbox=_sandbox)
         if isinstance(prepared, str):
             return prepared
 
@@ -256,11 +262,12 @@ class ToolShellPlugin(ToolPlugin):
         timeout: int | None = None,
         shell: str | None = None,
         login: bool | None = None,
+        sandbox: ContextSandbox | None = None,
     ) -> _PreparedCommand | str:
         """准备命令：解析工作目录、执行安全校验、构建环境变量
 
         优先级：
-        1. 注入的 sandbox（L2 防线，防御纵深）
+        1. 请求级 sandbox（L2 防线，防御纵深，线程安全）
         2. restrict_to_workspace + _workspace（L1 防线）
         3. 默认使用 working_dir 或 _workspace
 
@@ -270,6 +277,7 @@ class ToolShellPlugin(ToolPlugin):
             timeout: 超时
             shell: shell 名称或路径
             login: 是否登录 shell
+            sandbox: 请求级沙箱实例（线程安全）
 
         Returns:
             _PreparedCommand 或错误字符串
@@ -277,14 +285,15 @@ class ToolShellPlugin(ToolPlugin):
         # 确定工作目录
         cwd = working_dir or self._workspace or os.getcwd()
 
-        # L2 防线：优先使用注入的 sandbox 校验（防御纵深）
-        sandbox_error = self._check_sandbox_path(cwd)
+        # L2 防线：优先使用请求级 sandbox 校验（防御纵深，线程安全）
+        sandbox_error = self._check_sandbox_path(cwd, sandbox=sandbox)
         if sandbox_error:
             return sandbox_error
 
-        # L1 防线：当 restrict_to_workspace 启用且未注入 sandbox 时，
+        # L1 防线：当 restrict_to_workspace 启用时，
         # 阻止 LLM 提供的 working_dir 逃逸（防御降级）
-        if self.restrict_to_workspace and self._workspace and self.sandbox is None:
+        # 注意：如果已使用请求级 sandbox（L2），L1 作为额外防护仍然生效
+        if self.restrict_to_workspace and self._workspace:
             try:
                 requested = Path(cwd).expanduser().resolve()
                 workspace_root = Path(self._workspace).expanduser().resolve()
@@ -508,19 +517,19 @@ class ToolShellPlugin(ToolPlugin):
         }
         return env
 
-    def _check_sandbox_path(self, path: str) -> str | None:
-        """检查路径是否在注入的 sandbox 内（L2 防线）
+    def _check_sandbox_path(self, path: str, *, sandbox: ContextSandbox | None = None) -> str | None:
+        """检查路径是否在请求级 sandbox 内（L2 防线）
 
-        优先使用注入的 self.sandbox 实现防御纵深。如果 sandbox 存在，
-        则校验路径在沙箱边界内。
+        使用请求级 sandbox 实现线程安全。如果 sandbox 未传递，
+        则跳过 L2 校验。
 
         Args:
             path: 待校验的路径
+            sandbox: 请求级沙箱实例（优先使用）
 
         Returns:
             错误字符串或 None（安全）
         """
-        sandbox = self.sandbox
         if sandbox is None:
             return None
 
@@ -532,7 +541,7 @@ class ToolShellPlugin(ToolPlugin):
                 sandbox.assert_allowed(path)
             else:
                 # 如果 sandbox 没有已知方法，跳过 L2 校验
-                logger.debug("注入的 sandbox 没有 resolve_safe 或 assert_allowed 方法")
+                logger.debug("请求级 sandbox 没有 resolve_safe 或 assert_allowed 方法")
                 return None
         except Exception as e:
             logger.warning("L2 沙箱拦截: %s", e)

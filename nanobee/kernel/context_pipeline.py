@@ -103,18 +103,6 @@ class RulesStage(PipelineStage):
         return context
 
 
-class MemoryStage(PipelineStage):
-    """注入记忆内容"""
-
-    def __init__(self, kernel: Any):
-        super().__init__(priority=30)
-        self.kernel = kernel
-
-    async def process(self, context: dict[str, Any]) -> dict[str, Any]:
-        # TODO: MVP 后从 MemoryPlugin 检索记忆
-        return context
-
-
 class SkillStage(PipelineStage):
     """注入 ## 技能 段 —— 从 UserContext 的 skills/ 目录加载技能。
 
@@ -190,7 +178,6 @@ class ContextPipeline:
         self.register(SoulStage(core_md_path))
         self.register(RulesStage(core_md_path))
         self.register(SkillStage(kernel))
-        self.register(MemoryStage(kernel))
 
     def register(self, stage: PipelineStage) -> None:
         """注册管道阶段

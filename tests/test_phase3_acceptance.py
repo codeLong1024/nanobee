@@ -1,13 +1,11 @@
 """
 Phase 3 验收测试 — 极简参考插件与内置 SkillStage 验证
 
-覆盖 6 个验收用例：
-1. memory_echo 读取 memory.txt 注入
-2. SkillStage 从 skills/ 目录读取技能注入
-3. 技能目录不存在时跳过，不报错
-4. audit_logger 记录消息完成事件
-5. 多用户隔离：不同用户的技能互不交叉
-6. 同时启用 memory_echo + audit_logger 正常协同
+覆盖 4 个验收用例：
+1. SkillStage 从 skills/ 目录读取技能注入
+2. 技能目录不存在时跳过，不报错
+3. audit_logger 记录消息完成事件
+4. 多用户隔离：不同用户的技能互不交叉
 """
 
 from __future__ import annotations
@@ -18,7 +16,6 @@ from unittest.mock import MagicMock
 import pytest
 
 from nanobee.builtin.audit_logger.plugin import AuditLoggerPlugin
-from nanobee.builtin.memory_echo.plugin import MemoryEchoPlugin
 from nanobee.kernel.context_pipeline import ContextPipeline, SkillStage
 from nanobee.plugins.skill import SkillManager, SkillVisibility
 
@@ -35,71 +32,15 @@ def _make_kernel_with_core(tmp_path: Path) -> MagicMock:
     return kernel
 
 
-def _make_user_context(tmp_path: Path, user_id: str = "test-user",
-                       memory_txt: str = "") -> MagicMock:
+def _make_user_context(tmp_path: Path, user_id: str = "test-user") -> MagicMock:
     """创建带实际 base_dir 的 mock UserContext。"""
     user_dir = tmp_path / "contexts" / user_id
     user_dir.mkdir(parents=True, exist_ok=True)
-
-    if memory_txt:
-        (user_dir / "memory.txt").write_text(memory_txt, encoding="utf-8")
 
     ctx = MagicMock()
     ctx.user_id = user_id
     ctx.base_dir = user_dir
     return ctx
-
-
-# ---- memory_echo 测试 ----
-
-
-class TestMemoryEchoPlugin:
-    """验证 memory_echo 插件功能。"""
-
-    def test_reads_memory_txt(self, tmp_path: Path):
-        """memory_echo 读取 memory.txt 内容并返回。"""
-        ctx = _make_user_context(tmp_path, "alice", memory_txt="我是 Alice")
-        plugin = MemoryEchoPlugin()
-        result = plugin.contribute_to_prompt(ctx)
-        assert result == "我是 Alice"
-
-    def test_returns_none_when_file_missing(self, tmp_path: Path):
-        """memory.txt 不存在时返回 None。"""
-        ctx = _make_user_context(tmp_path, "alice")
-        plugin = MemoryEchoPlugin()
-        result = plugin.contribute_to_prompt(ctx)
-        assert result is None
-
-    def test_returns_none_when_file_empty(self, tmp_path: Path):
-        """memory.txt 为空时返回 None。"""
-        ctx = _make_user_context(tmp_path, "alice", memory_txt="   ")
-        plugin = MemoryEchoPlugin()
-        result = plugin.contribute_to_prompt(ctx)
-        assert result is None
-
-    def test_returns_none_when_context_no_base_dir(self):
-        """UserContext 没有 base_dir 时不崩溃。"""
-        ctx = MagicMock()
-        del ctx.base_dir
-        plugin = MemoryEchoPlugin()
-        result = plugin.contribute_to_prompt(ctx)
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_injects_into_memory_stage(self, tmp_path: Path):
-        """通过 ContextPipeline 验证注入到记忆段。"""
-        ctx = _make_user_context(tmp_path, "bob", memory_txt="Bob 的记忆")
-        plugin = MemoryEchoPlugin()
-        kernel = _make_kernel_with_core(tmp_path)
-        pipeline = ContextPipeline(kernel)
-
-        result = await pipeline.build_with_plugins(
-            {"system_prompt": "## Soul\n你是一个助手\n\n## Rules\n请遵守规则。"},
-            ctx,
-            [plugin],
-        )
-        assert "Bob 的记忆" in result
-        assert "## 记忆" in result
 
 
 # ---- SkillStage 测试 ----
@@ -240,21 +181,7 @@ class TestAuditLoggerPlugin:
 
 
 class TestMultiUserIsolation:
-    """验证不同用户的 memory.txt / 技能内容隔离。"""
-
-    def test_different_memory_per_user(self, tmp_path: Path):
-        """User-A 和 User-B 的 memory.txt 内容互不交叉。"""
-        ctx_a = _make_user_context(tmp_path, "alice", memory_txt="我是 Alice")
-        ctx_b = _make_user_context(tmp_path, "bob", memory_txt="我是 Bob")
-
-        plugin = MemoryEchoPlugin()
-
-        result_a = plugin.contribute_to_prompt(ctx_a)
-        result_b = plugin.contribute_to_prompt(ctx_b)
-
-        assert result_a == "我是 Alice"
-        assert result_b == "我是 Bob"
-        assert result_a != result_b
+    """验证不同用户的技能内容隔离。"""
 
     def test_different_skills_per_user(self, tmp_path: Path):
         """User-A 和 User-B 的技能内容互不交叉。"""
@@ -275,26 +202,7 @@ class TestMultiUserIsolation:
 
 
 class TestAllPluginsTogether:
-    """验证参考插件同时启用的行为。"""
-
-    @pytest.mark.asyncio
-    async def test_memory_and_audit_work_together(self, tmp_path: Path):
-        """memory_echo + audit_logger 同时启用，互不干扰。"""
-        ctx = _make_user_context(tmp_path, "dave", memory_txt="Dave 的记忆")
-        memory_plugin = MemoryEchoPlugin()
-        audit_plugin = AuditLoggerPlugin()
-
-        kernel = _make_kernel_with_core(tmp_path)
-        pipeline = ContextPipeline(kernel)
-
-        result = await pipeline.build_with_plugins(
-            {"system_prompt": "## Soul\n你是一个助手\n"},
-            ctx,
-            [memory_plugin, audit_plugin],
-        )
-
-        assert "Dave 的记忆" in result
-        assert "## 记忆" in result
+    """验证插件同时启用的行为。"""
 
     @pytest.mark.asyncio
     async def test_audit_logger_does_not_affect_prompt(self, tmp_path: Path):
@@ -318,20 +226,3 @@ class TestAllPluginsTogether:
         assert result_with == result_without
 
 
-# ---- 错误边界测试 ----
-
-
-class TestErrorBoundaries:
-    """验证参考插件的异常处理能力。"""
-
-    def test_memory_echo_unreadable_file(self, tmp_path: Path):
-        """memory.txt 不可读时返回 None 不崩溃。"""
-        ctx = _make_user_context(tmp_path, "alice", memory_txt="内容")
-        memory_file = Path(ctx.base_dir) / "memory.txt"
-        memory_file.chmod(0o000)
-        try:
-            plugin = MemoryEchoPlugin()
-            result = plugin.contribute_to_prompt(ctx)
-            assert result is None
-        finally:
-            memory_file.chmod(0o644)

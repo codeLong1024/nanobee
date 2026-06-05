@@ -74,17 +74,19 @@ _BACKFILL_CONTENT = "[Tool result unavailable — call was interrupted or lost]"
 prepare_file_edit_tracker = _prepare_file_edit_tracker
 
 
-def _inject_sandbox_to_plugin(tool: Any, sandbox: Any) -> None:
-    """将 user-context 沙箱注入到插件工具实例中
+def _resolve_sandbox_for_tool(tool: Any, spec_sandbox: Any) -> Any:
+    """解析工具执行时使用的沙箱实例（请求级上下文传递）
 
-    确保插件在内部路径校验时也能感知用户上下文边界。
-    按请求注入，不改变插件生命周期。
+    替代方案：通过参数传递而非属性注入，避免并发竞态。
+
+    Args:
+        tool: 工具实例（可能是 ToolPluginAdapter 或直接工具）
+        spec_sandbox: AgentRunSpec 中传递的沙箱实例
+
+    Returns:
+        请求级的沙箱实例，无则返回 None
     """
-    if hasattr(tool, "_plugin") and hasattr(tool._plugin, "sandbox"):
-        try:
-            tool._plugin.sandbox = sandbox
-        except Exception:
-            logger.debug("无法注入沙箱到插件 %s", getattr(tool._plugin, "name", "?"))
+    return spec_sandbox
 
 
 @dataclass(slots=True)
@@ -904,10 +906,11 @@ class AgentRunner:
             }
             return f"Error: Tool '{tool_call.name}' not found. Available: {', '.join(spec.filtered_tool_names)}" + hint, event, None
 
-        # 沙箱拦截：在工具执行前清洗路径参数
-        if spec.sandbox is not None and isinstance(params, dict):
+        # 沙箱拦截：在工具执行前清洗路径参数（L1 防线）
+        request_sandbox = _resolve_sandbox_for_tool(tool, spec.sandbox)
+        if request_sandbox is not None and isinstance(params, dict):
             try:
-                params = spec.sandbox.sanitize_params(tool_call.name, params)
+                params = request_sandbox.sanitize_params(tool_call.name, params)
             except PermissionError as e:
                 event = {
                     "name": tool_call.name,
@@ -915,10 +918,6 @@ class AgentRunner:
                     "detail": f"sandbox: {e}",
                 }
                 return str(e) + hint, event, None
-
-        # 防御纵深层：注入 user-context 沙箱到插件工具
-        if spec.sandbox is not None:
-            _inject_sandbox_to_plugin(tool, spec.sandbox)
 
         # Plugin Hook: on_pre_invoke — 工具执行前拦截
         if spec.plugin_hooks and isinstance(params, dict):
@@ -936,9 +935,14 @@ class AgentRunner:
                     logger.exception("on_pre_invoke hook 执行出错: %s", e)
                     # 不阻止工具执行，仅记录日志
 
+        # 构建请求级执行参数（包含 sandbox 上下文）
+        exec_params = dict(params) if isinstance(params, dict) else {}
+        if request_sandbox is not None:
+            exec_params["_sandbox"] = request_sandbox
+
         try:
             if tool is not None:
-                result = await tool.execute(**params)
+                result = await tool.execute(**exec_params)
             else:
                 result = await spec.tools.execute(tool_call.name, params)
 

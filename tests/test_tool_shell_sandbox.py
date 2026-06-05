@@ -33,34 +33,33 @@ def user_context_sandbox(tmp_path: Path) -> ContextSandbox:
     return ContextSandbox(root)
 
 
-# ====== L2 沙箱注入测试 ======
+# ====== L2 沙箱请求级传递测试 ======
 
 
-def test_inject_sandbox_to_plugin_works(plugin: ToolShellPlugin, user_context_sandbox: ContextSandbox):
-    """注入 sandbox 后，plugin.sandbox 属性被设置"""
-    plugin.sandbox = user_context_sandbox
-    assert plugin.sandbox is user_context_sandbox
+def test_request_level_sandbox_passing(plugin: ToolShellPlugin, user_context_sandbox: ContextSandbox):
+    """请求级 sandbox 传递后，_check_sandbox_path 使用传递的参数"""
+    inside_path = str(user_context_sandbox.context_root / "work" / "test.sh")
+    result = plugin._check_sandbox_path(inside_path, sandbox=user_context_sandbox)
+    assert result is None
 
 
 def test_check_sandbox_path_allowed(plugin: ToolShellPlugin, user_context_sandbox: ContextSandbox, tmp_path: Path):
-    """L2 沙箱校验：路径在沙箱内 → 返回 None"""
-    plugin.sandbox = user_context_sandbox
+    """L2 沙箱校验：路径在沙箱内 → 返回 None（请求级传递）"""
     inside_path = str(user_context_sandbox.context_root / "work" / "test.sh")
-    result = plugin._check_sandbox_path(inside_path)
+    result = plugin._check_sandbox_path(inside_path, sandbox=user_context_sandbox)
     assert result is None
 
 
 def test_check_sandbox_path_blocked(plugin: ToolShellPlugin, user_context_sandbox: ContextSandbox, tmp_path: Path):
-    """L2 沙箱校验：路径在沙箱外 → 返回错误字符串"""
-    plugin.sandbox = user_context_sandbox
+    """L2 沙箱校验：路径在沙箱外 → 返回错误字符串（请求级传递）"""
     outside_path = str(tmp_path / "outside" / "script.sh")
-    result = plugin._check_sandbox_path(outside_path)
+    result = plugin._check_sandbox_path(outside_path, sandbox=user_context_sandbox)
     assert result is not None
     assert "沙箱拦截" in result
 
 
 def test_check_sandbox_path_no_sandbox(plugin: ToolShellPlugin):
-    """未注入 sandbox 时，_check_sandbox_path 返回 None"""
+    """未传递 sandbox 时，_check_sandbox_path 返回 None"""
     result = plugin._check_sandbox_path("/tmp/test.sh")
     assert result is None
 
@@ -73,13 +72,15 @@ def test_prepare_command_with_working_dir_inside_sandbox(
     user_context_sandbox: ContextSandbox,
     tmp_path: Path,
 ):
-    """working_dir 在沙箱内 → 命令准备成功"""
-    plugin.sandbox = user_context_sandbox
+    """working_dir 在沙箱内 → 命令准备成功（请求级传递）"""
+    # 创建沙箱内的工作目录
     inside_wd = str(user_context_sandbox.context_root / "work")
     inside_wd_path = Path(inside_wd)
     inside_wd_path.mkdir(parents=True, exist_ok=True)
 
-    result = plugin._prepare_command("echo hello", working_dir=inside_wd)
+    # 使用无 restrict_to_workspace 的 plugin 实例进行测试
+    no_restrict_plugin = ToolShellPlugin(workspace=str(inside_wd_path), restrict_to_workspace=False)
+    result = no_restrict_plugin._prepare_command("echo hello", working_dir=inside_wd, sandbox=user_context_sandbox)
     assert isinstance(result, MagicMock) or hasattr(result, "command")  # _PreparedCommand
 
 
@@ -88,13 +89,14 @@ def test_prepare_command_with_working_dir_outside_sandbox(
     user_context_sandbox: ContextSandbox,
     tmp_path: Path,
 ):
-    """working_dir 在沙箱外 → L2 拦截"""
-    plugin.sandbox = user_context_sandbox
+    """working_dir 在沙箱外 → L2 拦截（请求级传递）"""
     outside_wd = str(tmp_path / "outside")
     outside_wd_path = Path(outside_wd)
     outside_wd_path.mkdir(parents=True, exist_ok=True)
 
-    result = plugin._prepare_command("echo hello", working_dir=outside_wd)
+    # 使用无 restrict_to_workspace 的 plugin 实例，仅测试 L2 沙箱拦截
+    no_restrict_plugin = ToolShellPlugin(workspace=str(outside_wd_path), restrict_to_workspace=False)
+    result = no_restrict_plugin._prepare_command("echo hello", working_dir=outside_wd, sandbox=user_context_sandbox)
     assert isinstance(result, str)
     assert "沙箱拦截" in result
 
@@ -113,21 +115,21 @@ def test_prepare_command_with_working_dir_fallback_to_workspace(
 # ====== 集成测试：sandbox 注入 + _prepare_command ======
 
 
-def test_full_injection_workflow(
+def test_request_level_sandbox_workflow(
     plugin: ToolShellPlugin,
     user_context_sandbox: ContextSandbox,
     tmp_path: Path,
 ):
-    """完整注入流程：sandbox 注入 → _prepare_command 校验"""
-    # 1. 注入 sandbox
-    plugin.sandbox = user_context_sandbox
-
-    # 2. 创建沙箱内的工作目录
+    """完整请求级传递流程：sandbox 作为参数传递 → _prepare_command 校验"""
+    # 1. 创建沙箱内的工作目录
     inside_wd = user_context_sandbox.context_root / "work"
     inside_wd.mkdir(parents=True, exist_ok=True)
 
-    # 3. 调用 _prepare_command，使用沙箱内的 working_dir
-    result = plugin._prepare_command("echo hello", working_dir=str(inside_wd))
+    # 2. 使用无 restrict_to_workspace 的 plugin 实例
+    no_restrict_plugin = ToolShellPlugin(workspace=str(inside_wd), restrict_to_workspace=False)
+    
+    # 3. 调用 _prepare_command，使用请求级传递的 sandbox
+    result = no_restrict_plugin._prepare_command("echo hello", working_dir=str(inside_wd), sandbox=user_context_sandbox)
     assert hasattr(result, "command")
 
 
@@ -196,20 +198,21 @@ def test_sanitize_params_path_field_still_intercepts(
 
 
 @pytest.mark.asyncio
-async def test_execute_shell_with_injected_sandbox(
+async def test_execute_shell_with_request_level_sandbox(
     plugin: ToolShellPlugin,
     user_context_sandbox: ContextSandbox,
     tmp_path: Path,
 ):
-    """execute_shell 在注入 sandbox 后，working_dir 被正确校验"""
-    plugin.sandbox = user_context_sandbox
-
+    """execute_shell 使用请求级传递的 sandbox，working_dir 被正确校验"""
     # 创建沙箱内的工作目录
     inside_wd = user_context_sandbox.context_root / "work"
     inside_wd.mkdir(parents=True, exist_ok=True)
 
-    # 执行 shell 命令，使用沙箱内的 working_dir
-    result = await plugin.execute_tool("execute_shell", command="echo hello", working_dir=str(inside_wd))
+    # 使用无 restrict_to_workspace 的 plugin 实例
+    no_restrict_plugin = ToolShellPlugin(workspace=str(inside_wd), restrict_to_workspace=False)
+
+    # 执行 shell 命令，使用请求级传递的 sandbox
+    result = await no_restrict_plugin.execute_tool("execute_shell", command="echo hello", working_dir=str(inside_wd), _sandbox=user_context_sandbox)
     assert "hello" in result or "退出码" in result
 
 
@@ -219,13 +222,14 @@ async def test_execute_shell_outside_sandbox_fails(
     user_context_sandbox: ContextSandbox,
     tmp_path: Path,
 ):
-    """execute_shell 使用沙箱外的 working_dir → 返回错误"""
-    plugin.sandbox = user_context_sandbox
-
+    """execute_shell 使用沙箱外的 working_dir → 返回错误（请求级传递）"""
     outside_wd = str(tmp_path / "outside")
     Path(outside_wd).mkdir(parents=True, exist_ok=True)
 
-    result = await plugin.execute_tool("execute_shell", command="echo hello", working_dir=outside_wd)
+    # 使用无 restrict_to_workspace 的 plugin 实例，仅测试 L2 沙箱拦截
+    no_restrict_plugin = ToolShellPlugin(workspace=str(outside_wd), restrict_to_workspace=False)
+
+    result = await no_restrict_plugin.execute_tool("execute_shell", command="echo hello", working_dir=outside_wd, _sandbox=user_context_sandbox)
     assert isinstance(result, str)
     assert "沙箱拦截" in result
 
@@ -238,16 +242,14 @@ def test_check_sandbox_path_with_symlink_to_outside(
     user_context_sandbox: ContextSandbox,
     tmp_path: Path,
 ):
-    """符号链接指向沙箱外 → L2 拦截"""
-    plugin.sandbox = user_context_sandbox
-
+    """符号链接指向沙箱外 → L2 拦截（请求级传递）"""
     # 创建指向外部的符号链接
     outside_file = tmp_path / "outside_file.sh"
     outside_file.write_text("#!/bin/bash\necho hello", encoding="utf-8")
     symlink = user_context_sandbox.context_root / "evil_link"
     symlink.symlink_to(outside_file)
 
-    result = plugin._check_sandbox_path(str(symlink))
+    result = plugin._check_sandbox_path(str(symlink), sandbox=user_context_sandbox)
     assert result is not None
     assert "沙箱拦截" in result
 
@@ -257,9 +259,7 @@ def test_check_sandbox_path_with_symlink_to_inside(
     user_context_sandbox: ContextSandbox,
     tmp_path: Path,
 ):
-    """符号链接指向沙箱内 → 通过"""
-    plugin.sandbox = user_context_sandbox
-
+    """符号链接指向沙箱内 → 通过（请求级传递）"""
     # 创建指向内部的符号链接
     inside_file = user_context_sandbox.context_root / "safe.sh"
     inside_file.write_text("#!/bin/bash\necho hello", encoding="utf-8")
@@ -267,5 +267,5 @@ def test_check_sandbox_path_with_symlink_to_inside(
     symlink.symlink_to(inside_file)
 
     # 符号链接在外部但指向内部 → 解析后在沙箱内，应通过
-    result = plugin._check_sandbox_path(str(symlink))
+    result = plugin._check_sandbox_path(str(symlink), sandbox=user_context_sandbox)
     assert result is None

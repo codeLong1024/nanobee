@@ -915,18 +915,6 @@ class AgentLoop:
             context.add_message("user", current_content)
             ctx.user_persisted_early = True
 
-        # 检索相关记忆，注入 System Prompt（通过 contribute_to_prompt 机制）
-        if getattr(ctx, "_needs_memory_retrieval", False):
-            memory_plugins = self._get_memory_plugins()
-            for plugin in memory_plugins:
-                try:
-                    memory_text = await plugin.retrieve(ctx.msg.content, context)
-                    if memory_text:
-                        # memory_echo 插件通过 contribute_to_prompt 注入记忆段
-                        pass
-                except Exception:
-                    logger.exception("记忆插件 %s.retrieve 出错", getattr(plugin, "name", "?"))
-
         return "ok"
 
     async def _build_sandbox(self, user_id: str) -> Any | None:

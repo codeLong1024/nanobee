@@ -17,7 +17,6 @@ import pytest
 
 from nanobee.kernel.context_pipeline import ContextPipeline, _map_plugin_stage
 from nanobee.plugins.base import NanobeePlugin
-from nanobee.plugins.hook_mixin import PluginHookMixin
 
 
 # ---- 测试用插件 ----
@@ -40,7 +39,7 @@ class TestSkillPlugin(NanobeePlugin):
         return "可用技能：web-search, calc"
 
 
-class TestToolAddPlugin(PluginHookMixin, NanobeePlugin):
+class TestToolAddPlugin(NanobeePlugin):
     """模拟插件，动态添加工具。"""
     name = "test_tool_add"
     plugin_type = "tool_add"
@@ -101,21 +100,22 @@ class FakeUserContext:
 # ---- 测试用例 ----
 
 class TestPluginHookMixin:
-    """验证 PluginHookMixin 基本功能。"""
+    """验证 PluginHookMixin 基本功能（通过 NanobeePlugin 继承链）。"""
 
     def test_mixin_importable(self):
         """PluginHookMixin 可导入"""
-        assert PluginHookMixin is not None
+        from nanobee.plugins.hook_mixin import PluginHookMixin as PHM
+        assert PHM is not None
 
     def test_mixin_default_implementations(self):
-        """混入类的默认实现不报错"""
+        """混入类的默认实现不报错（通过 NanobeePlugin 继承）"""
         plugin = TestPostInvokePlugin()
         assert plugin.contribute_to_prompt(None) is None
         assert plugin.contribute_to_tools(None, ["a"]) == ["a"]
 
     @pytest.mark.asyncio
     async def test_mixin_async_defaults(self):
-        """混入类的异步默认实现不报错"""
+        """混入类的异步默认实现不报错（通过 NanobeePlugin 继承）"""
         plugin = TestPostInvokePlugin()
         result = await plugin.on_pre_invoke(None, "test", {"k": "v"})
         assert result == {"k": "v"}
@@ -262,14 +262,14 @@ class TestPluginStageMapping:
 
 
 class TestPluginHookMixinComposition:
-    """验证 PluginHookMixin 与 NanobeePlugin 的组合使用。"""
+    """验证 PluginHookMixin 与 NanobeePlugin 的继承关系。"""
 
-    def test_mixin_with_base_class(self):
-        """PluginHookMixin 可与 NanobeePlugin 正确组合"""
+    def test_nanobee_plugin_inherits_mixin(self):
+        """NanobeePlugin 继承 PluginHookMixin"""
+        from nanobee.plugins.hook_mixin import PluginHookMixin as PHM
         plugin = TestToolAddPlugin()
+        assert isinstance(plugin, PHM)
         assert isinstance(plugin, NanobeePlugin)
-        assert plugin.contribute_to_prompt(None) is None
-        assert "tool-web" in plugin.contribute_to_tools(None, [])
 
     def test_on_message_completed_handles_plugin_list(self):
         """验证 AgentLoop._notify_plugins_message_completed 正确处理插件列表"""

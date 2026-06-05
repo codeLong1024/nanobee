@@ -1,6 +1,0 @@
-[plugin]
-name = "memory_echo"
-version = "1.0.0"
-description = "极简参考插件：读取 context/{user_id}/memory.txt 原样注入 ## 记忆 段"
-author = "nanobee"
-type = "echo"
