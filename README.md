@@ -18,7 +18,7 @@
 
 ## 项目状态
 
-**版本 v0.1.0** — 核心框架（微内核、Agent 引擎、LLM Provider、插件体系）已通过 **200+ 单元测试**验证。
+**版本 v0.1.0** — 核心框架（微内核、Agent 引擎、LLM Provider、插件体系）已通过 **246 个单元测试**验证。
 
 ```
 Kernel 内核     ████████████████████████████████  95%
@@ -42,6 +42,8 @@ CLI 命令        ████████████████████�
 - **LLM Provider** — Anthropic、OpenAI、Azure、Bedrock、GitHub Copilot、OpenAI 兼容接口、30+ 模型规格注册
 - **MCP 桥接** — 连接 MCP 服务器注册工具，支持 stdio / SSE / Streamable HTTP 三种传输协议
 - **CLI 命令** — `nanobee run`（交互式对话）、`hub` / `plugin` 子命令（骨架）
+- **工具插件 set_context** — 工具插件可通过 `set_context(channel, chat_id, user_id)` 接收会话上下文
+- **max_iterations 配置化** — 支持从 `nanobee.yaml` 配置 LLM 最大对话循环次数（默认 10）
 
 ### 尚不完整的功能
 
@@ -154,6 +156,10 @@ ChannelPlugin ──▶ EventBus ──▶ NanobeeKernel
 
 每个段有内容才注入，无内容跳过。框架只做**拼装**，不做任何业务理解。
 
+### 工具插件 set_context 机制
+
+工具插件可通过 `set_context(channel, chat_id, user_id)` 接收会话上下文。框架在每次工具执行前自动调用此方法（如果工具支持），使工具插件能获取当前会话信息（如钉钉通道的 chat_id、用户 ID）。
+
 ## 内置插件
 
 | 插件 | 类型 | 状态 | 说明 |
@@ -205,7 +211,7 @@ class MyPlugin(NanobeePlugin):
 # 安装开发依赖
 pip install -e ".[dev]"
 
-# 运行全部测试（200+ 用例）
+# 运行全部测试（246 个用例）
 python -m pytest tests/ -v --tb=short
 
 # 查看覆盖率
@@ -228,15 +234,15 @@ python -m pytest tests/ --cov=nanobee --cov-report=term-missing
 | `test_phase2_acceptance.py` | 17 | Hook 机制验收 |
 | `test_phase3_acceptance.py` | 18 | 参考插件 + SkillStage 验收 |
 | `test_skill.py` | 31 | Skill 数据模型/管理器 |
-| 其他 | 40+ | 流式 Hook、钉钉文件、Channel、Sandbox 等 |
+| 其他 | 40+ | 流式 Hook、钉钉文件、Channel、Sandbox、工具上下文等 |
 
 ## 项目结构
 
 ```
 nanobee/
 ├── agent/                 # Agent 核心引擎
-│   ├── loop.py           # 6 态状态机消息循环（1100 行）
-│   ├── runner.py         # LLM 调用 + 工具执行引擎（1380 行）
+│   ├── loop.py           # 6 态状态机消息循环（1129 行）
+│   ├── runner.py         # LLM 调用 + 工具执行引擎（1427 行）
 │   ├── hook.py           # 复合 Hook 管理器
 │   ├── model_presets.py  # 模型预设切换
 │   └── tools/            # 工具体系
