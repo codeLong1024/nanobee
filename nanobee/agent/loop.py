@@ -966,9 +966,6 @@ class AgentLoop:
             on_stream=ctx.on_stream,
             on_stream_end=ctx.on_stream_end,
             pending_queue=ctx.pending_queue,
-            channel=msg.channel,
-            chat_id=msg.chat_id,
-            sender_id=msg.sender_id,
         )
         final_content, tools_used, all_msgs, stop_reason, had_injections = result
         ctx.final_content = final_content

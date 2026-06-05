@@ -218,17 +218,26 @@ class HTTPChannelPlugin(ChannelPlugin):
         self._app: web.Application | None = None
         self._runner: web.AppRunner | None = None
         self._site: web.TCPSite | None = None
-        self._model: str = "unknown"
+        self._model: str = "default"
 
     # ====== 生命周期 ======
 
     def initialize(self, kernel: Any) -> None:
         """初始化插件时读取配置。"""
         super().initialize(kernel)
-        # 从配置读取模型名称
+        # 从配置读取模型名称（支持字典和 Pydantic 对象）
         agents_config = kernel.config.get("agents", {})
-        defaults = agents_config.get("defaults", {}) if isinstance(agents_config, dict) else {}
-        self._model = defaults.get("model", "unknown")
+        if isinstance(agents_config, dict):
+            defaults = agents_config.get("defaults", {})
+            self._model = defaults.get("model", "default") if isinstance(defaults, dict) else "default"
+        else:
+            # Pydantic 对象（AgentsConfig）
+            defaults = getattr(agents_config, "defaults", None)
+            if defaults is not None:
+                model = getattr(defaults, "model", None)
+                self._model = model if model else "default"
+            else:
+                self._model = "default"
         logger.info("HTTP 通道模型: %s", self._model)
 
     async def start(self) -> None:

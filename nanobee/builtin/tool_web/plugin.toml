@@ -1,5 +1,5 @@
 [plugin]
-name = "tool-web"
+name = "tool_web"
 version = "1.0.0"
 description = "Web 工具：web_search, web_fetch"
 author = "nanobee-team"

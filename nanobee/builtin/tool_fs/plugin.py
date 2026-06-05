@@ -29,7 +29,7 @@ class ToolFileSystemPlugin(ToolPlugin):
     如果没有传递，回退到 Path.cwd() 作为默认工作目录。
     """
 
-    name = "tool-fs"
+    name = "tool_fs"
     version = "1.0.0"
     plugin_type = "tool"
 

@@ -26,7 +26,7 @@ class ToolCronPlugin(ToolPlugin):
     通过 set_context() 注入当前会话的通道信息，用于任务触发后投递结果。
     """
 
-    name = "tool-cron"
+    name = "tool_cron"
     version = "1.0.0"
     plugin_type = "tool"
 

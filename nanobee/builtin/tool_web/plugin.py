@@ -111,7 +111,7 @@ def _format_results(query: str, items: list[dict[str, Any]], n: int) -> str:
 class ToolWebPlugin(ToolPlugin):
     """Web 工具插件 - 提供 web_search 和 web_fetch 工具"""
 
-    name = "tool-web"
+    name = "tool_web"
     version = "1.0.0"
     plugin_type = "tool"
 

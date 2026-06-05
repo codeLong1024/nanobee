@@ -1,5 +1,5 @@
 [plugin]
-name = "tool-cron"
+name = "tool_cron"
 version = "1.0.0"
 description = "Cron 定时任务工具：创建、列出、移除定时提醒和任务"
 author = "nanobee-team"

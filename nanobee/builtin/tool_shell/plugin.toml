@@ -1,5 +1,5 @@
 [plugin]
-name = "tool-shell"
+name = "tool_shell"
 version = "1.0.0"
 description = "Shell 命令工具：execute_shell"
 author = "nanobee-team"

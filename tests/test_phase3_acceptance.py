@@ -58,7 +58,10 @@ class TestSkillStage:
 
     @pytest.mark.asyncio
     async def test_injects_skills_into_prompt(self, tmp_path: Path):
-        """SkillStage 读取用户技能并注入 System Prompt。"""
+        """SkillStage 渐进式注入：只注入元数据（name + description），不注入完整 body。
+
+        LLM 会根据描述自行判断是否需要读取完整的 skill.md 文件。
+        """
         user_id = "alice"
         skill_mgr = SkillManager(tmp_path / "skills")
         self._create_skill(skill_mgr, user_id, "git-log-analyzer",
@@ -70,9 +73,14 @@ class TestSkillStage:
         result = await stage.process(context)
 
         prompt = result["system_prompt"]
+        # 元数据注入
         assert "## 技能" in prompt
         assert "git-log-analyzer" in prompt
-        assert "分析 git log 输出" in prompt
+        assert "分析 git 提交历史" in prompt  # description
+        assert "**文件**" in prompt  # 文件路径
+        # 渐进式：不注入完整 body（节省 token）
+        assert "1. 获取提交列表" not in prompt
+        assert "2. 统计变更" not in prompt
 
     @pytest.mark.asyncio
     async def test_no_skills_no_injection(self, tmp_path: Path):
@@ -96,14 +104,14 @@ class TestSkillStage:
 
     @pytest.mark.asyncio
     async def test_shared_skills_visible(self, tmp_path: Path):
-        """共享技能对其他用户可见。"""
+        """共享技能对其他用户可见（只注入元数据）。"""
         # 用户 A 创建共享技能
         skill_mgr = SkillManager(tmp_path / "skills")
         self._create_skill(skill_mgr, "alice", "code-review",
-                           "代码审查助手", "检查代码质量",
+                           "代码审查助手", "检查代码质量\n\n1. 检查风格\n2. 检查逻辑",
                            visibility=SkillVisibility.SHARED)
 
-        # 用户 B 查看时应包含 A 的共享技能
+        # 用户 B 查看时应包含 A 的共享技能（元数据）
         ctx_b = _make_user_context(tmp_path, "bob")
         stage = SkillStage(_make_kernel_with_core(tmp_path))
         context = {"system_prompt": "## Soul\n你是一个助手\n", "user_context": ctx_b}
@@ -113,6 +121,10 @@ class TestSkillStage:
         assert "## 技能" in prompt
         assert "code-review" in prompt
         assert "@alice" in prompt
+        assert "代码审查助手" in prompt  # description
+        # 渐进式：不注入完整 body
+        assert "1. 检查风格" not in prompt
+        assert "2. 检查逻辑" not in prompt
 
     @pytest.mark.asyncio
     async def test_does_not_show_own_shared_twice(self, tmp_path: Path):

@@ -72,7 +72,7 @@ class ToolShellPlugin(ToolPlugin):
     - L2: 注入的 self.sandbox（ContextSandbox）优先，实现防御纵深
     """
 
-    name = "tool-shell"
+    name = "tool_shell"
     version = "1.0.0"
     plugin_type = "tool"
 
