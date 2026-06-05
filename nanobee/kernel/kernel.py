@@ -27,10 +27,10 @@ from nanobee.kernel.skill_manager import SkillManager
 
 
 class _StreamHook(AgentHook):
-    """内部流式 Hook：桥接 Kernel.handle_message_streaming → AgentHook 系统。
+    """内部流式 Hook：桥接 Kernel.handle_message 的流式回调 → AgentHook 系统。
 
     仅桥接 on_stream（流式增量），不桥接 on_stream_end。
-    结束事件由调用者在 handle_message_streaming 返回后统一处理，
+    结束事件由调用者返回后统一处理，
     避免运行器内部的 on_stream_end 与通道的二次发送产生时序冲突。
     """
 
@@ -38,7 +38,7 @@ class _StreamHook(AgentHook):
         super().__init__()
         self._on_stream = on_stream
         # on_stream_end 不使用：运行器内部触发会导致重复 _stream_end
-        # 改为由 handle_message_streaming 返回后调用者统一发送
+        # 改为由 handle_message 返回后调用者统一发送
         _ = on_stream_end
 
     def wants_streaming(self) -> bool:
@@ -52,7 +52,7 @@ class _StreamHook(AgentHook):
                 logger.exception("[_StreamHook] on_stream callback failed, delta=%s...", delta[:80])
 
     async def on_stream_end(self, context: Any, *, resuming: bool = False) -> None:
-        # no-op：结束事件由 handle_message_streaming 返回后统一处理
+        # no-op：结束事件由 handle_message 返回后统一处理
         pass
 
     def finalize_content(self, context: Any, content: str | None) -> str | None:
@@ -177,37 +177,22 @@ class NanobeeKernel:
         self,
         message: str,
         context_id: str = "default",
-        sender_id: str = "user",
-    ) -> OutboundMessage | None:
-        """处理用户消息（阻塞式，无流式回调）。
-
-        Args:
-            message: 用户消息
-            context_id: 上下文 ID
-            sender_id: 发送者 ID，作为 context 目录标识
-
-        Returns:
-            Agent 回复（含可能的媒体附件路径）
-        """
-        return await self._handle_message_impl(message, context_id, sender_id=sender_id)
-
-    async def handle_message_streaming(
-        self,
-        message: str,
-        context_id: str = "default",
         *,
+        media: list[str] | None = None,
         on_stream: Any = None,
         on_stream_end: Any = None,
         sender_id: str = "user",
     ) -> OutboundMessage | None:
-        """处理用户消息（支持流式回调）。
+        """处理用户消息。
 
+        支持可选媒体附件和流式回调。
         流式文本块通过 on_stream(delta) 逐段回调，流结束通过
         on_stream_end(resuming=False) 通知。
 
         Args:
-            message: 用户消息
+            message: 用户消息文本
             context_id: 上下文 ID
+            media: 媒体附件路径列表（图片、文件等）
             on_stream: 每段文本增量回调，签名 async (delta: str) -> None
             on_stream_end: 流结束回调，签名 async (*, resuming: bool) -> None
             sender_id: 发送者 ID，作为 context 目录标识
@@ -215,9 +200,9 @@ class NanobeeKernel:
         Returns:
             Agent 回复（含可能的媒体附件路径）
         """
-        hook = _StreamHook(on_stream=on_stream, on_stream_end=on_stream_end)
+        hook = _StreamHook(on_stream=on_stream, on_stream_end=on_stream_end) if on_stream else None
         return await self._handle_message_impl(
-            message, context_id, extra_hook=hook, sender_id=sender_id,
+            message, context_id, media=media, extra_hook=hook, sender_id=sender_id,
         )
 
     async def _handle_message_impl(
@@ -225,6 +210,7 @@ class NanobeeKernel:
         message: str,
         context_id: str,
         *,
+        media: list[str] | None = None,
         extra_hook: Any = None,
         sender_id: str = "user",
     ) -> OutboundMessage | None:
@@ -233,6 +219,7 @@ class NanobeeKernel:
         Args:
             message: 用户消息
             context_id: 上下文 ID
+            media: 媒体附件路径列表
             extra_hook: 可选的流式 Hook，桥接到 AgentLoop 的流式系统
             sender_id: 发送者 ID，作为 context 目录标识
 
@@ -258,6 +245,7 @@ class NanobeeKernel:
             sender_id=sender_id,
             chat_id=context_id,
             content=message,
+            media=media or [],
         )
 
         if extra_hook is not None:

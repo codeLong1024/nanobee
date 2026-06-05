@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 from nanobee.agent.tools.base import Tool
 from nanobee.kernel.skill_manager import SkillManager, SkillVisibility
+from nanobee.kernel.skill_validator import validate_skill_meta
 
 if TYPE_CHECKING:
     pass
@@ -61,6 +62,13 @@ class CreateSkillTool(Tool):
         }
 
     async def execute(self, **kwargs: Any) -> str:
+        # 前置校验（借用 SkillMeta 的 description 校验 + validator 业务校验）
+        _temp_meta = SkillMeta(
+            name=kwargs["name"],
+            description=kwargs["description"],
+        )
+        validate_skill_meta(_temp_meta)
+
         visibility = SkillVisibility(kwargs.get("visibility", "private"))
         skill = self._skill_mgr.create(
             user_id=kwargs["user_id"],

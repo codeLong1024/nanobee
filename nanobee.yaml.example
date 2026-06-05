@@ -70,6 +70,16 @@ providers:
 #   #   headers:
 #   #     X-API-Key: "your-api-key"
 
+# 插件配置
+# plugins:
+#   channel_http:
+#     # 监听地址（默认 127.0.0.1，建议保持默认仅本地访问）
+#     host: "127.0.0.1"
+#     # 监听端口（默认 8080）
+#     port: 8080
+#     # API Key（可选，配置后在请求头中传递 Authorization: Bearer <key>）
+#     # api_key: "sk-your-http-api-key"
+
 # 路由配置（多租户映射）
 # 格式："{channel}:{chat_id}" → user_id
 # routing:

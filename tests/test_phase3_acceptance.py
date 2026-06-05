@@ -127,8 +127,8 @@ class TestSkillStage:
         context = {"system_prompt": "## Soul\n", "user_context": ctx}
         result = await stage.process(context)
 
-        # 只出现一次
-        assert result["system_prompt"].count("my-skill") == 1
+        # 技能在 prompt 中只出现一次（不重复注入）
+        assert result["system_prompt"].count("### my-skill") == 1
 
 
 class TestAuditLoggerPlugin:

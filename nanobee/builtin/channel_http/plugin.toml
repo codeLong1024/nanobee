@@ -1,0 +1,6 @@
+[plugin]
+name = "channel_http"
+version = "0.1.0"
+description = "OpenAI 兼容 HTTP API 通道，支持 LobeChat 等第三方客户端连接"
+author = "nanobee"
+plugin_type = "channel"

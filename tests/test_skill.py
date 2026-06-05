@@ -20,6 +20,8 @@ class TestSkillMeta:
         assert meta.visibility == SkillVisibility.PRIVATE
         assert meta.version == "0.1.0"
         assert meta.based_on is None
+        assert meta.compatibility is None
+        assert meta.license is None
 
     def test_shared_visibility(self):
         meta = SkillMeta(name="test", description="", visibility="shared")
@@ -37,6 +39,36 @@ class TestSkillMeta:
         assert d["name"] == "my-skill"
         assert d["visibility"] == "shared"
         assert d["based_on"] == "alice/original"
+
+    def test_compatibility_and_license(self):
+        """compatibility / license 新字段可设置并包含在 to_dict 中。"""
+        meta = SkillMeta(
+            name="test", description="", compatibility="anthropic", license="MIT",
+        )
+        assert meta.compatibility == "anthropic"
+        assert meta.license == "MIT"
+        d = meta.to_dict()
+        assert d["compatibility"] == "anthropic"
+        assert d["license"] == "MIT"
+
+    def test_description_exceeds_max_length(self):
+        """description 超 1024 字符应抛出 ValueError。"""
+        long_desc = "x" * 1025
+        with pytest.raises(ValueError, match="超过限制"):
+            SkillMeta(name="test", description=long_desc)
+
+    def test_description_contains_angle_bracket(self):
+        """description 包含 < 或 > 应抛出 ValueError。"""
+        with pytest.raises(ValueError, match="禁止字符 '<'"):
+            SkillMeta(name="test", description="含有 < 的描述")
+        with pytest.raises(ValueError, match="禁止字符 '>'"):
+            SkillMeta(name="test", description="含有 > 的描述")
+
+    def test_description_boundary_ok(self):
+        """description 恰好 1024 字符应通过。"""
+        desc = "x" * 1024
+        meta = SkillMeta(name="test", description=desc)
+        assert len(meta.description) == 1024
 
 
 class TestSkillManagerCRUD:

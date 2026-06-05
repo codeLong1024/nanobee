@@ -30,6 +30,10 @@ class SkillVisibility(str, Enum):
 class SkillMeta:
     """SKILL.md YAML frontmatter 元数据"""
 
+    # description 约束
+    _DESC_MAX_LENGTH = 1024
+    _FORBIDDEN_CHARS = "<>"
+
     def __init__(self, **data: Any) -> None:
         self.name: str = str(data.get("name", ""))
         self.description: str = str(data.get("description", ""))
@@ -42,6 +46,25 @@ class SkillMeta:
         )
         self.version: str = str(data.get("version", "0.1.0"))
         self.based_on: str | None = data.get("based_on")
+        self.compatibility: str | None = data.get("compatibility")
+        self.license: str | None = data.get("license")
+
+        # description 合法性校验
+        self._validate_description()
+
+    def _validate_description(self) -> None:
+        """校验 description 合法性。
+
+        Raises:
+            ValueError: description 超长或包含禁止字符。
+        """
+        if len(self.description) > self._DESC_MAX_LENGTH:
+            raise ValueError(
+                f"description 长度 {len(self.description)} 超过限制 {self._DESC_MAX_LENGTH}"
+            )
+        for ch in self._FORBIDDEN_CHARS:
+            if ch in self.description:
+                raise ValueError(f"description 包含禁止字符 '{ch}'")
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -53,6 +76,10 @@ class SkillMeta:
         }
         if self.based_on:
             d["based_on"] = self.based_on
+        if self.compatibility:
+            d["compatibility"] = self.compatibility
+        if self.license:
+            d["license"] = self.license
         return d
 
 

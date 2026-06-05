@@ -19,13 +19,13 @@
 
 ## 项目状态
 
-**版本 v0.1.0** — 核心框架（微内核、Agent 引擎、LLM Provider、插件体系）已通过 **246 个单元测试**验证。
+**版本 v0.1.0** — 核心框架（微内核、Agent 引擎、LLM Provider、插件体系）已通过 **299 个单元测试**验证。
 
 ```
 Kernel 内核     ████████████████████████████████  95%
 Agent 引擎      ████████████████████████████████ 100%
 LLM Providers   ████████████████████████████████ 100%
-内置插件        ████████████████████████████████  90%
+内置插件        ████████████████████████████████ 100%
 CLI 命令        ████████████████████████░░░░░░░░  60%
 测试覆盖        ████████████████████████████████ 100%
 ```
@@ -37,6 +37,8 @@ CLI 命令        ████████████████████�
 - **Agent 状态机** — 6 态驱动循环（RESTORE → COMPACT → BUILD → RUN → SAVE → RESPOND），支持流式输出、中轮注入、并发锁
 - **Plugin Hook 机制** — 5 个核心契约接口，插件可在关键切面注入逻辑
 - **技能管理** — Skill 数据模型 + SkillManager，用户通过对话创建/编辑/删除技能，支持 visibility 共享
+- **技能元数据扩展** — SkillMeta 支持 `compatibility` / `license` 字段，description 自动校验（≤1024 字符、禁止 `<>`）
+- **技能校验器** — `skill_validator.py` 校验 name kebab-case 格式、frontmatter 完整性、白名单检查，CreateSkillTool 前置调用
 - **上下文管理** — 按用户物理隔离的目录结构（context.yaml / history.jsonl / work / memory）
 - **灵魂守卫** — 三层保护（chmod 444 + 写入拦截 Hook + SHA-256 哈希校验）
 - **插件管理器** — 扫描、加载（含依赖拓扑排序）、启用/禁用/卸载生命周期
@@ -45,6 +47,8 @@ CLI 命令        ████████████████████�
 - **CLI 命令** — `nanobee run`（交互式对话）、`hub` / `plugin` 子命令（骨架）
 - **工具插件 set_context** — 工具插件可通过 `set_context(channel, chat_id, user_id)` 接收会话上下文
 - **max_iterations 配置化** — 支持从 `nanobee.yaml` 配置 LLM 最大对话循环次数（默认 10）
+- **OpenAI 兼容 HTTP API** — `POST /v1/chat/completions`（SSE 流式 + JSON 非流式）、`GET /v1/models`、API Key 认证，支持 LobeChat 等第三方客户端连接
+- **Pipeline 三明治防御** — SkillStage 加 `[SKILL BEGIN/END]` 边界标记；共享技能 body 每行 `>` 引用包裹 + `⚠️ 外部技能` 警告；`FinalGuardStage(priority 90)` 追加不可绕过的优先级规则段
 
 ### 尚不完整的功能
 
@@ -52,7 +56,6 @@ CLI 命令        ████████████████████�
 |------|------|--------|
 | `cli/plugin.py` | `create/list/enable/disable` 子命令仅有 echo 占位 | 中 |
 | `cli/hub.py` | `search/install/uninstall` 子命令仅有 echo 占位 | 低 |
-| `builtin/channel_http` | HTTP 通道仅有空壳方法 | 中 |
 | `kernel/dream_scheduler.py` | 梦境调度器存根（21行），未集成 | 低 |
 | `kernel/personality.py` | 人格指纹模块存根（20行） | 低 |
 | `security/` | 安全策略模块为空 | 中 |
@@ -150,10 +153,14 @@ ChannelPlugin ──▶ EventBus ──▶ NanobeeKernel
 ### Pipeline 如何组装 System Prompt
 
 ```
-[P0]  Soul 段     ← core.md Soul 节（框架内置）
-[P28] 技能段       ← SkillStage：从 skills/ 目录读取用户技能文档
-[P30] 记忆段       ← 遍历插件 contribute_to_prompt → stage="记忆"
-[P40] Rules 段     ← core.md Rules 节 + 用户隔离铁律（框架内置）
+[P10] Soul 段         ← core.md Soul 节（框架内置）
+[P20] Rules 段         ← core.md Rules 节 + 用户隔离铁律（框架内置）
+[P28] 技能段           ← SkillStage：从 skills/ 目录读取技能文档
+                        · 私有技能：`[SKILL BEGIN/END]` 边界标记
+                        · 共享技能：`>` 引用包裹 + ⚠️ 外部技能警告
+[P??] 插件段           ← 遍历插件 contribute_to_prompt → 按类型分组
+                        · ## 记忆 → ## 技能 → ## 知识库
+[P90] FinalGuard 段    ← 不可绕过的优先级规则段（始终在最后）
 ```
 
 每个段有内容才注入，无内容跳过。框架只做**拼装**，不做任何业务理解。
@@ -174,7 +181,7 @@ ChannelPlugin ──▶ EventBus ──▶ NanobeeKernel
 | `tool_cron` | Tool | ✅ 完整 | Cron 定时任务（add, list, remove） |
 | `memory_file` | Memory | ✅ 完整 | JSONL 文件记忆存储，ADD-only 设计，关键词检索 + 时间衰减 |
 | `audit_logger` | Audit | ✅ 完整 | 参考：on_message_completed 审计日志 |
-| `channel_http` | Channel | 🚧 存根 | HTTP 通道（待实现） |
+| `channel_http` | Channel | ✅ 完整 | OpenAI 兼容 HTTP API（/v1/chat/completions、/v1/models），支持流式 SSE，API Key 认证 |
 
 ## 插件开发
 
@@ -213,7 +220,7 @@ class MyPlugin(NanobeePlugin):
 # 安装开发依赖
 pip install -e ".[dev]"
 
-# 运行全部测试（246 个用例）
+# 运行全部测试（299 个用例）
 python -m pytest tests/ -v --tb=short
 
 # 查看覆盖率
@@ -235,7 +242,10 @@ python -m pytest tests/ --cov=nanobee --cov-report=term-missing
 | `test_phase1_acceptance.py` | 9 | 多租户隔离验收 |
 | `test_phase2_acceptance.py` | 17 | Hook 机制验收 |
 | `test_phase3_acceptance.py` | 18 | 参考插件 + SkillStage 验收 |
-| `test_skill.py` | 31 | Skill 数据模型/管理器 |
+| `test_channel_http.py` | 29 | HTTP API 通道（消息解析/SSE/认证/端点/错误处理） |
+| `test_skill.py` | 36 | Skill 数据模型/管理器（含 description 校验、compatibility/license） |
+| `test_skill_validator.py` | 12 | 技能校验器（name 格式、meta 完整性、白名单检查） |
+| `test_skill_injection.py` | 7 | 三明治注入防御（指令覆盖、markdown 伪造、guard 位置、引用前缀） |
 | 其他 | 40+ | 流式 Hook、钉钉文件、Channel、Sandbox、工具上下文等 |
 
 ## 项目结构
@@ -252,11 +262,11 @@ nanobee/
 │       ├── registry.py   # 工具注册中心
 │       ├── schema.py     # 参数 Schema 定义
 │       ├── mcp.py        # MCP 桥接（stdio/SSE/HTTP）
-│       ├── skill_manager.py  # 技能管理工具
+│       ├── skill_manager.py  # 技能管理工具（Create/List/Update/Delete/Fork + 前置校验）
 │       └── message.py    # 消息工具
-├── builtin/              # 内置插件（8 个已实现）
+├── builtin/              # 内置插件（9 个已实现）
 │   ├── channel_cli/      # CLI 通道
-│   ├── channel_http/     # HTTP 通道 🚧
+│   ├── channel_http/     # OpenAI 兼容 HTTP API
 │   ├── memory_file/      # JSONL 记忆存储
 │   ├── audit_logger/     # 审计日志参考
 │   ├── tool_fs/          # 文件系统工具
@@ -270,17 +280,18 @@ nanobee/
 │   ├── plugin.py         # plugin 子命令 🚧 存根
 │   └── hub.py            # hub 子命令 🚧 存根
 ├── config/               # 配置加载
-├── kernel/               # 微内核核心（14 个模块）
+├── kernel/               # 微内核核心（15 个模块）
 │   ├── kernel.py         # NanobeeKernel
 │   ├── plugin_manager.py # 插件管理器
 │   ├── skill_manager.py  # 技能管理器（CRUD + mtime 缓存）
+│   ├── skill_validator.py  # 技能校验器（name/description/属性白名单）
 │   ├── router.py         # 多租户路由
 │   ├── sandbox.py        # 路径逃逸沙箱
 │   ├── soul_guard.py     # 灵魂文件守卫
 │   ├── lock_manager.py   # 按用户并发锁
 │   ├── tool_collector.py # 工具过滤
 │   ├── context_manager.py  # 上下文管理器
-│   ├── context_pipeline.py # System Prompt 构建
+│   ├── context_pipeline.py # System Prompt 构建（含 FinalGuardStage）
 │   ├── user_context.py   # 用户上下文
 │   ├── event_bus.py      # 事件总线
 │   └── core_parser.py    # core.md 解析
@@ -318,7 +329,7 @@ nanobee 从 [nanobot](https://github.com/HKUDS/nanobot) 衍生开发，核心差
 - 人设漂移检测（由 `drift-detector` 插件实现）
 - Subagent 委派工具（由 `tool-subagent` 插件实现）
 - 复杂的 facts.json / episodic.json 格式化
-- HTTP/WebSocket 服务（由 `channel_http` 插件补全）
+- WebSocket 服务（由 `channel_ws` 插件实现）
 
 框架的责任是**画地为牢（隔离）**，插件的自由是**破土动工（注入）**。
 
