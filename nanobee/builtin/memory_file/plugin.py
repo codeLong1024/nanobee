@@ -254,3 +254,85 @@ class MemoryFilePlugin(MemoryPlugin):
             return
 
         await self.store(full_messages, context)
+
+    # ---- P1: 记忆注入 System Prompt ----
+
+    def contribute_to_prompt(self, context: Any) -> str | None:
+        """检索相关记忆并注入 System Prompt。
+
+        以最近一条用户消息作为查询关键词，同步检索 facts.jsonl，
+        匹配的记忆拼接到 ## 记忆 段。
+
+        Args:
+            context: 用户上下文（UserContext 实例）
+
+        Returns:
+            格式化的记忆文本，无匹配时返回 None
+        """
+        try:
+            messages = context.get_messages()
+        except Exception:
+            return None
+
+        # 取最近一条用户消息作为查询
+        query = ""
+        for msg in reversed(messages):
+            if msg.get("role") == "user":
+                query = msg.get("content", "")
+                break
+
+        if not query:
+            return None
+
+        # 同步检索（不经过 async retrieve）
+        try:
+            facts_path = self._ensure_facts_path(context)
+        except Exception:
+            return None
+
+        result = self._sync_retrieve(query, facts_path, top_k=5)
+        return result
+
+    def _sync_retrieve(self, query: str, facts_path: Path, top_k: int = 5) -> str | None:
+        """同步版 retrieve，用于同步的 contribute_to_prompt。"""
+        if not facts_path or not facts_path.exists():
+            return None
+
+        query_lower = query.lower()
+        tokens = set()
+        for ch in query_lower:
+            if "\u4e00" <= ch <= "\u9fff":
+                tokens.add(ch)
+        for word in query_lower.split():
+            tokens.add(word)
+        if not tokens:
+            return None
+
+        scored: list[tuple[int, dict[str, Any]]] = []
+        with open(facts_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                content = (entry.get("excerpt") or entry.get("content") or "").lower()
+                score = sum(1 for t in tokens if t in content)
+                if score > 0:
+                    scored.append((score, entry))
+
+        if not scored:
+            return None
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        top = scored[:top_k]
+
+        lines = ["## 记忆"]
+        for _, entry in top:
+            text = entry.get("excerpt") or entry.get("content", "")
+            role = entry.get("role", "?")
+            lines.append(f"- [{role}] {text}")
+
+        return "\n".join(lines)

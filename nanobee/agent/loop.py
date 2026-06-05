@@ -511,6 +511,9 @@ class AgentLoop:
         initial_messages: list[dict],
         *,
         context_id: str,
+        channel: str = "",
+        chat_id: str = "",
+        sender_id: str = "",
         trace_id: str | None = None,
         sandbox: Any | None = None,
         filtered_tool_names: list[str] | None = None,
@@ -577,6 +580,9 @@ class AgentLoop:
             concurrent_tools=True,
             workspace=self.workspace,
             context_id=context_id,
+            channel=channel,
+            chat_id=chat_id,
+            sender_id=sender_id,
             trace_id=trace_id or generate_trace_id(),
             context_window_tokens=self.context_window_tokens,
             context_block_limit=self.context_block_limit,
@@ -878,7 +884,11 @@ class AgentLoop:
         return "ok"
 
     async def _state_compact(self, ctx: TurnContext) -> str:
-        """压缩/合并上下文 — 标记是否需要记忆检索。"""
+        """压缩/合并上下文 — 裁剪过长的持久化历史，触发记忆存储。
+
+        当持久化历史超过阈值时，裁剪至最大保留条数，
+        防止历史无限增长导致 history.jsonl 膨胀。
+        """
         memory_plugins = self._get_memory_plugins()
         if not memory_plugins:
             return "ok"
@@ -886,9 +896,19 @@ class AgentLoop:
         user_ctx = await self.context_manager.get_or_create(ctx.context_id)
         messages = user_ctx.get_messages()
 
-        # store 已移至 on_message_completed 异步触发，不阻塞主流程
-        # 仅标记本轮是否需要检索记忆（注入到 System Prompt）
+        # 标记本轮是否需要检索记忆
         ctx._needs_memory_retrieval = len(messages) >= self._memory_store_threshold
+
+        # 实际压缩：当持久化历史超过阈值（max_messages * 1.5）时裁剪
+        max_messages = 120
+        trim_threshold = int(max_messages * 1.5)
+        if len(messages) > trim_threshold:
+            user_ctx.trim_to_last_n(max_messages)
+            logger.info(
+                "COMPACT: 裁剪持久化历史 %d → %d 条（用户 %s）",
+                len(messages), max_messages, ctx.context_id,
+            )
+
         return "ok"
 
     async def _state_build(self, ctx: TurnContext) -> str:
@@ -954,11 +974,14 @@ class AgentLoop:
         except Exception:
             logger.debug("构建 ToolCollector 失败，使用全部工具")
 
-        # 从 ctx.msg 提取通道上下文
+        # 从 ctx.msg 提取通道上下文（用于工具插件 set_context 注入）
         msg = ctx.msg
         result = await self._run_agent_loop(
             ctx.initial_messages,
             context_id=ctx.context_id,
+            channel=msg.channel,
+            chat_id=msg.chat_id,
+            sender_id=msg.sender_id,
             trace_id=ctx.trace_id,
             sandbox=sandbox,
             filtered_tool_names=filtered_tool_names,
@@ -1056,14 +1079,40 @@ class AgentLoop:
         budget: int,
         max_messages: int,
     ) -> list[dict[str, Any]]:
-        """按 token 预算裁剪历史消息，保留最近的用户消息开头。"""
+        """按 token 预算裁剪历史消息，从最早的消息开始移除。
+
+        策略：
+        1. 始终保留最近的 max_messages 条消息作为上限
+        2. 从最早的消息开始逐个移除，直到预估 token 总和 ≤ budget
+        3. 至少保留最后 2 条消息（无论如何不全部裁光）
+
+        Args:
+            history: 历史消息列表（按时间正序）
+            budget: 历史消息允许占用的最大 token 数
+            max_messages: 消息条数上限
+
+        Returns:
+            裁剪后的历史消息列表
+        """
         if not history:
             return history
-        if len(history) <= max_messages:
-            return history
 
-        # 简单裁剪：保留最近 max_messages 条
-        return history[-max_messages:]
+        # 先按条数上限裁剪
+        if len(history) > max_messages:
+            history = history[-max_messages:]
+
+        # 如果 budget 不足以承载最少上下文，取个保守值
+        effective_budget = max(budget, 256)
+
+        # 从最早的消息开始逐个估算，超出预算则移除
+        trimmed = list(history)
+        while len(trimmed) > 2:  # 保留至少 2 条
+            total = sum(estimate_message_tokens(m) for m in trimmed)
+            if total <= effective_budget:
+                break
+            trimmed.pop(0)  # 移除最早的一条
+
+        return trimmed
 
     # --- 模型预设管理 ---
 

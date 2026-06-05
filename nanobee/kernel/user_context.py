@@ -106,6 +106,26 @@ class ConversationContext:
         """获取所有消息"""
         return self._messages.copy()
 
+    def trim_to_last_n(self, n: int) -> None:
+        """裁剪历史，仅保留最近 n 条消息（同步更新 history.jsonl）。
+
+        Args:
+            n: 保留的最新消息条数。n <= 0 时清空。
+        """
+        if n <= 0:
+            self.clear()
+            return
+        if len(self._messages) <= n:
+            return
+        self._messages = self._messages[-n:]
+        self._rewrite_history()
+
+    def _rewrite_history(self) -> None:
+        """将当前 _messages 覆写到 history.jsonl。"""
+        with open(self.history_file, "w", encoding="utf-8") as f:
+            for msg in self._messages:
+                f.write(json.dumps(msg, ensure_ascii=False) + "\n")
+
     def clear(self) -> None:
         """清空上下文（保留目录结构）"""
         self._messages.clear()
@@ -214,6 +234,10 @@ class UserContext:
     def clear(self) -> None:
         """清空历史（保留目录结构）"""
         self._conversation.clear()
+
+    def trim_to_last_n(self, n: int) -> None:
+        """裁剪历史，仅保留最近 n 条消息。"""
+        self._conversation.trim_to_last_n(n)
 
     # ---- 白/黑名单 ----
 

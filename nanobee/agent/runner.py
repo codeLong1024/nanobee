@@ -960,7 +960,7 @@ class AgentRunner:
 
         # 注入会话上下文：调用 ToolPlugin.set_context()（如果工具支持）
         if spec.channel or spec.chat_id or spec.sender_id:
-            self._inject_context_to_tool(tool, spec)
+            _inject_context_to_tool(tool, spec)
 
         # Plugin Hook: on_pre_invoke — 工具执行前拦截
         if spec.plugin_hooks and isinstance(params, dict):
