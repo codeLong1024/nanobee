@@ -6,7 +6,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from nanobee.agent.loop import AgentLoop
+from nanobee.agent.loop import AgentLoop, OutboundMessage
 from nanobee.kernel.context_manager import ContextManager
 from nanobee.kernel.context_pipeline import ContextPipeline
 from nanobee.kernel.event_bus import EventBus
@@ -80,7 +80,7 @@ class NanobeeKernel:
             plugin_dirs: 插件目录列表
         """
         self.config = config or {}
-        self.work_dir = Path(self.config.get("work_dir", ".")).expanduser()
+        self.work_dir = Path(self.config.get("work_dir", "~/.nanobee")).expanduser()
 
         # 核心组件
         self.event_bus = EventBus()
@@ -176,7 +176,7 @@ class NanobeeKernel:
         message: str,
         context_id: str = "default",
         sender_id: str = "user",
-    ) -> str:
+    ) -> OutboundMessage | None:
         """处理用户消息（阻塞式，无流式回调）。
 
         Args:
@@ -185,7 +185,7 @@ class NanobeeKernel:
             sender_id: 发送者 ID，作为 context 目录标识
 
         Returns:
-            Agent 回复
+            Agent 回复（含可能的媒体附件路径）
         """
         return await self._handle_message_impl(message, context_id, sender_id=sender_id)
 
@@ -197,7 +197,7 @@ class NanobeeKernel:
         on_stream: Any = None,
         on_stream_end: Any = None,
         sender_id: str = "user",
-    ) -> str:
+    ) -> OutboundMessage | None:
         """处理用户消息（支持流式回调）。
 
         流式文本块通过 on_stream(delta) 逐段回调，流结束通过
@@ -211,7 +211,7 @@ class NanobeeKernel:
             sender_id: 发送者 ID，作为 context 目录标识
 
         Returns:
-            Agent 回复（完整文本）
+            Agent 回复（含可能的媒体附件路径）
         """
         hook = _StreamHook(on_stream=on_stream, on_stream_end=on_stream_end)
         return await self._handle_message_impl(
@@ -225,7 +225,7 @@ class NanobeeKernel:
         *,
         extra_hook: Any = None,
         sender_id: str = "user",
-    ) -> str:
+    ) -> OutboundMessage | None:
         """处理用户消息的公共实现。
 
         Args:
@@ -235,8 +235,10 @@ class NanobeeKernel:
             sender_id: 发送者 ID，作为 context 目录标识
 
         Returns:
-            Agent 回复
+            Agent 回复（OutboundMessage，含 .content 和 .media）
         """
+        from nanobee.agent.loop import InboundMessage
+
         if not self._booted:
             raise RuntimeError("内核未启动，请先调用 boot()")
 
@@ -248,8 +250,6 @@ class NanobeeKernel:
 
         if self._agent_loop is not None:
             await self._agent_loop._connect_mcp()
-
-        from nanobee.agent.loop import InboundMessage
 
         msg = InboundMessage(
             channel="direct",
@@ -269,7 +269,7 @@ class NanobeeKernel:
             if extra_hook is not None and extra_hook in self._agent_loop._extra_hooks:
                 self._agent_loop._extra_hooks.remove(extra_hook)
 
-        return response.content if response else "No response generated."
+        return response
 
 
 

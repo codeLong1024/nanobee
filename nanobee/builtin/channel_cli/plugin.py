@@ -100,11 +100,12 @@ class ChannelCLIPlugin(ChannelPlugin):
 
         if self.kernel is not None:
             response = await self.kernel.handle_message(content, message.context_id)
+            content_text = response.content if response else ""
             return [
                 OutboundMessage(
                     channel=self.metadata.name,
                     chat_id=message.chat_id,
-                    content=response,
+                    content=content_text,
                 )
             ]
         else:

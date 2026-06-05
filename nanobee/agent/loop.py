@@ -250,6 +250,7 @@ class AgentLoop:
         # 每个上下文的待处理消息队列（中轮注入）
         self._pending_queues: dict[str, asyncio.Queue] = {}
 
+        self._register_message_tool()
         self._register_plugin_tools()
         self._register_skill_tools()
         self._current_iteration: int = 0
@@ -273,6 +274,12 @@ class AgentLoop:
             router=getattr(kernel, "router", None),
             **extra,
         )
+
+    def _register_message_tool(self) -> None:
+        """注册 ``message`` 工具，让 LLM 可以结构化携带 media 参数发送文件。"""
+        from nanobee.agent.tools.message import MessageTool
+        self.tools.register(MessageTool())
+        logger.info("message 工具已注册")
 
     def _register_plugin_tools(self) -> None:
         """从 PluginManager 注册工具插件到 ToolRegistry。
@@ -311,7 +318,7 @@ class AgentLoop:
         )
         from nanobee.plugins.skill import SkillManager
 
-        skill_mgr = SkillManager(self.context_manager.contexts_base_dir)
+        skill_mgr = SkillManager(self.context_manager.contexts_base_dir.parent / "skills")
         for tool in [
             CreateSkillTool(skill_mgr),
             ListSkillsTool(skill_mgr),
@@ -1022,7 +1029,11 @@ class AgentLoop:
         *,
         turn_latency_ms: int | None = None,
     ) -> OutboundMessage | None:
-        """从轮次结果组装出站消息。"""
+        """从轮次结果组装出站消息。
+
+        扫描 ``all_msgs`` 中的 ``message`` 工具调用，提取 ``media`` 路径
+        合并到出站消息中，让 LLM 可以结构化指定附件。
+        """
         content = final_content or EMPTY_FINAL_RESPONSE_MESSAGE
 
         preview = content[:120] + "..." if len(content) > 120 else content
@@ -1034,10 +1045,17 @@ class AgentLoop:
         if turn_latency_ms is not None:
             meta["latency_ms"] = int(turn_latency_ms)
 
+        # 收集 message 工具调用中的 media 路径
+        from nanobee.agent.tools.message import collect_message_tool_media
+        tool_content, tool_media = collect_message_tool_media(all_msgs or [])
+        existing_media = getattr(msg, "media", [])
+        combined_media = existing_media + tool_media
+
         return OutboundMessage(
             channel=msg.channel,
             chat_id=msg.chat_id,
             content=content,
+            media=combined_media,
             metadata=meta,
         )
 

@@ -58,6 +58,7 @@
 | `tool_fs` | Tool | ✅ | 文件系统工具（read_file, write_file, edit_file, list_dir） |
 | `tool_shell` | Tool | ✅ | Shell 命令工具（execute_shell） |
 | `tool_web` | Tool | ✅ | Web 工具（web_search, web_fetch） |
+| `tool_cron` | Tool | ✅ | Cron 定时任务（add, list, remove） |
 | `memory_file` | Memory | ✅ | JSONL 文件记忆存储 |
 | `memory_echo` | Echo | ✅ | Phase 3 参考：读取 memory.txt 注入记忆段 |
 | `audit_logger` | Audit | ✅ | Phase 3 参考：on_message_completed 审计日志 |
@@ -212,6 +213,7 @@ nanobee/
 │   ├── tool_echo/       # 回显测试工具
 │   ├── tool_fs/         # 文件系统工具
 │   ├── tool_shell/      # Shell 命令工具
+│   ├── tool_cron/       # Cron 定时任务
 │   ├── tool_web/        # Web 工具
 ├── cli/                 # 命令行入口
 ├── config/              # 配置加载与 Schema

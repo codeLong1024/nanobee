@@ -117,7 +117,7 @@ class TestSkillStage:
     async def test_injects_skills_into_prompt(self, tmp_path: Path):
         """SkillStage 读取用户技能并注入 System Prompt。"""
         user_id = "alice"
-        skill_mgr = SkillManager(tmp_path / "contexts")
+        skill_mgr = SkillManager(tmp_path / "skills")
         self._create_skill(skill_mgr, user_id, "git-log-analyzer",
                            "分析 git 提交历史", "分析 git log 输出\n\n1. 获取提交列表\n2. 统计变更")
 
@@ -155,7 +155,7 @@ class TestSkillStage:
     async def test_shared_skills_visible(self, tmp_path: Path):
         """共享技能对其他用户可见。"""
         # 用户 A 创建共享技能
-        skill_mgr = SkillManager(tmp_path / "contexts")
+        skill_mgr = SkillManager(tmp_path / "skills")
         self._create_skill(skill_mgr, "alice", "code-review",
                            "代码审查助手", "检查代码质量",
                            visibility=SkillVisibility.SHARED)
@@ -174,7 +174,7 @@ class TestSkillStage:
     @pytest.mark.asyncio
     async def test_does_not_show_own_shared_twice(self, tmp_path: Path):
         """自己的共享技能不会重复注入。"""
-        skill_mgr = SkillManager(tmp_path / "contexts")
+        skill_mgr = SkillManager(tmp_path / "skills")
         self._create_skill(skill_mgr, "alice", "my-skill",
                            "我的共享技能", "内容",
                            visibility=SkillVisibility.SHARED)

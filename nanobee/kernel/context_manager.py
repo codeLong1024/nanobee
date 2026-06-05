@@ -28,8 +28,8 @@ class ContextManager:
         self.kernel = kernel
         self._contexts: dict[str, UserContext] = {}
 
-        # 上下文基础目录
-        work_dir = Path(kernel.config.get("work_dir", "."))
+        # 上下文基础目录（使用 kernel.work_dir，确保默认值一致）
+        work_dir = Path(kernel.work_dir).expanduser()
         self.contexts_base_dir = work_dir / "contexts"
         self.contexts_base_dir.mkdir(parents=True, exist_ok=True)
 

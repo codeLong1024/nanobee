@@ -1,6 +1,11 @@
 """
 Tool FS 插件 - 文件系统工具（read_file, write_file, edit_file, list_dir）
 基于 nanobot/agent/tools/filesystem.py 适配 nanobee 插件架构
+
+防御纵深设计：
+- L1（runner.py）：ContextSandbox 在工具执行前清洗参数
+- L2（本插件）：插件内部路径校验，作为第二道防线
+两层使用同一个 context_root（由 runner.py 注入），确保一致性。
 """
 
 from __future__ import annotations
@@ -19,19 +24,19 @@ logger = logging.getLogger(__name__)
 class ToolFileSystemPlugin(ToolPlugin):
     """文件系统工具插件
 
-    使用 ContextSandbox 对路径做二次校验，实现防御纵深。
-    以 workspace 为 context_root 构建沙箱，确保路径不逃逸。
+    防御纵深 L2 层：插件内部路径校验。
+    sandbox 属性由 runner.py 动态注入（同一次请求的 ContextSandbox 实例）。
+    如果没有注入，回退到 Path.cwd() 作为默认工作目录。
     """
 
     name = "tool-fs"
     version = "1.0.0"
     plugin_type = "tool"
 
-    def __init__(self, metadata: Any = None, workspace: str | None = None):
+    def __init__(self, metadata: Any = None):
         super().__init__(metadata)
-        self._workspace = Path(workspace).resolve() if workspace else Path.cwd().resolve()
-        # 以 workspace 为 context_root 构建沙箱，用于路径边界校验
-        self._workspace_sandbox = ContextSandbox(self._workspace)
+        # sandbox 属性由 runner.py 注入，初始为 None
+        self.sandbox: ContextSandbox | None = None
 
     def get_tools(self) -> list[dict[str, Any]]:
         """获取工具定义列表（OpenAI function schema 格式）
@@ -412,10 +417,10 @@ class ToolFileSystemPlugin(ToolPlugin):
 
             return "\n".join(items)
 
-        except SandboxError as e:
-            return f"错误：沙箱拦截 - {e}"
         except PermissionError as e:
             return f"错误：权限不足 - {e}"
+        except SandboxError as e:
+            return f"错误：沙箱拦截 - {e}"
         except Exception as e:
             return f"列出目录失败: {e}"
 
@@ -424,7 +429,10 @@ class ToolFileSystemPlugin(ToolPlugin):
     # ------------------------------------------------------------------
 
     def _resolve_path(self, path: str) -> Path:
-        """解析文件路径，支持相对路径转换为绝对路径，并通过沙箱校验
+        """解析文件路径，支持相对路径转换为绝对路径，并通过 L2 沙箱校验
+
+        防御纵深 L2 层：使用 runner.py 注入的 sandbox 进行路径边界校验。
+        如果 sandbox 未注入，回退到 Path.cwd() 作为默认工作目录。
 
         Args:
             path: 文件路径（可以是相对或绝对路径）
@@ -433,14 +441,22 @@ class ToolFileSystemPlugin(ToolPlugin):
             解析后的安全绝对路径
 
         Raises:
-            SandboxError: 路径逃逸 — 不在 workspace 范围内
+            SandboxError: 路径逃逸 — 不在 context_root 范围内
         """
         p = Path(path)
         if not p.is_absolute():
-            p = self._workspace / p
+            # 相对路径基于当前工作目录解析
+            p = Path.cwd() / p
         p = p.resolve()
-        # 使用沙箱校验路径是否在 workspace 内
-        self._workspace_sandbox.assert_allowed(p)
+
+        # L2 沙箱校验：使用注入的 sandbox，如果没有则回退到默认
+        if self.sandbox is not None:
+            self.sandbox.assert_allowed(p)
+        else:
+            # 回退：使用 Path.cwd() 作为默认 context_root
+            default_sandbox = ContextSandbox(Path.cwd())
+            default_sandbox.assert_allowed(p)
+
         return p
 
     @staticmethod

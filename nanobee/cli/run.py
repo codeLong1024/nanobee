@@ -43,12 +43,13 @@ def run(config: str | None, plugin_dir: str | None, verbose: bool) -> None:
     setup_structured_logging(level=log_level)
     logger.debug("CLI run 命令已启动，verbose=%s", verbose)
 
-    # 自动发现配置文件：未指定时查找工作目录下的 nanobee.yaml
+    # 自动发现配置文件：未指定时查找 ~/.nanobee/nanobee.yaml
     config_path: Path | None
     if config:
         config_path = Path(config)
     else:
-        candidates = [Path("nanobee.yaml"), Path.cwd() / "nanobee.yaml"]
+        home_config = Path.home() / ".nanobee" / "nanobee.yaml"
+        candidates = [home_config, Path("nanobee.yaml"), Path.cwd() / "nanobee.yaml"]
         config_path = next((p for p in candidates if p.is_file()), None)
         if config_path:
             logger.debug("Auto-discovered config: %s", config_path)
@@ -108,7 +109,7 @@ def _run_session(cfg: Any, plugin_dir: str | None, config_plugin_dirs: list[str]
                 click.echo(f"\n🤖 Agent: ", nl=False)
                 try:
                     response = await kernel.handle_message(user_input, context_id="default")
-                    click.echo(response)
+                    click.echo(response.content if response else "")
                 except RuntimeError as e:
                     click.echo(f"错误: {e}", err=True)
                 except Exception as e:

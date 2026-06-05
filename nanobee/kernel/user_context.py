@@ -67,7 +67,6 @@ class ConversationContext:
         self.base_dir = base_dir
         self.work_dir = base_dir / "work"
         self.memory_dir = base_dir / "memory"
-        self.skills_dir = base_dir / "skills"
         self.history_file = base_dir / "history.jsonl"
 
         # 创建目录结构
@@ -230,8 +229,8 @@ class UserContext:
 
     @property
     def context_root(self) -> Path:
-        """上下文根目录（用于沙箱）"""
-        return self.base_dir
+        """上下文根目录（用于沙箱）— 指向 work/ 子目录"""
+        return self.work_dir
 
     def __repr__(self) -> str:
         return f"UserContext(user_id={self.user_id!r}, base_dir={self.base_dir})"

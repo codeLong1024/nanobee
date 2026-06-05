@@ -125,8 +125,7 @@ class SkillStage(PipelineStage):
     def __init__(self, kernel: Any) -> None:
         super().__init__(priority=28)  # 在 Memory(30) 之前
         work_dir = Path(kernel.config.get("work_dir", "."))
-        contexts_base_dir = work_dir / "contexts"
-        self._skill_mgr = SkillManager(contexts_base_dir)
+        self._skill_mgr = SkillManager(work_dir / "skills")
 
     async def process(self, context: dict[str, Any]) -> dict[str, Any]:
         user_ctx = context.get("user_context")

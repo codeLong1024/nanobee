@@ -146,6 +146,7 @@ def test_whitelist_only_allowed_tools():
 class _FakeKernel:
     def __init__(self, work_dir: str) -> None:
         self.config = {"work_dir": work_dir}
+        self.work_dir = Path(work_dir)
 
 
 @pytest.mark.asyncio

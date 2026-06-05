@@ -12,6 +12,7 @@ keywords = ["agent", "ai", "framework", "plugin"]
 license = {text = "MIT"}
 dependencies = [
     "click>=8.0.0",
+    "croniter>=2.0.0",
     "mcp>=1.0.0",
     "pydantic>=2.0.0",
     "pydantic-settings>=2.0.0",

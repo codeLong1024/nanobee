@@ -66,17 +66,17 @@ class Skill:
 class SkillManager:
     """技能管理器
 
-    钉在 contexts/ 目录上，负责技能的 CRUD 和发现。
+    钉在 skills/ 目录上，负责技能的 CRUD 和发现。
     不依赖 Plugin 生命周期，是纯文件管理。
     """
 
-    def __init__(self, contexts_base_dir: str | Path) -> None:
-        self._contexts_base_dir = Path(contexts_base_dir).resolve()
+    def __init__(self, skills_base_dir: str | Path) -> None:
+        self._skills_base_dir = Path(skills_base_dir).resolve()
 
     # ---- 内部路径 ----
 
     def _user_skills_dir(self, user_id: str) -> Path:
-        return self._contexts_base_dir / user_id / "skills"
+        return self._skills_base_dir / user_id
 
     def _skill_md_path(self, user_id: str, skill_name: str) -> Path:
         return self._user_skills_dir(user_id) / skill_name / "SKILL.md"
@@ -200,15 +200,12 @@ class SkillManager:
     def find_shared_skills(self) -> list[Skill]:
         """遍历所有用户的 skills/ 目录，收集 visibility=shared 的技能"""
         shared: list[Skill] = []
-        if not self._contexts_base_dir.exists():
+        if not self._skills_base_dir.exists():
             return shared
-        for user_dir in self._contexts_base_dir.iterdir():
+        for user_dir in self._skills_base_dir.iterdir():
             if not user_dir.is_dir():
                 continue
-            skills_dir = user_dir / "skills"
-            if not skills_dir.exists():
-                continue
-            for skill_dir in skills_dir.iterdir():
+            for skill_dir in sorted(user_dir.iterdir()):
                 skill = self._load_skill(skill_dir / "SKILL.md")
                 if skill is not None and skill.meta.visibility == SkillVisibility.SHARED:
                     shared.append(skill)
