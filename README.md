@@ -138,6 +138,7 @@ ChannelPlugin ──▶ EventBus ──▶ NanobeeKernel
 | `ContextManager` | 多租户上下文隔离（每个用户独立目录） |
 | `ContextPipeline` | System Prompt 构建（Soul → Skill → Memory → Rules 管线） |
 | `PluginManager` | 插件扫描、加载、生命周期控制 |
+| `SkillManager` | 技能 CRUD + mtime 文件系统缓存（TTL 2 秒） |
 | `EventBus` | 异步事件发布/订阅 |
 | `SoulGuard` | 灵魂文件三层保护 |
 | `LockManager` | 按用户粒度的 asyncio 并发锁 |
@@ -268,9 +269,10 @@ nanobee/
 │   ├── plugin.py         # plugin 子命令 🚧 存根
 │   └── hub.py            # hub 子命令 🚧 存根
 ├── config/               # 配置加载
-├── kernel/               # 微内核核心（12 个模块）
+├── kernel/               # 微内核核心（14 个模块）
 │   ├── kernel.py         # NanobeeKernel
 │   ├── plugin_manager.py # 插件管理器
+│   ├── skill_manager.py  # 技能管理器（CRUD + mtime 缓存）
 │   ├── router.py         # 多租户路由
 │   ├── sandbox.py        # 路径逃逸沙箱
 │   ├── soul_guard.py     # 灵魂文件守卫
