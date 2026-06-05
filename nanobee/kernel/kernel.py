@@ -307,6 +307,12 @@ class NanobeeKernel:
             defaults = agents_config.get("defaults", {}) if isinstance(agents_config, dict) else {}
             memory_val = defaults.get("memory_store_threshold", 20)
             extra["memory_store_threshold"] = int(memory_val)
+        # 从配置中提取 max_iterations（如果未在 extra 中指定）
+        if "max_iterations" not in extra:
+            agents_config = self.config.get("agents", {})
+            defaults = agents_config.get("defaults", {}) if isinstance(agents_config, dict) else {}
+            max_iter_val = defaults.get("max_iterations", 10)
+            extra["max_iterations"] = int(max_iter_val)
 
         self._agent_loop = AgentLoop.from_kernel(
             kernel=self,

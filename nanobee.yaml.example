@@ -18,6 +18,8 @@ agents:
     temperature: 0.1
     # 记忆存储阈值（消息对数，超过此值时触发记忆提取与检索）
     # memory_store_threshold: 20
+    # 最大对话循环次数（LLM 最多执行多少次思考-工具调用循环）
+    # max_iterations: 10
 
 # Provider 配置
 providers:

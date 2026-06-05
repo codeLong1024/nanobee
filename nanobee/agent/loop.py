@@ -954,6 +954,8 @@ class AgentLoop:
         except Exception:
             logger.debug("构建 ToolCollector 失败，使用全部工具")
 
+        # 从 ctx.msg 提取通道上下文
+        msg = ctx.msg
         result = await self._run_agent_loop(
             ctx.initial_messages,
             context_id=ctx.context_id,
@@ -964,6 +966,9 @@ class AgentLoop:
             on_stream=ctx.on_stream,
             on_stream_end=ctx.on_stream_end,
             pending_queue=ctx.pending_queue,
+            channel=msg.channel,
+            chat_id=msg.chat_id,
+            sender_id=msg.sender_id,
         )
         final_content, tools_used, all_msgs, stop_reason, had_injections = result
         ctx.final_content = final_content
