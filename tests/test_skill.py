@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from nanobee.plugins.skill import SkillManager, SkillMeta, SkillVisibility
+from nanobee.kernel.skill_manager import SkillManager, SkillMeta, SkillVisibility
 
 
 class TestSkillMeta:

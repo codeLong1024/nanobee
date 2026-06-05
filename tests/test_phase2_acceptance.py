@@ -17,6 +17,7 @@ import pytest
 
 from nanobee.kernel.context_pipeline import ContextPipeline, _map_plugin_stage
 from nanobee.plugins.base import NanobeePlugin
+from nanobee.kernel.skill_manager import SkillManager
 
 
 # ---- 测试用插件 ----
@@ -88,6 +89,9 @@ class FakeKernel:
             self.config["core_md_path"] = core_md_path
         if work_dir:
             self.config["work_dir"] = work_dir
+            self.work_dir = Path(work_dir)
+        # 统一 SkillManager 实例（避免路径分裂）
+        self.skill_manager = SkillManager(self.config.get("work_dir", ".") + "/skills")
 
 
 class FakeUserContext:

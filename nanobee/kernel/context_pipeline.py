@@ -1,13 +1,18 @@
-"""上下文管道 - 构建 Agent 的系统提示词"""
+"""上下文管道 - 构建 Agent 的系统提示词
+
+从 kernel.skill_manager 统一读取技能数据，避免路径分裂。
+"""
 
 from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from nanobee.kernel.core_parser import CoreMDParser
-from nanobee.plugins.skill import SkillManager
+
+if TYPE_CHECKING:
+    from nanobee.kernel.skill_manager import SkillManager
 
 logger = logging.getLogger(__name__)
 
@@ -108,12 +113,12 @@ class SkillStage(PipelineStage):
 
     Skill 是用户知识资产（SKILL.md），非代码插件。
     此 Stage 内置在框架中，不依赖 Plugin 生命周期。
+    使用 kernel.skill_manager 统一实例，避免路径分裂。
     """
 
     def __init__(self, kernel: Any) -> None:
         super().__init__(priority=28)  # 在 Memory(30) 之前
-        work_dir = Path(kernel.config.get("work_dir", "."))
-        self._skill_mgr = SkillManager(work_dir / "skills")
+        self._skill_mgr: SkillManager = kernel.skill_manager
 
     async def process(self, context: dict[str, Any]) -> dict[str, Any]:
         user_ctx = context.get("user_context")

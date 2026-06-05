@@ -17,7 +17,7 @@ import pytest
 
 from nanobee.builtin.audit_logger.plugin import AuditLoggerPlugin
 from nanobee.kernel.context_pipeline import ContextPipeline, SkillStage
-from nanobee.plugins.skill import SkillManager, SkillVisibility
+from nanobee.kernel.skill_manager import SkillManager, SkillVisibility
 
 
 # ---- 辅助工具 ----
@@ -29,6 +29,8 @@ def _make_kernel_with_core(tmp_path: Path) -> MagicMock:
     core_md.write_text("# Test\n\n## Soul\n你是一个助手\n\n## Rules\n请遵守规则。\n", encoding="utf-8")
     kernel = MagicMock()
     kernel.config = {"core_md_path": str(core_md), "work_dir": str(tmp_path)}
+    # 统一 SkillManager 实例（避免路径分裂）
+    kernel.skill_manager = SkillManager(tmp_path / "skills")
     return kernel
 
 

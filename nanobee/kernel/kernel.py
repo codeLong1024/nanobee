@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 
 from nanobee.agent.hook import AgentHook
+from nanobee.kernel.skill_manager import SkillManager
 
 
 class _StreamHook(AgentHook):
@@ -88,6 +89,7 @@ class NanobeeKernel:
         resolved_plugin_dirs = plugin_dirs or self.config.get("plugin_dirs", ["builtin", "plugins"])
         self.plugin_manager = PluginManager(self, resolved_plugin_dirs)
         self.context_manager = ContextManager(self)
+        self.skill_manager = SkillManager(self.work_dir / "skills")
         self.context_pipeline = ContextPipeline(self)
         self.soul_guard = SoulGuard(self)
         self.router = ContextRouter()

@@ -41,6 +41,7 @@ from nanobee.utils.runtime import EMPTY_FINAL_RESPONSE_MESSAGE
 
 if TYPE_CHECKING:
     from nanobee.config.schema import AgentDefaults, ModelPresetConfig
+    from nanobee.kernel.skill_manager import SkillManager
 from nanobee.kernel.context_manager import ContextManager
 from nanobee.kernel.context_pipeline import ContextPipeline
 from nanobee.kernel.event_bus import EventBus
@@ -309,16 +310,16 @@ class AgentLoop:
         """注册技能管理工具（不依赖插件系统，直接操作 SKILL.md）。
 
         这些工具让用户通过对话创建/编辑/删除自己的技能。
+        使用 kernel.skill_manager 统一实例，避免路径分裂。
         """
-        if self.context_manager is None:
+        if self.context_pipeline is None:
             return
+        kernel = self.context_pipeline.kernel
+        skill_mgr: SkillManager = kernel.skill_manager
         from nanobee.agent.tools.skill_manager import (
             CreateSkillTool, DeleteSkillTool, ForkSkillTool,
             ListSkillsTool, UpdateSkillTool,
         )
-        from nanobee.plugins.skill import SkillManager
-
-        skill_mgr = SkillManager(self.context_manager.contexts_base_dir.parent / "skills")
         for tool in [
             CreateSkillTool(skill_mgr),
             ListSkillsTool(skill_mgr),

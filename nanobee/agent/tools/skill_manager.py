@@ -8,7 +8,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from nanobee.agent.tools.base import Tool
-from nanobee.plugins.skill import SkillManager, SkillVisibility
+from nanobee.kernel.skill_manager import SkillManager, SkillVisibility
 
 if TYPE_CHECKING:
     pass
