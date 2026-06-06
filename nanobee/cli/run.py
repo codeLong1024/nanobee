@@ -1,5 +1,11 @@
 """
-Nanobee Run - Agent 运行命令
+Nanobee Run - 轻量级 Agent CLI 模式
+
+对应 nanobot 的 ``agent`` 命令设计哲学：
+- 轻量级，仅启动 AgentLoop + 核心内核
+- 不启动通道、Heartbeat、Cron 等后台服务
+- 支持单次消息模式（-m）和交互式模式
+- 支持流式输出
 """
 
 from __future__ import annotations
@@ -32,18 +38,39 @@ logger = logging.getLogger(__name__)
     default=None,
 )
 @click.option(
+    "-m", "--message",
+    help="单次消息模式（非交互式）",
+    default=None,
+)
+@click.option(
+    "-s", "--session",
+    "session_id",
+    help="会话 ID",
+    default="default",
+)
+@click.option(
     "-v", "--verbose",
     is_flag=True,
     default=False,
     help="显示详细日志",
 )
-def run(config: str | None, plugin_dir: str | None, verbose: bool) -> None:
-    """启动 Agent 会话"""
+def run(
+    config: str | None,
+    plugin_dir: str | None,
+    message: str | None,
+    session_id: str,
+    verbose: bool,
+) -> None:
+    """启动轻量级 Agent 会话（CLI 模式）
+
+    不启动通道、Heartbeat 等后台服务。
+    适用于开发调试和命令行交互。
+    """
     log_level = logging.DEBUG if verbose else logging.WARNING
     setup_structured_logging(level=log_level)
-    logger.debug("CLI run 命令已启动，verbose=%s", verbose)
+    logger.debug("CLI run 命令已启动，verbose=%s，session=%s", verbose, session_id)
 
-    # 自动发现配置文件：未指定时查找 ~/.nanobee/nanobee.yaml
+    # 自动发现配置文件
     config_path: Path | None
     if config:
         config_path = Path(config)
@@ -55,26 +82,33 @@ def run(config: str | None, plugin_dir: str | None, verbose: bool) -> None:
             logger.debug("Auto-discovered config: %s", config_path)
     cfg = load_config(config_path)
 
-    # 创建内核并运行会话
-    _run_session(cfg, plugin_dir, cfg.plugin_dirs)
+    # 创建内核并运行会话（轻量模式）
+    _run_agent_session(cfg, plugin_dir, cfg.plugin_dirs, message, session_id)
 
 
-def _run_session(cfg: Any, plugin_dir: str | None, config_plugin_dirs: list[str] | None = None) -> None:
-    """运行 Agent 会话（启动 + 交互循环）
+def _run_agent_session(
+    cfg: Any,
+    plugin_dir: str | None,
+    config_plugin_dirs: list[str] | None = None,
+    message: str | None = None,
+    session_id: str = "default",
+) -> None:
+    """运行 Agent 会话（轻量级，无后台服务）
 
     Args:
         cfg: 配置对象
         plugin_dir: 插件目录路径（命令行参数）
         config_plugin_dirs: 配置中的插件目录列表
+        message: 单次消息（可选）
+        session_id: 会话 ID
     """
     async def _run():
         # 创建 provider
         provider = make_provider(cfg)
         click.echo(f"  Provider 已初始化: {provider.__class__.__name__}")
 
-        # 创建内核
+        # 确定插件目录
         kernel_config = dict(cfg)
-        # 优先级：命令行参数 > 配置文件 > 默认值
         effective_plugin_dirs = []
         if plugin_dir:
             effective_plugin_dirs = [plugin_dir]
@@ -82,44 +116,52 @@ def _run_session(cfg: Any, plugin_dir: str | None, config_plugin_dirs: list[str]
             effective_plugin_dirs = list(config_plugin_dirs)
         else:
             effective_plugin_dirs = ["builtin", "plugins"]
-        
-        kernel = NanobeeKernel(config=kernel_config, plugin_dirs=effective_plugin_dirs)
 
-        # 使用 Provider 启动内核
+        # 创建内核（轻量模式：不启动通道和 Heartbeat）
+        kernel = NanobeeKernel(config=kernel_config, plugin_dirs=effective_plugin_dirs)
         await kernel.boot_with_provider(provider, model=cfg.agents.defaults.model)
 
         click.echo("🤖 Nanobee Agent 已启动")
         click.echo(f"  默认模型: {cfg.agents.defaults.model}")
-        click.echo(f"  配置提供者: {list(cfg.providers.keys())}")
 
-        click.echo("\n输入消息开始对话 (输入 'quit' 或 'exit' 退出)\n")
-        try:
-            while True:
-                try:
-                    user_input = click.prompt("👤 你", type=str)
-                except (EOFError, KeyboardInterrupt):
-                    break
-
-                user_input = user_input.strip()
-                if not user_input:
-                    continue
-                if user_input.lower() in ("quit", "exit", "退出"):
-                    break
-
-                click.echo(f"\n🤖 Agent: ", nl=False)
-                try:
-                    response = await kernel.handle_message(user_input, context_id="default")
-                    click.echo(response.content if response else "")
-                except RuntimeError as e:
-                    click.echo(f"错误: {e}", err=True)
-                except Exception as e:
-                    logger.exception("处理消息时发生错误")
-                    click.echo(f"错误: {e}", err=True)
-
-                click.echo()
-        finally:
+        if message:
+            # 单次消息模式
+            response = await kernel.handle_message(message, context_id=session_id)
+            if response and response.content:
+                click.echo(f"\n🤖 Agent: {response.content}")
             await kernel.shutdown()
-            click.echo("\n👋 Agent 已停止")
+        else:
+            # 交互式模式
+            click.echo("\n输入消息开始对话 (输入 'quit' 或 'exit' 退出)\n")
+            try:
+                while True:
+                    try:
+                        user_input = click.prompt("👤 你", type=str)
+                    except (EOFError, KeyboardInterrupt):
+                        break
+
+                    user_input = user_input.strip()
+                    if not user_input:
+                        continue
+                    if user_input.lower() in ("quit", "exit", "退出"):
+                        break
+
+                    click.echo(f"\n🤖 Agent: ", nl=False)
+                    try:
+                        response = await kernel.handle_message(
+                            user_input, context_id=session_id,
+                        )
+                        click.echo(response.content if response else "")
+                    except RuntimeError as e:
+                        click.echo(f"错误: {e}", err=True)
+                    except Exception as e:
+                        logger.exception("处理消息时发生错误")
+                        click.echo(f"错误: {e}", err=True)
+
+                    click.echo()
+            finally:
+                await kernel.shutdown()
+                click.echo("\n👋 Agent 已停止")
 
     asyncio.run(_run())
 

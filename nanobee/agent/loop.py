@@ -23,6 +23,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 from nanobee.agent import model_presets as preset_helpers
+from nanobee.exceptions import LoopStateError
 from nanobee.agent.hook import AgentHook, CompositeHook
 from nanobee.agent.runner import _MAX_INJECTIONS_PER_TURN, AgentRunner, AgentRunSpec, PluginHooks
 from nanobee.agent.tools.registry import ToolRegistry, ToolPluginAdapter
@@ -204,6 +205,7 @@ class AgentLoop:
         model_presets: dict[str, ModelPresetConfig] | None = None,
         model_preset: str | None = None,
         memory_store_threshold: int = 20,
+        max_messages: int = 120,
         preset_snapshot_loader: preset_helpers.PresetSnapshotLoader | None = None,
         provider_snapshot_loader: Callable[..., ProviderSnapshot] | None = None,
     ) -> None:
@@ -233,6 +235,7 @@ class AgentLoop:
 
         self.tools = ToolRegistry()
         self._memory_store_threshold = memory_store_threshold
+        self._max_messages = max_messages
         self.runner = AgentRunner(provider)
         self._extra_hooks: list[AgentHook] = hooks or []
 
@@ -260,35 +263,54 @@ class AgentLoop:
     @classmethod
     def from_kernel(
         cls,
-        kernel: Any,
         provider: LLMProvider,
         workspace: Path,
+        context_manager: Any,
+        context_pipeline: Any,
+        event_bus: Any,
+        plugin_manager: Any,
+        router: Any = None,
+        config: dict | None = None,
         **extra: Any,
     ) -> AgentLoop:
-        """从 NanobeeKernel 创建 AgentLoop。
+        """从 Kernel 子组件创建 AgentLoop。
 
-        如果 extra 中未指定 max_iterations 和 memory_store_threshold，
-        则从 kernel.config.agents.defaults 中读取。
+        相比直接传入 ``kernel`` 对象的 duck-typing 方式，
+        显式参数使契约更稳定，不依赖 kernel 内部的属性命名。
+
+        Args:
+            provider: LLM Provider 实例
+            workspace: 工作目录
+            context_manager: 上下文管理器
+            context_pipeline: 上下文管线
+            event_bus: 事件总线
+            plugin_manager: 插件管理器
+            router: 路由器（可选）
+            config: 配置字典（可选，用于读取 agents.defaults）
+            **extra: 传递给 AgentLoop.__init__ 的额外参数
         """
+        cfg = config or {}
+        agents_config = cfg.get("agents", {})
+        defaults = agents_config.get("defaults", {}) if isinstance(agents_config, dict) else {}
+
         # 从配置中提取 max_iterations（如果未在 extra 中指定）
         if "max_iterations" not in extra:
-            agents_config = kernel.config.get("agents", {})
-            defaults = agents_config.get("defaults", {}) if isinstance(agents_config, dict) else {}
             extra["max_iterations"] = int(defaults.get("max_iterations", 10))
         # 从配置中提取 memory_store_threshold（如果未在 extra 中指定）
         if "memory_store_threshold" not in extra:
-            agents_config = kernel.config.get("agents", {})
-            defaults = agents_config.get("defaults", {}) if isinstance(agents_config, dict) else {}
             extra["memory_store_threshold"] = int(defaults.get("memory_store_threshold", 20))
+        # 从配置中提取 max_messages（如果未在 extra 中指定）
+        if "max_messages" not in extra:
+            extra["max_messages"] = int(defaults.get("max_messages", 120))
 
         return cls(
             provider=provider,
             workspace=workspace,
-            context_manager=kernel.context_manager,
-            context_pipeline=kernel.context_pipeline,
-            event_bus=kernel.event_bus,
-            plugin_manager=kernel.plugin_manager,
-            router=getattr(kernel, "router", None),
+            context_manager=context_manager,
+            context_pipeline=context_pipeline,
+            event_bus=event_bus,
+            plugin_manager=plugin_manager,
+            router=router,
             **extra,
         )
 
@@ -850,7 +872,7 @@ class AgentLoop:
             handler_name = f"_state_{ctx.state.name.lower()}"
             handler = getattr(self, handler_name, None)
             if handler is None:
-                raise RuntimeError(f"缺少状态处理器: {ctx.state}")
+                raise LoopStateError(f"缺少状态处理器: {ctx.state}")
 
             t0 = time.perf_counter()
             try:
@@ -875,7 +897,7 @@ class AgentLoop:
 
             next_state = self._TRANSITIONS.get((ctx.state, event))
             if next_state is None:
-                raise RuntimeError(
+                raise LoopStateError(
                     f"[turn {ctx.turn_id}] 状态 {ctx.state} 在事件 {event!r} 下无转换"
                 )
             ctx.state = next_state
@@ -926,13 +948,12 @@ class AgentLoop:
         ctx._needs_memory_retrieval = len(messages) >= self._memory_store_threshold
 
         # 实际压缩：当持久化历史超过阈值（max_messages * 1.5）时裁剪
-        max_messages = 120
-        trim_threshold = int(max_messages * 1.5)
+        trim_threshold = int(self._max_messages * 1.5)
         if len(messages) > trim_threshold:
-            user_ctx.trim_to_last_n(max_messages)
+            user_ctx.trim_to_last_n(self._max_messages)
             logger.info(
                 "COMPACT: 裁剪持久化历史 %d → %d 条（用户 %s）",
-                len(messages), max_messages, ctx.context_id,
+                len(messages), self._max_messages, ctx.context_id,
             )
 
         return "ok"
@@ -944,15 +965,14 @@ class AgentLoop:
         ctx.history = context.get_messages()
 
         # 受 token 预算限制的历史消息
-        max_messages = 120
         max_tokens = self._replay_token_budget()
         if max_tokens > 0:
             system_prompt_len = 0  # 估算 system prompt token 数
             ctx.history = self._trim_history_by_tokens(
-                ctx.history, max_tokens - system_prompt_len, max_messages,
+                ctx.history, max_tokens - system_prompt_len, self._max_messages,
             )
         else:
-            ctx.history = ctx.history[-max_messages:]
+            ctx.history = ctx.history[-self._max_messages:]
 
         ctx.initial_messages = await self._build_initial_messages(ctx.msg, ctx.history)
 

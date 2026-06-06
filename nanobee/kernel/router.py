@@ -12,16 +12,13 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from nanobee.exceptions import UnknownRouteError as _UnknownRouteError
+
 logger = logging.getLogger(__name__)
 
 
-class UnknownRouteError(KeyError):
-    """未知路由异常：channel 消息无法映射到任何用户"""
-
-    def __init__(self, channel: str, chat_id: str) -> None:
-        self.channel = channel
-        self.chat_id = chat_id
-        super().__init__(f"未知路由: channel={channel!r}, chat_id={chat_id!r}")
+class UnknownRouteError(_UnknownRouteError):
+    """未知路由异常：channel 消息无法映射到任何用户。"""
 
 
 class ContextRouter:

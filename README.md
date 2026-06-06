@@ -19,14 +19,14 @@
 
 ## 项目状态
 
-**版本 v0.1.0** — 核心框架（微内核、Agent 引擎、LLM Provider、插件体系）已通过 **299 个单元测试**验证。
+**版本 v0.1.0** — 核心框架（微内核、Agent 引擎、LLM Provider、插件体系）已通过 **396 个单元测试**验证。
 
 ```
 Kernel 内核     ████████████████████████████████  95%
 Agent 引擎      ████████████████████████████████ 100%
 LLM Providers   ████████████████████████████████ 100%
 内置插件        ████████████████████████████████ 100%
-CLI 命令        ████████████████████████░░░░░░░░  60%
+CLI 命令        ████████████████████████████████  75%
 测试覆盖        ████████████████████████████████ 100%
 ```
 
@@ -44,20 +44,19 @@ CLI 命令        ████████████████████�
 - **插件管理器** — 扫描、加载（含依赖拓扑排序）、启用/禁用/卸载生命周期
 - **LLM Provider** — Anthropic、OpenAI、Azure、Bedrock、GitHub Copilot、OpenAI 兼容接口、30+ 模型规格注册
 - **MCP 桥接** — 连接 MCP 服务器注册工具，支持 stdio / SSE / Streamable HTTP 三种传输协议
-- **CLI 命令** — `nanobee run`（交互式对话）、`hub` / `plugin` 子命令（骨架）
+- **CLI 命令** — `nanobee run`（轻量级 Agent CLI 模式，支持 `-m` 单次消息和 `-s` 会话 ID）、`nanobee gateway`（完整服务栈，通道 + Heartbeat + 健康端点）、`plugin list`/`create`/`enable`/`disable` 完整实现、`hub` 子命令🚧
+- **CLI/Gateway 职责分离** — 借鉴 nanobot 设计哲学：`boot()` 只做核心启动，`boot_services()` 启动后台服务。`nanobee run` 轻量无后台，`nanobee gateway` 启动完整服务栈
 - **工具插件 set_context** — 工具插件可通过 `set_context(channel, chat_id, user_id)` 接收会话上下文
 - **max_iterations 配置化** — 支持从 `nanobee.yaml` 配置 LLM 最大对话循环次数（默认 10）
 - **OpenAI 兼容 HTTP API** — `POST /v1/chat/completions`（SSE 流式 + JSON 非流式）、`GET /v1/models`、API Key 认证，支持 LobeChat 等第三方客户端连接
 - **Pipeline 三明治防御** — SkillStage 加 `[SKILL BEGIN/END]` 边界标记；共享技能 body 每行 `>` 引用包裹 + `⚠️ 外部技能` 警告；`FinalGuardStage(priority 90)` 追加不可绕过的优先级规则段
+- **统一异常层次结构** — `NanobeeError` 基类 + 4 个领域分支（Kernel/Provider/Agent/Storage），共 20 个异常类，所有框架异常可通过 `except NanobeeError` 统一捕获
 
 ### 尚不完整的功能
 
 | 模块 | 说明 | 优先级 |
 |------|------|--------|
-| `cli/plugin.py` | `create/list/enable/disable` 子命令仅有 echo 占位 | 中 |
 | `cli/hub.py` | `search/install/uninstall` 子命令仅有 echo 占位 | 低 |
-| `kernel/dream_scheduler.py` | 梦境调度器存根（21行），未集成 | 低 |
-| `kernel/personality.py` | 人格指纹模块存根（20行） | 低 |
 | `security/` | 安全策略模块为空 | 中 |
 
 ## 快速开始
@@ -79,9 +78,17 @@ cp nanobee.yaml.example nanobee.yaml
 # 编辑 nanobee.yaml，填入 API Key
 
 # 4. 运行对话
+
+# 轻量级 Agent CLI 模式（开发调试）
 nanobee run
-# nanobee run -v       详细日志
-# nanobee run -c /path/to/config.yaml
+nanobee run -v                       # 详细日志
+nanobee run -m "你好"                 # 单次消息模式
+nanobee run -s "my-session" -m "hi"  # 指定会话 + 单次消息
+nanobee run -c /path/to/config.yaml
+
+# 完整 Gateway 服务栈模式（生产部署：通道 + Heartbeat + 健康端点）
+nanobee gateway
+nanobee gateway --port 8080           # 带健康检查 HTTP 端点
 ```
 
 ### Windows
@@ -103,7 +110,13 @@ copy nanobee.yaml.example nanobee.yaml
 # 编辑 nanobee.yaml，填入 API Key
 
 # 5. 运行对话
+
+# 轻量级 Agent CLI 模式
 nanobee run
+nanobee run -m "你好"                 # 单次消息
+
+# 完整 Gateway 服务栈模式
+nanobee gateway
 ```
 
 > **提示**：Windows 用户也可以使用项目根目录的 `run.bat` 快捷启动脚本，自动完成虚拟环境创建、依赖安装和启动对话。
@@ -130,6 +143,20 @@ ChannelPlugin ──▶ EventBus ──▶ NanobeeKernel
                                     │
                                     ▼
                                用户响应
+```
+
+### 两种运行模式
+
+```
+┌─────────────────────────────────────────────────────────┐
+│ nanobee run         轻量 Agent CLI 模式                  │
+│                     └→ Kernel.boot() 核心启动            │
+│                        (无通道/Heartbeat/健康端点)        │
+├─────────────────────────────────────────────────────────┤
+│ nanobee gateway     Gateway 完整服务栈                   │
+│                     └→ Kernel.boot() + boot_services()   │
+│                        (通道插件 + Heartbeat + 健康端点)  │
+└─────────────────────────────────────────────────────────┘
 ```
 
 ### 核心组件
@@ -220,7 +247,7 @@ class MyPlugin(NanobeePlugin):
 # 安装开发依赖
 pip install -e ".[dev]"
 
-# 运行全部测试（299 个用例）
+# 运行全部测试（396 个用例）
 python -m pytest tests/ -v --tb=short
 
 # 查看覆盖率
@@ -246,15 +273,17 @@ python -m pytest tests/ --cov=nanobee --cov-report=term-missing
 | `test_skill.py` | 36 | Skill 数据模型/管理器（含 description 校验、compatibility/license） |
 | `test_skill_validator.py` | 12 | 技能校验器（name 格式、meta 完整性、白名单检查） |
 | `test_skill_injection.py` | 7 | 三明治注入防御（指令覆盖、markdown 伪造、guard 位置、引用前缀） |
-| 其他 | 40+ | 流式 Hook、钉钉文件、Channel、Sandbox、工具上下文等 |
+| `test_exceptions.py` | 24 | 统一异常层次结构（NanobeeError 子类、catch-all、模块导出、向后兼容） |
+| `test_cli_plugin.py` | 23 | 插件发现/列表/创建/启用/禁用 CLI 命令 |
+| 其他 | 120+ | 流式 Hook、Shell 沙箱、Cron 隔离、钉钉文件、Runtime Context、Heartbeat 等 |
 
 ## 项目结构
 
 ```
 nanobee/
 ├── agent/                 # Agent 核心引擎
-│   ├── loop.py           # 6 态状态机消息循环（1129 行）
-│   ├── runner.py         # LLM 调用 + 工具执行引擎（1427 行）
+│   ├── loop.py           # 6 态状态机消息循环
+│   ├── runner.py         # LLM 调用 + 工具执行引擎
 │   ├── hook.py           # 复合 Hook 管理器
 │   ├── model_presets.py  # 模型预设切换
 │   └── tools/            # 工具体系
@@ -274,10 +303,12 @@ nanobee/
 │   ├── tool_web/         # Web 工具
 │   ├── tool_cron/        # Cron 定时任务
 │   └── tool_echo/        # 回显测试
+├── exceptions.py          # 统一异常层次结构（NanobeeError 基类 + 20 个子类）
 ├── cli/                  # 命令行入口
 │   ├── main.py           # Click 入口
-│   ├── run.py            # run 命令（完整实现）
-│   ├── plugin.py         # plugin 子命令 🚧 存根
+│   ├── run.py            # run 命令（轻量 Agent CLI，-m/-s 支持）
+│   ├── gateway.py        # gateway 命令（完整服务栈）
+│   ├── plugin.py         # plugin 子命令（list/create/enable/disable）
 │   └── hub.py            # hub 子命令 🚧 存根
 ├── config/               # 配置加载
 ├── kernel/               # 微内核核心（15 个模块）
@@ -314,6 +345,7 @@ nanobee 从 [nanobot](https://github.com/HKUDS/nanobot) 衍生开发，核心差
 | 维度 | nanobot | nanobee |
 |------|---------|---------|
 | 架构哲学 | 大而全（内置记忆/梦境/人设） | 极简微内核（路由/隔离/拼装） |
+| CLI/Gateway 分离 | `agent` + `gateway` 双模式 | ✅ 已复刻：`run` 轻量 + `gateway` 完整服务栈 |
 | 记忆策略 | 框架内置多种算法 | 插件化（memory 接口） |
 | 技能管理 | 框架内置 | 用户知识资产（SKILL.md） |
 | 隔离机制 | 逻辑隔离 | 物理隔离 + 沙箱 + 锁 |

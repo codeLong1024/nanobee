@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -10,6 +11,7 @@ if TYPE_CHECKING:
     # OutboundMessage 和 AgentLoop 只在类型注解中使用，运行时通过方法内延迟导入
     from nanobee.agent.loop import AgentLoop, OutboundMessage
 
+from nanobee.exceptions import ContextError
 from nanobee.kernel.context_manager import ContextManager
 from nanobee.kernel.context_pipeline import ContextPipeline
 from nanobee.kernel.event_bus import EventBus
@@ -73,13 +75,16 @@ class NanobeeKernel:
         self._booted = False
 
     async def boot(self) -> None:
-        """启动内核
+        """启动内核核心组件
 
         按顺序执行：
         1. 加载配置
         2. 校验灵魂文件
         3. 扫描并加载插件
-        4. 启动通道插件
+        4. 注册工具到 AgentLoop
+
+        注意：不启动通道和 Heartbeat 等后台服务，
+        需调用 boot_services() 来启动。
         """
         if self._booted:
             logger.warning("内核已启动，跳过")
@@ -93,53 +98,110 @@ class NanobeeKernel:
         # 2. 扫描并加载插件
         self.plugin_manager.load_all()
 
-        # 3. 启用所有插件
+        # 3. 启用插件（尊重 plugin.toml 中的 enabled 配置）
         for name in self.plugin_manager.list_plugins():
-            self.plugin_manager.enable(name)
+            descriptor = self.plugin_manager.get_descriptor(name)
+            enabled_config = (descriptor.config or {}).get("enabled", True) if descriptor else True
+            if enabled_config:
+                self.plugin_manager.enable(name)
+            else:
+                logger.info("插件 %s 已配置为禁用状态，跳过启用", name)
 
         # 3.1 注册工具插件到 AgentLoop（必须在插件加载完成后调用）
         if self._agent_loop:
             self._agent_loop._register_plugin_tools()
 
-        # 先标记内核已启动，通道启动可能阻塞但不影响消息处理
         self._booted = True
 
-        # 4. 启动通道插件（单个失败不阻塞整体启动）
+        logger.info("Nanobee 内核核心启动完成")
+
+        # 发射启动事件
+        await self.event_bus.publish("kernel.booted", {"kernel": self})
+
+    async def boot_services(self) -> None:
+        """启动后台服务（通道插件 + Heartbeat）
+
+        仅在 Gateway 模式下调用，Agent CLI 模式不启动。
+        """
+        if getattr(self, "_services_started", False):
+            logger.warning("后台服务已启动，跳过")
+            return
+
+        logger.info("正在启动 Nanobee 后台服务...")
+
+        # 1. 启动通道插件（跳过非 Gateway 安全的通道，如 CLI）
         channels = self.plugin_manager.get_by_type("channel")
         for channel in channels:
+            if not getattr(channel, "safe_for_gateway", True):
+                logger.info("通道 %s 跳过 Gateway 启动（交互式通道）", getattr(channel, "name", "?"))
+                continue
             try:
                 await channel.start()
             except Exception:
                 logger.exception("通道插件 %s 启动失败，已跳过", getattr(channel, "name", "?"))
 
-        logger.info("Nanobee 内核启动完成")
+        # 2. 初始化 Heartbeat 服务
+        await self._start_heartbeat()
 
-        # 发射启动事件
-        await self.event_bus.publish("kernel.booted", {"kernel": self})
+        self._services_started = True
+        logger.info("Nanobee 后台服务启动完成")
 
-    async def shutdown(self) -> None:
-        """关闭内核"""
-        logger.info("正在关闭 Nanobee 内核...")
+    async def _start_heartbeat(self) -> None:
+        """初始化 Heartbeat 后台唤醒服务"""
+        from nanobee.heartbeat.service import HeartbeatService
 
-        # 停止 Agent Loop
-        if self._agent_loop is not None:
-            self._agent_loop.stop()
-            await self._agent_loop.close_mcp()
+        agents_config = self.config.get("agents", {})
+        defaults = agents_config.get("defaults", {})
+        heartbeat_config = defaults.get("heartbeat", {})
 
-        # 停止所有通道
-        channels = self.plugin_manager.get_by_type("channel")
-        for channel in channels:
-            await channel.stop()
+        enabled = heartbeat_config.get("enabled", False)
+        interval_s = heartbeat_config.get("interval_s", 30 * 60)
+        timezone = heartbeat_config.get("timezone")
 
-        # 关闭 MCP 连接（AgentLoop 内置能力）
-        if self._agent_loop is not None:
-            await self._agent_loop.close_mcp()
+        if not enabled:
+            logger.info("Heartbeat 服务未在配置中启用")
+            return
 
-        # 卸载所有插件
-        self.plugin_manager.unload_all()
+        provider = getattr(self, "_llm_provider", None)
+        model = getattr(self, "_llm_model", None)
+        if not provider:
+            logger.warning("Heartbeat 服务缺少 Provider，跳过")
+            return
 
-        self._booted = False
-        logger.info("Nanobee 内核已关闭")
+        async def _execute_task(tasks: str) -> str:
+            from nanobee.agent.loop import InboundMessage
+
+            msg = InboundMessage(
+                channel="heartbeat",
+                sender_id="heartbeat",
+                chat_id="default",
+                content=tasks,
+                media=[],
+            )
+            try:
+                response = await self._agent_loop._process_message(msg)
+                return response.content if response else ""
+            except Exception:
+                logger.exception("心跳任务执行失败")
+                return ""
+
+        async def _notify_user(response: str) -> None:
+            logger.info("心跳通知: %s", response[:200])
+
+        try:
+            self._heartbeat = HeartbeatService(
+                workspace=self.work_dir,
+                provider=provider,
+                model=model,
+                on_execute=_execute_task,
+                on_notify=_notify_user,
+                interval_s=interval_s,
+                enabled=enabled,
+                timezone=timezone,
+            )
+            await self._heartbeat.start()
+        except Exception:
+            logger.exception("初始化 Heartbeat 服务失败")
 
     async def handle_message(
         self,
@@ -185,6 +247,11 @@ class NanobeeKernel:
     ) -> OutboundMessage | None:
         """处理用户消息的公共实现。
 
+        使用与 _dispatch 相同的串行锁 + 待处理队列机制：
+        - 同用户消息串行处理（LockManager）
+        - 跨用户消息并行处理
+        - 异常时返回友好错误消息而不是裸抛
+
         Args:
             message: 用户消息
             context_id: 上下文 ID
@@ -195,13 +262,13 @@ class NanobeeKernel:
         Returns:
             Agent 回复（OutboundMessage，含 .content 和 .media）
         """
-        from nanobee.agent.loop import InboundMessage
+        from nanobee.agent.loop import InboundMessage, OutboundMessage
 
         if not self._booted:
-            raise RuntimeError("内核未启动，请先调用 boot()")
+            raise ContextError("内核未启动，请先调用 boot()")
 
         if self._agent_loop is None:
-            raise RuntimeError(
+            raise ContextError(
                 "Agent Loop 未初始化。请先调用 boot_with_provider() "
                 "或通过 set_agent_loop() 设置 Agent Loop。"
             )
@@ -220,15 +287,46 @@ class NanobeeKernel:
         if extra_hook is not None:
             self._agent_loop._extra_hooks.append(extra_hook)
 
-        # 不传入 context_id 参数,让 _process_message 使用 msg.context_id
-        # 这样可以确保使用 sender_id 作为唯一标识(参考 nanobot 设计)
+        agent = self._agent_loop
         try:
-            response = await self._agent_loop._process_message(msg)
-        finally:
-            if extra_hook is not None and extra_hook in self._agent_loop._extra_hooks:
-                self._agent_loop._extra_hooks.remove(extra_hook)
+            # 使用串行锁 + 待处理队列，同 _dispatch 设计
+            key = msg.context_id
+            pending = asyncio.Queue(maxsize=20)
+            agent._pending_queues[key] = pending
 
-        return response
+            try:
+                async with agent._lock_manager.acquire(key):
+                    try:
+                        response = await agent._process_message(
+                            msg, pending_queue=pending,
+                        )
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        logger.exception("处理上下文 %s 的消息出错", key)
+                        response = OutboundMessage(
+                            channel=msg.channel,
+                            chat_id=msg.chat_id,
+                            content="抱歉，处理消息时发生内部错误。",
+                        )
+            finally:
+                # 排空待处理队列（同 _dispatch）
+                queue = agent._pending_queues.pop(key, None)
+                if queue is not None:
+                    leftover = 0
+                    while True:
+                        try:
+                            queue.get_nowait()
+                            leftover += 1
+                        except asyncio.QueueEmpty:
+                            break
+                    if leftover:
+                        logger.info("上下文 %s 有 %s 条剩余消息被丢弃", key, leftover)
+
+            return response
+        finally:
+            if extra_hook is not None and extra_hook in agent._extra_hooks:
+                agent._extra_hooks.remove(extra_hook)
 
 
 
@@ -248,6 +346,10 @@ class NanobeeKernel:
     ) -> None:
         """使用指定的 LLM Provider 启动内核并初始化 Agent Loop。
 
+        注意：仅启动核心组件（灵魂校验 + 插件加载 + 工具注册），
+        不启动通道和 Heartbeat 等后台服务。
+        如需完整服务栈，请额外调用 boot_services()。
+
         Args:
             provider: LLM Provider 实例
             model: 模型名称（可选，使用 provider 默认值）
@@ -257,19 +359,23 @@ class NanobeeKernel:
         from nanobee.agent.loop import AgentLoop
 
         actual_provider = provider
+        self._llm_provider = actual_provider
+        self._llm_model = model or getattr(actual_provider, "model", None)
 
         self._agent_loop = AgentLoop.from_kernel(
-            kernel=self,
             provider=actual_provider,
             workspace=self.work_dir,
+            context_manager=self.context_manager,
+            context_pipeline=self.context_pipeline,
+            event_bus=self.event_bus,
+            plugin_manager=self.plugin_manager,
+            router=self.router,
+            config=self.config,
             model=model,
             **extra,
         )
 
         await self.boot()
-
-        # 初始化 Heartbeat 服务
-        await self._init_heartbeat(provider, model)
 
     @property
     def is_booted(self) -> bool:
@@ -280,68 +386,6 @@ class NanobeeKernel:
     def agent_loop(self) -> AgentLoop | None:
         """获取 Agent Loop 实例"""
         return self._agent_loop
-
-    async def _init_heartbeat(self, provider: Any, model: str | None) -> None:
-        """初始化 Heartbeat 后台唤醒服务
-
-        Args:
-            provider: LLM Provider 实例
-            model: 模型名称
-        """
-        from nanobee.heartbeat.service import HeartbeatService
-
-        # 从配置读取 heartbeat 设置
-        agents_config = self.config.get("agents", {})
-        defaults = agents_config.get("defaults", {})
-        heartbeat_config = defaults.get("heartbeat", {})
-
-        enabled = heartbeat_config.get("enabled", False)
-        interval_s = heartbeat_config.get("interval_s", 30 * 60)
-        timezone = heartbeat_config.get("timezone")
-
-        if not enabled:
-            logger.info("Heartbeat 服务未在配置中启用")
-            return
-
-        # 创建回调函数,桥接到 AgentLoop
-        async def _execute_task(tasks: str) -> str:
-            """执行心跳任务:通过 AgentLoop 处理任务"""
-            from nanobee.agent.loop import InboundMessage
-
-            msg = InboundMessage(
-                channel="heartbeat",
-                sender_id="heartbeat",
-                chat_id="default",
-                content=tasks,
-                media=[],
-            )
-
-            try:
-                response = await self._agent_loop._process_message(msg)
-                return response.content if response else ""
-            except Exception:
-                logger.exception("心跳任务执行失败")
-                return ""
-
-        async def _notify_user(response: str) -> None:
-            """通知用户:通过 HTTP 通道或日志推送结果"""
-            # 简化版:通过日志记录(可后续扩展为推送至 channel_http)
-            logger.info("心跳通知: %s", response[:200])
-
-        try:
-            self._heartbeat = HeartbeatService(
-                workspace=self.work_dir,
-                provider=provider,
-                model=model,
-                on_execute=_execute_task,
-                on_notify=_notify_user,
-                interval_s=interval_s,
-                enabled=enabled,
-                timezone=timezone,
-            )
-            await self._heartbeat.start()
-        except Exception:
-            logger.exception("初始化 Heartbeat 服务失败")
 
     async def shutdown(self) -> None:
         """关闭内核"""

@@ -9,12 +9,9 @@ import platform
 from pathlib import Path
 from typing import Any
 
+from nanobee.exceptions import SoulViolationError
+
 logger = logging.getLogger(__name__)
-
-
-class SoulViolationError(Exception):
-    """灵魂文件被篡改异常"""
-    pass
 
 
 class SoulGuard:

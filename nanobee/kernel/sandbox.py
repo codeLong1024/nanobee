@@ -12,6 +12,8 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from nanobee.exceptions import SandboxViolationError
+
 logger = logging.getLogger(__name__)
 
 # 包含路径的工具参数名（working_dir 特殊处理：只解析不拦截，拦截由 L2 工具层处理）
@@ -23,19 +25,8 @@ _PATH_PARAM_KEYS: frozenset[str] = frozenset({
 # working_dir 类参数名 — 只解析为绝对路径，不做沙箱拦截
 _WORKING_DIR_KEYS: frozenset[str] = frozenset({"working_dir"})
 
-
-class SandboxError(PermissionError):
-    """沙箱拦截异常 — 文件操作超出用户上下文边界"""
-
-    def __init__(self, path: str, context_root: str, detail: str = "") -> None:
-        self.path = path
-        self.context_root = context_root
-        message = (
-            f"沙箱拦截: 路径 {path!r} 超出用户上下文 {context_root!r}"
-        )
-        if detail:
-            message += f"（{detail}）"
-        super().__init__(message)
+# 向后兼容别名
+SandboxError = SandboxViolationError
 
 
 class ContextSandbox:

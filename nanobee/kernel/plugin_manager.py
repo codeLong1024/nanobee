@@ -234,6 +234,17 @@ class PluginManager:
         expected_base = _resolve_plugin_base(plugin_type)
         return [p for p in self._plugins.values() if isinstance(p, expected_base)]
 
+    def get_descriptor(self, name: str) -> PluginDescriptor | None:
+        """获取插件描述符。
+
+        Args:
+            name: 插件名称
+
+        Returns:
+            PluginDescriptor 实例，未找到返回 None
+        """
+        return self._descriptors.get(name)
+
     def list_plugins(self) -> list[str]:
         """列出所有已加载的插件名称"""
         return list(self._plugins.keys())

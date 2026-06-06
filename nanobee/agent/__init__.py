@@ -2,8 +2,13 @@
 
 from nanobee.agent.loop import AgentLoop
 from nanobee.agent.runner import AgentRunner
+from nanobee.exceptions import AgentError, LoopStateError, ToolExecutionError, ToolViolationError
 
 __all__ = [
     "AgentLoop",
     "AgentRunner",
+    "AgentError",
+    "LoopStateError",
+    "ToolExecutionError",
+    "ToolViolationError",
 ]

@@ -16,6 +16,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+from nanobee.exceptions import ImageGenerationError
 from nanobee.providers.registry import find_by_name
 from nanobee.utils.helpers import detect_image_mime
 
@@ -45,8 +46,7 @@ _OLLAMA_EXPLICIT_SIZE_RE = re.compile(r"^\s*(\d+)\s*[xX]\s*(\d+)\s*$")
 _OLLAMA_ASPECT_RATIO_RE = re.compile(r"^\s*(\d+)\s*:\s*(\d+)\s*$")
 
 
-class ImageGenerationError(RuntimeError):
-    """Raised when the image generation provider cannot return images."""
+# ImageGenerationError 已迁移至 nanobee.exceptions，此处保留为空导入别名
 
 
 @dataclass(frozen=True)

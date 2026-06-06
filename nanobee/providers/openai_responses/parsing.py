@@ -12,6 +12,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+from nanobee.exceptions import ProviderAPIError
 from nanobee.providers.base import LLMResponse, ToolCallRequest
 
 FINISH_REASON_MAP = {
@@ -142,7 +143,7 @@ async def consume_sse(
             finish_reason = map_finish_reason(status)
         elif event_type in {"error", "response.failed"}:
             detail = event.get("error") or event.get("message") or event
-            raise RuntimeError(f"Response failed: {str(detail)[:500]}")
+            raise ProviderAPIError(f"Response failed: {str(detail)[:500]}")
 
     return content, tool_calls, finish_reason
 
@@ -322,6 +323,6 @@ async def consume_sdk_stream(
                                     reasoning_content = (reasoning_content or "") + text
         elif event_type in {"error", "response.failed"}:
             detail = getattr(event, "error", None) or getattr(event, "message", None) or event
-            raise RuntimeError(f"Response failed: {str(detail)[:500]}")
+            raise ProviderAPIError(f"Response failed: {str(detail)[:500]}")
 
     return content, tool_calls, finish_reason, usage, reasoning_content

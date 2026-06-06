@@ -5,6 +5,15 @@ from __future__ import annotations
 from importlib import import_module
 from typing import TYPE_CHECKING
 
+from nanobee.exceptions import (
+    CodexHTTPError,
+    ImageGenerationError,
+    ProviderAPIError,
+    ProviderAuthError,
+    ProviderConfigError,
+    ProviderError,
+    ProviderTimeoutError,
+)
 from nanobee.providers.base import LLMProvider, LLMResponse
 
 __all__ = [
@@ -16,6 +25,13 @@ __all__ = [
     "GitHubCopilotProvider",
     "AzureOpenAIProvider",
     "BedrockProvider",
+    "ProviderError",
+    "ProviderConfigError",
+    "ProviderAuthError",
+    "ProviderTimeoutError",
+    "ProviderAPIError",
+    "ImageGenerationError",
+    "CodexHTTPError",
 ]
 
 _LAZY_IMPORTS = {

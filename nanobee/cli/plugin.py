@@ -7,6 +7,7 @@ Nanobee Plugin - Plugin 子命令
 
 from __future__ import annotations
 
+import logging
 import shutil
 from pathlib import Path
 from typing import Any
@@ -264,6 +265,60 @@ class {name.replace('_', ' ').title().replace(' ', '')}Plugin(ToolPlugin):
     click.echo("  - __init__.py  (模块标识)")
 
 
+def _find_plugin_toml(name: str, plugin_dirs: list[Path]) -> Path | None:
+    """在插件目录中查找指定名称插件的 plugin.toml 路径。
+
+    Args:
+        name: 插件名称
+        plugin_dirs: 插件目录列表
+
+    Returns:
+        plugin.toml 的绝对路径，未找到返回 None
+    """
+    from nanobee.kernel.plugin_manager import PluginDescriptor
+
+    for plugin_dir in plugin_dirs:
+        if not plugin_dir.exists():
+            continue
+        for sub_dir in plugin_dir.iterdir():
+            if not sub_dir.is_dir() or sub_dir.name.startswith("_"):
+                continue
+            desc = PluginDescriptor.discover(sub_dir)
+            if desc is None:
+                continue
+            if desc.metadata.name == name:
+                return desc.toml_path.resolve()
+    return None
+
+
+def _set_plugin_enabled(toml_path: Path, enabled: bool) -> None:
+    """修改 plugin.toml 中的 enabled 状态。
+
+    读取 plugin.toml，更新 [config] 段的 enabled 字段，然后写回。
+
+    Args:
+        toml_path: plugin.toml 文件路径
+        enabled: True=启用，False=禁用
+    """
+    import toml
+
+    with open(toml_path, "r", encoding="utf-8") as f:
+        data: dict = toml.load(f)
+
+    # 确保 [config] 段存在
+    config = data.get("config", {})
+    if not isinstance(config, dict):
+        config = {}
+    config["enabled"] = enabled
+    data["config"] = config
+
+    with open(toml_path, "w", encoding="utf-8") as f:
+        toml.dump(data, f)
+
+    logger = logging.getLogger(__name__)
+    logger.info("插件 %s 的 enabled 已设为 %s", toml_path.parent.name, enabled)
+
+
 @plugin.command()
 @click.argument("name")
 @click.option(
@@ -274,13 +329,21 @@ class {name.replace('_', ' ').title().replace(' ', '')}Plugin(ToolPlugin):
 def enable(name: str, config: str | None) -> None:
     """启用插件
 
-    在配置中启用指定插件。
+    在 plugin.toml 中启用指定插件，状态持久化，重启内核后生效。
 
     Args:
         name: 插件名称
     """
-    click.echo(f"启用插件: {name}")
-    click.echo("提示: 此功能需要与内核配合使用，当前为占位实现。")
+    cfg = load_config(Path(config) if config else None)
+    plugin_dirs = _resolve_plugin_dirs(cfg)
+    toml_path = _find_plugin_toml(name, plugin_dirs)
+    if toml_path is None:
+        click.echo(f"错误: 未找到插件: {name}", err=True)
+        raise SystemExit(1)
+
+    _set_plugin_enabled(toml_path, True)
+    click.echo(f"插件 {name} 已启用")
+    click.echo("提示: 重启内核后生效，或在内核运行时使用 runtime enable/disable")
 
 
 @plugin.command()
@@ -293,13 +356,21 @@ def enable(name: str, config: str | None) -> None:
 def disable(name: str, config: str | None) -> None:
     """禁用插件
 
-    在配置中禁用指定插件。
+    在 plugin.toml 中禁用指定插件，状态持久化，重启内核后生效。
 
     Args:
         name: 插件名称
     """
-    click.echo(f"禁用插件: {name}")
-    click.echo("提示: 此功能需要与内核配合使用，当前为占位实现。")
+    cfg = load_config(Path(config) if config else None)
+    plugin_dirs = _resolve_plugin_dirs(cfg)
+    toml_path = _find_plugin_toml(name, plugin_dirs)
+    if toml_path is None:
+        click.echo(f"错误: 未找到插件: {name}", err=True)
+        raise SystemExit(1)
+
+    _set_plugin_enabled(toml_path, False)
+    click.echo(f"插件 {name} 已禁用")
+    click.echo("提示: 重启内核后生效，或在内核运行时使用 runtime enable/disable")
 
 
 def register(cli_group):

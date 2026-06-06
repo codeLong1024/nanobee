@@ -19,6 +19,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Coroutine, Literal
 
+from nanobee.exceptions import StorageError
+
 from nanobee.builtin.tool_cron.types import (
     CronJob,
     CronJobState,
@@ -277,7 +279,7 @@ class CronService:
         loaded = self._load_store()
         if loaded is None:
             self._running = False
-            raise RuntimeError(
+            raise StorageError(
                 f"Cron store 文件 {self.store_path} 已损坏且无有效内存快照；"
                 "请检查 .corrupt-* 备份文件并手动恢复。"
             )

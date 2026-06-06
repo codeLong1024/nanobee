@@ -35,6 +35,10 @@ class ChannelPlugin(NanobeePlugin, ABC):
     display_name: str = ""
     """通道展示名，例如「命令行」「WebSocket」，默认取 metadata.name。"""
 
+    safe_for_gateway: bool = True
+    """该通道是否适合在 Gateway 模式下自动启动。
+    交互式通道（如 CLI）应设为 False。"""
+
     # ====== 权限 / 配对 ======
     pairing_code: str | None = None
     """可选的配对码，用于限制通道只能在持有该配对码的客户端上使用。

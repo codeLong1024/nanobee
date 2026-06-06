@@ -20,6 +20,7 @@ class ChannelCLIPlugin(ChannelPlugin):
     version = "1.0.0"
     display_name = "命令行"
     supports_streaming = True
+    safe_for_gateway = False
 
     def __init__(self, metadata=None):
         super().__init__(metadata)

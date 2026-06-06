@@ -6,10 +6,17 @@ import sys
 from importlib import import_module
 from types import ModuleType
 
+from nanobee.exceptions import ArtifactError, NanobeeError, StorageError
 from nanobee.utils.helpers import ensure_dir
 from nanobee.utils.path import abbreviate_path
 
-__all__ = ["ensure_dir", "abbreviate_path"]
+__all__ = [
+    "ensure_dir",
+    "abbreviate_path",
+    "NanobeeError",
+    "StorageError",
+    "ArtifactError",
+]
 
 
 class _LazyModuleAlias(ModuleType):

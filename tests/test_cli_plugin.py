@@ -11,8 +11,10 @@ import pytest
 
 from nanobee.cli.plugin import (
     _discover_plugins,
+    _find_plugin_toml,
     _format_plugin_table,
     _resolve_plugin_dirs,
+    _set_plugin_enabled,
 )
 from nanobee.config.loader import load_config
 from nanobee.kernel.plugin_manager import PluginDescriptor
@@ -230,19 +232,120 @@ def test_plugin_create_command_duplicate(cli_runner, tmp_path: Path):
         os.chdir(old_cwd)
 
 
-def test_plugin_enable_disable_commands(cli_runner):
-    """测试 plugin enable/disable 命令"""
+def test_find_plugin_toml_found(tmp_path: Path) -> None:
+    """测试 _find_plugin_toml 找到存在的插件"""
+    plugin_dir = tmp_path / "builtin" / "my_plugin"
+    plugin_dir.mkdir(parents=True)
+    toml_path = plugin_dir / "plugin.toml"
+    toml_path.write_text("""[plugin]
+name = "my_plugin"
+version = "1.0.0"
+description = "test"
+type = "tool"
+""")
+    result = _find_plugin_toml("my_plugin", [tmp_path / "builtin"])
+    assert result == toml_path.resolve()
+
+
+def test_find_plugin_toml_not_found(tmp_path: Path) -> None:
+    """测试 _find_plugin_toml 未找到插件时返回 None"""
+    result = _find_plugin_toml("nonexistent", [tmp_path])
+    assert result is None
+
+
+def test_set_plugin_enabled(tmp_path: Path) -> None:
+    """测试 _set_plugin_enabled 修改 enabled 字段"""
+    toml_path = tmp_path / "plugin.toml"
+    toml_path.write_text("""[plugin]
+name = "test_plugin"
+type = "tool"
+
+[config]
+enabled = true
+""")
+    _set_plugin_enabled(toml_path, False)
+
+    import toml
+    with open(toml_path, encoding="utf-8") as f:
+        data = toml.load(f)
+    assert data["config"]["enabled"] is False
+
+
+def test_set_plugin_enabled_adds_missing_config(tmp_path: Path) -> None:
+    """测试 _set_plugin_enabled 在缺少 [config] 段时自动创建"""
+    toml_path = tmp_path / "plugin.toml"
+    toml_path.write_text("""[plugin]
+name = "test_plugin"
+type = "tool"
+""")
+    _set_plugin_enabled(toml_path, True)
+
+    import toml
+    with open(toml_path, encoding="utf-8") as f:
+        data = toml.load(f)
+    assert data["config"]["enabled"] is True
+
+
+def test_plugin_enable_disable_commands(tmp_path: Path, cli_runner) -> None:
+    """测试 plugin enable/disable 命令实际修改 plugin.toml"""
     runner, main = cli_runner
 
-    # 测试 enable
-    result = runner.invoke(main, ["plugin", "enable", "test_plugin"])
-    assert result.exit_code == 0
-    assert "启用插件: test_plugin" in result.output
+    # 创建测试插件
+    plugin_dir = tmp_path / "builtin" / "e2e_test_plugin"
+    plugin_dir.mkdir(parents=True)
+    toml_path = plugin_dir / "plugin.toml"
+    toml_path.write_text("""[plugin]
+name = "e2e_test_plugin"
+version = "1.0.0"
+description = "E2E 测试插件"
+type = "tool"
 
-    # 测试 disable
-    result = runner.invoke(main, ["plugin", "disable", "test_plugin"])
-    assert result.exit_code == 0
-    assert "禁用插件: test_plugin" in result.output
+[config]
+enabled = true
+""")
+    (plugin_dir / "__init__.py").write_text("\n", encoding="utf-8")
+
+    import os
+    old_cwd = os.getcwd()
+    try:
+        os.chdir(tmp_path)
+
+        # 测试 disable
+        result_disable = runner.invoke(main, ["plugin", "disable", "e2e_test_plugin"])
+        assert result_disable.exit_code == 0, result_disable.output
+        assert "已禁用" in result_disable.output
+
+        import toml
+        with open(toml_path, encoding="utf-8") as f:
+            data = toml.load(f)
+        assert data["config"]["enabled"] is False
+
+        # 测试 enable
+        result_enable = runner.invoke(main, ["plugin", "enable", "e2e_test_plugin"])
+        assert result_enable.exit_code == 0, result_enable.output
+        assert "已启用" in result_enable.output
+
+        with open(toml_path, encoding="utf-8") as f:
+            data = toml.load(f)
+        assert data["config"]["enabled"] is True
+    finally:
+        os.chdir(old_cwd)
+
+
+def test_plugin_enable_nonexistent(cli_runner):
+    """测试 enable 不存在的插件"""
+    runner, main = cli_runner
+    result = runner.invoke(main, ["plugin", "enable", "nonexistent_plugin"])
+    assert result.exit_code != 0
+    assert "未找到" in result.output
+
+
+def test_plugin_disable_nonexistent(cli_runner):
+    """测试 disable 不存在的插件"""
+    runner, main = cli_runner
+    result = runner.invoke(main, ["plugin", "disable", "nonexistent_plugin"])
+    assert result.exit_code != 0
+    assert "未找到" in result.output
 
 
 def test_plugin_help_command(cli_runner):

@@ -11,6 +11,7 @@ import httpx
 from oauth_cli_kit.models import OAuthToken
 from oauth_cli_kit.storage import FileTokenStorage
 
+from nanobee.exceptions import ProviderAPIError, ProviderAuthError, ProviderTimeoutError
 from nanobee.providers.openai_compat_provider import OpenAICompatProvider
 
 DEFAULT_GITHUB_DEVICE_CODE_URL = "https://github.com/login/device/code"
@@ -121,15 +122,15 @@ def login_github_copilot(
                 time.sleep(current_interval)
                 continue
             if error == "expired_token":
-                raise RuntimeError("GitHub device code expired. Please run login again.")
+                raise ProviderAuthError("GitHub device code expired. Please run login again.")
             if error == "access_denied":
-                raise RuntimeError("GitHub device flow was denied.")
+                raise ProviderAuthError("GitHub device flow was denied.")
             if error:
                 desc = poll_payload.get("error_description") or error
-                raise RuntimeError(str(desc))
+                raise ProviderAuthError(str(desc))
             time.sleep(current_interval)
         else:
-            raise RuntimeError("GitHub device flow timed out.")
+            raise ProviderTimeoutError("GitHub device flow timed out.")
 
         user = client.get(
             DEFAULT_GITHUB_USER_URL,
@@ -181,7 +182,7 @@ class GitHubCopilotProvider(OpenAICompatProvider):
 
         github_token = _load_github_token()
         if not github_token or not github_token.access:
-            raise RuntimeError("GitHub Copilot is not logged in. Run: nanobee provider login github-copilot")
+            raise ProviderAuthError("GitHub Copilot is not logged in. Run: nanobee provider login github-copilot")
 
         timeout = httpx.Timeout(20.0, connect=20.0)
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, trust_env=True) as client:
@@ -194,7 +195,7 @@ class GitHubCopilotProvider(OpenAICompatProvider):
 
         token = payload.get("token")
         if not token:
-            raise RuntimeError("GitHub Copilot token exchange returned no token.")
+            raise ProviderAPIError("GitHub Copilot token exchange returned no token.")
 
         expires_at = payload.get("expires_at")
         if isinstance(expires_at, (int, float)):

@@ -12,6 +12,7 @@ from typing import Any
 
 import json_repair
 
+from nanobee.exceptions import ProviderConfigError
 from nanobee.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 
 _IMAGE_DATA_URL = re.compile(r"^data:image/([a-zA-Z0-9.+-]+);base64,(.*)$", re.DOTALL)
@@ -65,7 +66,7 @@ class BedrockProvider(LLMProvider):
         try:
             import boto3
         except ImportError as exc:  # pragma: no cover - exercised only without boto3 installed
-            raise RuntimeError(
+            raise ProviderConfigError(
                 "AWS Bedrock provider requires boto3. Install it with `pip install boto3`."
             ) from exc
 

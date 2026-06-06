@@ -128,13 +128,26 @@ def _try_structlog(level: int, json_output: bool) -> None:
 
         root = logging.getLogger()
         root.handlers.clear()
+
+        # foreign_pre_chain：处理标准 logging LogRecord 的前置处理器链。
+        # 注意：不在 foreign_pre_chain 中使用 filter_by_level，
+        # 因为标准 LogRecord 传入时 logger 参数为 None，会导致崩溃。
+        # root logger 已经通过 setLevel 做了级别过滤。
+        foreign_pre_chain: list[Any] = [
+            _add_trace_id,
+            structlog.stdlib.add_log_level,
+            structlog.stdlib.PositionalArgumentsFormatter(),
+            structlog.processors.TimeStamper(fmt="iso"),
+            structlog.stdlib.add_logger_name,
+        ]
+
         handler = logging.StreamHandler()
-        # ProcessorFormatter 作为最终渲染器桥接到标准 logging
         handler.setFormatter(
             structlog.stdlib.ProcessorFormatter(
                 processor=structlog.processors.JSONRenderer()
                 if json_output
                 else structlog.dev.ConsoleRenderer(),
+                foreign_pre_chain=foreign_pre_chain,
             )
         )
         root.addHandler(handler)

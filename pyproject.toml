@@ -32,10 +32,16 @@ dependencies = [
 nanobee = "nanobee.cli.main:main"
 
 [project.optional-dependencies]
+web = [
+    "duckduckgo-search>=7.0.0",
+    "readability-lxml>=0.8.0",
+    "lxml>=5.0.0",
+]
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
     "orjson>=3.0.0",
+    "nanobee[web]",
 ]
 
 [tool.setuptools.packages.find]

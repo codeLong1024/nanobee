@@ -74,6 +74,9 @@ class AgentDefaults(Base):
     context_window_tokens: int = 65_536
     temperature: float = 0.1
     fallback_models: list[FallbackCandidate] = []
+    max_messages: int = 120
+    memory_store_threshold: int = 20
+    max_iterations: int = 10
 
 
 class AgentsConfig(Base):

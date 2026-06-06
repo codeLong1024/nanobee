@@ -217,7 +217,7 @@ class ToolWebPlugin(ToolPlugin):
     async def _search_duckduckgo(self, query: str, n: int) -> str:
         """使用 DuckDuckGo 搜索（同步库通过 to_thread 运行）"""
         try:
-            from ddgs import DDGS
+            from duckduckgo_search import DDGS
 
             ddgs = DDGS(timeout=self._timeout)
             raw = await asyncio.wait_for(
@@ -236,7 +236,7 @@ class ToolWebPlugin(ToolPlugin):
             ]
             return _format_results(query, items, n)
         except ImportError:
-            return "错误: 未安装 ddgs 包。运行: pip install duckduckgo-search"
+            return "错误: 未安装 duckduckgo-search。运行: pip install \"nanobee[web]\""
         except Exception as e:
             logger.warning("DuckDuckGo 搜索失败: %s", e)
             return f"错误: DuckDuckGo 搜索失败 ({e})"
@@ -371,6 +371,7 @@ class ToolWebPlugin(ToolPlugin):
                     extractor = "readability"
                 except ImportError:
                     text = _strip_tags(r.text)
+                    text += "\n\n[提示: 安装 readability-lxml 可提升提取质量。运行: pip install \"nanobee[web]\"]"
                     extractor = "simple"
             else:
                 text = r.text

@@ -6,4 +6,4 @@ author = "nanobee-team"
 type = "tool"
 
 [config]
-enabled = true
+enabled = false
