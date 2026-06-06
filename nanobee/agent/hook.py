@@ -141,3 +141,37 @@ class SDKCaptureHook(AgentHook):
         for call in context.tool_calls:
             self.tools_used.append(call.name)
         self.messages = list(context.messages)
+
+
+class StreamBridgeHook(AgentHook):
+    """桥接 Kernel.handle_message 的流式回调 → AgentHook 系统。
+
+    仅桥接 on_stream（流式增量），不桥接 on_stream_end。
+    结束事件由调用者返回后统一处理，
+    避免运行器内部的 on_stream_end 与通道的二次发送产生时序冲突。
+    """
+
+    def __init__(self, on_stream: Any = None, on_stream_end: Any = None) -> None:
+        super().__init__()
+        self._on_stream = on_stream
+        # on_stream_end 不使用：运行器内部触发会导致重复 _stream_end
+        # 改为由 handle_message 返回后调用者统一发送
+        _ = on_stream_end
+
+    def wants_streaming(self) -> bool:
+        return self._on_stream is not None
+
+    async def on_stream(self, context: Any, delta: str) -> None:
+        if self._on_stream and delta:
+            try:
+                await self._on_stream(delta)
+            except Exception:
+                logger.exception("[StreamBridgeHook] on_stream callback failed, delta=%s...", delta[:80])
+
+    async def on_stream_end(self, context: Any, *, resuming: bool = False) -> None:
+        # no-op：结束事件由 handle_message 返回后统一处理
+        pass
+
+    def finalize_content(self, context: Any, content: str | None) -> str | None:
+        """Pass-through: StreamBridgeHook does not modify content."""
+        return content

@@ -20,6 +20,11 @@ agents:
     # memory_store_threshold: 20
     # 最大对话循环次数（LLM 最多执行多少次思考-工具调用循环）
     # max_iterations: 10
+    # 后台心跳服务配置
+    # heartbeat:
+    #   enabled: false  # 默认禁用,需显式启用
+    #   interval_s: 1800  # 唤醒间隔(秒),默认 30 分钟
+    #   timezone: "Asia/Shanghai"  # 时区(可选)
 
 # Provider 配置
 providers:

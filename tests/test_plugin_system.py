@@ -143,3 +143,55 @@ async def test_tool_list_tool_names():
     plugin = MockToolPlugin()
     names = plugin.list_tool_names()
     assert names == ["echo"]
+
+
+def test_plugin_config_isolation():
+    """测试插件配置隔离：每个插件只能读取自己的配置"""
+    plugin = MockToolPlugin()
+    meta = PluginMetadata(name="mock-tool", plugin_type="tool")
+    plugin._metadata = meta
+
+    # 模拟 kernel 配置（包含多个插件的配置）
+    class MockKernel:
+        config = {
+            "plugins": {
+                "mock-tool": {"key1": "value1", "key2": "value2"},
+                "other-plugin": {"secret": "should_not_access"},
+            }
+        }
+
+    plugin.initialize(MockKernel())
+
+    # 插件只能读取自己的配置
+    assert plugin.get_config("key1") == "value1"
+    assert plugin.get_config("key2") == "value2"
+    assert plugin.get_config("nonexistent", "default") == "default"
+
+    # 插件无法读取其他插件的配置（通过 get_config 接口）
+    assert plugin.get_config("secret") is None
+
+
+def test_plugin_config_empty_when_no_kernel():
+    """测试无 kernel 时配置为空"""
+    plugin = MockToolPlugin()
+    plugin.initialize(None)
+    assert plugin.get_config("any_key") is None
+    assert plugin._config == {}
+
+
+def test_plugin_config_copied_not_referenced():
+    """测试配置是拷贝而非引用，防止外部修改"""
+    plugin = MockToolPlugin()
+    meta = PluginMetadata(name="mock-tool", plugin_type="tool")
+    plugin._metadata = meta
+
+    test_config = {"plugins": {"mock-tool": {"key": "value"}}}
+
+    class MockKernel:
+        config = test_config
+
+    plugin.initialize(MockKernel())
+
+    # 修改原始配置不应影响插件
+    test_config["plugins"]["mock-tool"]["key"] = "modified"
+    assert plugin.get_config("key") == "value"

@@ -22,42 +22,7 @@ from nanobee.utils.observability import MetricsCollector, setup_structured_loggi
 logger = logging.getLogger(__name__)
 
 
-from nanobee.agent.hook import AgentHook
 from nanobee.kernel.skill_manager import SkillManager
-
-
-class _StreamHook(AgentHook):
-    """内部流式 Hook：桥接 Kernel.handle_message 的流式回调 → AgentHook 系统。
-
-    仅桥接 on_stream（流式增量），不桥接 on_stream_end。
-    结束事件由调用者返回后统一处理，
-    避免运行器内部的 on_stream_end 与通道的二次发送产生时序冲突。
-    """
-
-    def __init__(self, on_stream: Any = None, on_stream_end: Any = None) -> None:
-        super().__init__()
-        self._on_stream = on_stream
-        # on_stream_end 不使用：运行器内部触发会导致重复 _stream_end
-        # 改为由 handle_message 返回后调用者统一发送
-        _ = on_stream_end
-
-    def wants_streaming(self) -> bool:
-        return self._on_stream is not None
-
-    async def on_stream(self, context: Any, delta: str) -> None:
-        if self._on_stream and delta:
-            try:
-                await self._on_stream(delta)
-            except Exception:
-                logger.exception("[_StreamHook] on_stream callback failed, delta=%s...", delta[:80])
-
-    async def on_stream_end(self, context: Any, *, resuming: bool = False) -> None:
-        # no-op：结束事件由 handle_message 返回后统一处理
-        pass
-
-    def finalize_content(self, context: Any, content: str | None) -> str | None:
-        """Pass-through: _StreamHook does not modify content."""
-        return content
 
 
 class NanobeeKernel:
@@ -200,7 +165,8 @@ class NanobeeKernel:
         Returns:
             Agent 回复（含可能的媒体附件路径）
         """
-        hook = _StreamHook(on_stream=on_stream, on_stream_end=on_stream_end) if on_stream else None
+        from nanobee.agent.hook import StreamBridgeHook
+        hook = StreamBridgeHook(on_stream=on_stream, on_stream_end=on_stream_end) if on_stream else None
         return await self._handle_message_impl(
             message, context_id, media=media, extra_hook=hook, sender_id=sender_id,
         )
@@ -286,22 +252,6 @@ class NanobeeKernel:
         """
         actual_provider = provider
 
-        # 从配置中提取 mcp_servers（如果未在 extra 中指定）
-        if "mcp_servers" not in extra:
-            extra["mcp_servers"] = self.config.get("mcp_servers", {})
-        # 从配置中提取 memory_store_threshold（如果未在 extra 中指定）
-        if "memory_store_threshold" not in extra:
-            agents_config = self.config.get("agents", {})
-            defaults = agents_config.get("defaults", {}) if isinstance(agents_config, dict) else {}
-            memory_val = defaults.get("memory_store_threshold", 20)
-            extra["memory_store_threshold"] = int(memory_val)
-        # 从配置中提取 max_iterations（如果未在 extra 中指定）
-        if "max_iterations" not in extra:
-            agents_config = self.config.get("agents", {})
-            defaults = agents_config.get("defaults", {}) if isinstance(agents_config, dict) else {}
-            max_iter_val = defaults.get("max_iterations", 10)
-            extra["max_iterations"] = int(max_iter_val)
-
         self._agent_loop = AgentLoop.from_kernel(
             kernel=self,
             provider=actual_provider,
@@ -312,6 +262,9 @@ class NanobeeKernel:
 
         await self.boot()
 
+        # 初始化 Heartbeat 服务
+        await self._init_heartbeat(provider, model)
+
     @property
     def is_booted(self) -> bool:
         """内核是否已启动"""
@@ -321,3 +274,93 @@ class NanobeeKernel:
     def agent_loop(self) -> AgentLoop | None:
         """获取 Agent Loop 实例"""
         return self._agent_loop
+
+    async def _init_heartbeat(self, provider: Any, model: str | None) -> None:
+        """初始化 Heartbeat 后台唤醒服务
+
+        Args:
+            provider: LLM Provider 实例
+            model: 模型名称
+        """
+        from nanobee.heartbeat.service import HeartbeatService
+
+        # 从配置读取 heartbeat 设置
+        agents_config = self.config.get("agents", {})
+        defaults = agents_config.get("defaults", {})
+        heartbeat_config = defaults.get("heartbeat", {})
+
+        enabled = heartbeat_config.get("enabled", False)
+        interval_s = heartbeat_config.get("interval_s", 30 * 60)
+        timezone = heartbeat_config.get("timezone")
+
+        if not enabled:
+            logger.info("Heartbeat 服务未在配置中启用")
+            return
+
+        # 创建回调函数,桥接到 AgentLoop
+        async def _execute_task(tasks: str) -> str:
+            """执行心跳任务:通过 AgentLoop 处理任务"""
+            from nanobee.agent.loop import InboundMessage
+
+            msg = InboundMessage(
+                channel="heartbeat",
+                sender_id="heartbeat",
+                chat_id="default",
+                content=tasks,
+                media=[],
+            )
+
+            try:
+                response = await self._agent_loop._process_message(msg)
+                return response.content if response else ""
+            except Exception:
+                logger.exception("心跳任务执行失败")
+                return ""
+
+        async def _notify_user(response: str) -> None:
+            """通知用户:通过 HTTP 通道或日志推送结果"""
+            # 简化版:通过日志记录(可后续扩展为推送至 channel_http)
+            logger.info("心跳通知: %s", response[:200])
+
+        try:
+            self._heartbeat = HeartbeatService(
+                workspace=self.work_dir,
+                provider=provider,
+                model=model,
+                on_execute=_execute_task,
+                on_notify=_notify_user,
+                interval_s=interval_s,
+                enabled=enabled,
+                timezone=timezone,
+            )
+            await self._heartbeat.start()
+        except Exception:
+            logger.exception("初始化 Heartbeat 服务失败")
+
+    async def shutdown(self) -> None:
+        """关闭内核"""
+        logger.info("正在关闭 Nanobee 内核...")
+
+        # 停止 Heartbeat 服务
+        if hasattr(self, "_heartbeat") and self._heartbeat is not None:
+            self._heartbeat.stop()
+
+        # 停止 Agent Loop
+        if self._agent_loop is not None:
+            self._agent_loop.stop()
+            await self._agent_loop.close_mcp()
+
+        # 停止所有通道
+        channels = self.plugin_manager.get_by_type("channel")
+        for channel in channels:
+            await channel.stop()
+
+        # 关闭 MCP 连接（AgentLoop 内置能力）
+        if self._agent_loop is not None:
+            await self._agent_loop.close_mcp()
+
+        # 卸载所有插件
+        self.plugin_manager.unload_all()
+
+        self._booted = False
+        logger.info("Nanobee 内核已关闭")

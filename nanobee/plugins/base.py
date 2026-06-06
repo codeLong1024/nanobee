@@ -51,13 +51,19 @@ class NanobeePlugin(PluginHookMixin, ABC):
             version=self.version,
             plugin_type=self.plugin_type,
         )
-        self.kernel: Any | None = None
+        self._kernel: Any | None = None  # 私有属性，禁止插件直接访问
         self._enabled = False
+        self._config: dict[str, Any] = {}  # 插件专属配置（隔离）
 
     @property
     def metadata(self) -> PluginMetadata:
         """获取插件元数据"""
         return self._metadata
+
+    @property
+    def kernel(self) -> Any | None:
+        """获取内核实例（只读，插件不应直接访问 config）"""
+        return self._kernel
 
     # ---- 生命周期方法 ----
 
@@ -67,8 +73,27 @@ class NanobeePlugin(PluginHookMixin, ABC):
         Args:
             kernel: NanobeeKernel 实例
         """
-        self.kernel = kernel
+        self._kernel = kernel
+        self._extract_config()
         logger.info("插件 %s 初始化完成", self._metadata.name)
+
+    def _extract_config(self) -> None:
+        """从内核配置中提取当前插件的专属配置（配置隔离）。
+
+        每个插件只能读取自己在 plugins.<plugin_name> 下的配置段，
+        无法访问其他插件的配置或全局配置。
+        """
+        if self._kernel is None:
+            self._config = {}
+            return
+        # 兼容 kernel 为 dict 的情况（测试场景）
+        if isinstance(self._kernel, dict):
+            self._config = {}
+            return
+        plugin_config = self._kernel.config.get("plugins", {}).get(
+            self._metadata.name, {}
+        )
+        self._config = dict(plugin_config) if isinstance(plugin_config, dict) else {}
 
     def on_load(self) -> None:
         """插件加载后调用（注册工具、注册事件等）"""
@@ -86,7 +111,8 @@ class NanobeePlugin(PluginHookMixin, ABC):
 
     def on_unload(self) -> None:
         """插件卸载前调用（清理资源）"""
-        self.kernel = None
+        self._kernel = None
+        self._config = {}
 
     def destroy(self) -> None:
         """销毁插件（由 PluginManager 调用）"""
@@ -101,7 +127,10 @@ class NanobeePlugin(PluginHookMixin, ABC):
         return self._enabled
 
     def get_config(self, key: str, default: Any = None) -> Any:
-        """从内核配置中获取当前插件的配置
+        """从插件专属配置中获取指定键的值
+
+        每个插件只能访问自己在 plugins.<plugin_name> 下的配置段，
+        无法读取其他插件的配置或全局配置。
 
         Args:
             key: 配置键名
@@ -110,10 +139,7 @@ class NanobeePlugin(PluginHookMixin, ABC):
         Returns:
             配置值
         """
-        if self.kernel is None:
-            return default
-        plugin_config = self.kernel.config.get("plugins", {}).get(self._metadata.name, {})
-        return plugin_config.get(key, default)
+        return self._config.get(key, default)
 
     def install(self) -> None:
         """安装插件（可选，例如创建必要的目录或文件）"""

@@ -264,7 +264,22 @@ class AgentLoop:
         workspace: Path,
         **extra: Any,
     ) -> AgentLoop:
-        """从 NanobeeKernel 创建 AgentLoop。"""
+        """从 NanobeeKernel 创建 AgentLoop。
+
+        如果 extra 中未指定 max_iterations 和 memory_store_threshold，
+        则从 kernel.config.agents.defaults 中读取。
+        """
+        # 从配置中提取 max_iterations（如果未在 extra 中指定）
+        if "max_iterations" not in extra:
+            agents_config = kernel.config.get("agents", {})
+            defaults = agents_config.get("defaults", {}) if isinstance(agents_config, dict) else {}
+            extra["max_iterations"] = int(defaults.get("max_iterations", 10))
+        # 从配置中提取 memory_store_threshold（如果未在 extra 中指定）
+        if "memory_store_threshold" not in extra:
+            agents_config = kernel.config.get("agents", {})
+            defaults = agents_config.get("defaults", {}) if isinstance(agents_config, dict) else {}
+            extra["memory_store_threshold"] = int(defaults.get("memory_store_threshold", 20))
+
         return cls(
             provider=provider,
             workspace=workspace,

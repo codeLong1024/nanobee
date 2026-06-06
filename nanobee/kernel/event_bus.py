@@ -22,7 +22,12 @@ class EventBus:
         Args:
             event: 事件名称
             handler: 事件处理器
+
+        Raises:
+            TypeError: 当 handler 不是可调用对象时
         """
+        if not callable(handler):
+            raise TypeError(f"handler must be callable, got {type(handler).__name__}")
         if event not in self._subscribers:
             self._subscribers[event] = []
         self._subscribers[event].append(handler)
@@ -39,8 +44,6 @@ class EventBus:
             return
         # 快照复制，防止迭代过程中订阅列表被修改
         for handler in list(handlers):
-            if not hasattr(handler, "__call__"):
-                continue
             try:
                 result = handler(data)
                 if hasattr(result, "__await__"):

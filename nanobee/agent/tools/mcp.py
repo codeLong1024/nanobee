@@ -34,7 +34,6 @@ class MCPServerConfig(BaseModel):
 def _dict_to_mcp_config(cfg_dict: dict[str, Any]) -> MCPServerConfig:
     """将字典转换为 MCP 服务器配置模型。"""
     return MCPServerConfig(**cfg_dict)
-from pydantic import BaseModel
 
 # Transient connection errors that warrant a single retry.
 # These typically happen when an MCP server restarts or a network

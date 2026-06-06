@@ -1,6 +1,6 @@
-"""Test _StreamHook interface compliance.
+"""Test StreamBridgeHook interface compliance.
 
-Verifies that _StreamHook implements the full AgentHook interface
+Verifies that StreamBridgeHook implements the full AgentHook interface
 so CompositeHook._for_each_hook_safe will not raise AttributeError.
 """
 
@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-from nanobee.kernel.kernel import _StreamHook
+from nanobee.agent.hook import StreamBridgeHook
 
 
 # All AgentHook lifecycle methods that CompositeHook._for_each_hook_safe
@@ -28,12 +28,12 @@ _LIFECYCLE_METHODS: tuple[str, ...] = (
 
 
 class TestStreamHookInterface:
-    """Verify _StreamHook implements all AgentHook lifecycle methods."""
+    """Verify StreamBridgeHook implements all AgentHook lifecycle methods."""
 
     @pytest.mark.parametrize("method_name", _LIFECYCLE_METHODS)
     def test_method_exists(self, method_name: str) -> None:
         """Every AgentHook lifecycle method must exist and be callable."""
-        hook = _StreamHook()
+        hook = StreamBridgeHook()
         assert hasattr(hook, method_name)
         assert callable(getattr(hook, method_name))
 
@@ -47,7 +47,7 @@ class TestStreamHookInterface:
         sync_methods = ("wants_streaming", "finalize_content")
         if method_name in sync_methods:
             return
-        hook = _StreamHook()
+        hook = StreamBridgeHook()
         method = getattr(hook, method_name)
         ctx: Any = object()
         kwargs: dict[str, Any] = {}
@@ -67,31 +67,31 @@ class TestStreamHookInterface:
 
 
 class TestStreamHookBehavior:
-    """Verify correct behavior of _StreamHook methods."""
+    """Verify correct behavior of StreamBridgeHook methods."""
 
     def test_finalize_content_pass_through(self) -> None:
         """finalize_content returns content unchanged."""
-        hook = _StreamHook()
+        hook = StreamBridgeHook()
         content = "test content"
         result = hook.finalize_content(None, content)
         assert result is content
 
     def test_finalize_content_none(self) -> None:
         """finalize_content handles None content."""
-        hook = _StreamHook()
+        hook = StreamBridgeHook()
         result = hook.finalize_content(None, None)
         assert result is None
 
     def test_wants_streaming_without_callback(self) -> None:
         """wants_streaming returns False when no on_stream provided."""
-        hook = _StreamHook()
+        hook = StreamBridgeHook()
         assert hook.wants_streaming() is False
 
     def test_wants_streaming_with_callback(self) -> None:
         """wants_streaming returns True when on_stream provided."""
         async def dummy(delta: str) -> None:
             pass
-        hook = _StreamHook(on_stream=dummy)
+        hook = StreamBridgeHook(on_stream=dummy)
         assert hook.wants_streaming() is True
 
     @pytest.mark.asyncio
@@ -102,7 +102,7 @@ class TestStreamHookBehavior:
         async def capture(delta: str) -> None:
             received.append(delta)
 
-        hook = _StreamHook(on_stream=capture)
+        hook = StreamBridgeHook(on_stream=capture)
         await hook.on_stream(None, "hello")
         assert received == ["hello"]
 
@@ -114,13 +114,13 @@ class TestStreamHookBehavior:
             msg = "should not be called"
             raise AssertionError(msg)
 
-        hook = _StreamHook(on_stream=_should_not_be_called)
+        hook = StreamBridgeHook(on_stream=_should_not_be_called)
         await hook.on_stream(None, "")
         # no exception = pass
 
     @pytest.mark.asyncio
     async def test_on_stream_without_callback_is_noop(self) -> None:
         """on_stream is noop when no callback registered."""
-        hook = _StreamHook()
+        hook = StreamBridgeHook()
         await hook.on_stream(None, "data")
         # no exception = pass
