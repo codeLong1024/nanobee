@@ -49,7 +49,7 @@ class LockManager:
             锁释放
         """
         lock = self._user_locks.setdefault(user_id, asyncio.Lock())
-        gate = self._concurrency_gate or _null_context()
+        gate = self._concurrency_gate or _null_ctx
 
         async with lock, gate:
             yield
@@ -79,7 +79,8 @@ class _NullContextManager:
         pass
 
 
-_null_context = _NullContextManager
+# 模块级单例，避免每次 acquire() 创建新实例
+_null_ctx = _NullContextManager()
 
 __all__ = [
     "LockManager",
