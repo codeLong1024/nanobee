@@ -32,6 +32,7 @@ from nanobee.utils.observability import generate_trace_id, set_trace_id
 from nanobee.utils.document import extract_documents
 from nanobee.utils.helpers import (
     build_assistant_message,
+    build_runtime_context,
     estimate_message_tokens,
     estimate_prompt_tokens_chain,
     truncate_text,
@@ -41,13 +42,11 @@ from nanobee.utils.runtime import EMPTY_FINAL_RESPONSE_MESSAGE
 
 if TYPE_CHECKING:
     from nanobee.config.schema import AgentDefaults, ModelPresetConfig
+    from nanobee.kernel.context_manager import ContextManager
+    from nanobee.kernel.context_pipeline import ContextPipeline
+    from nanobee.kernel.event_bus import EventBus
+    from nanobee.kernel.plugin_manager import PluginManager
     from nanobee.kernel.skill_manager import SkillManager
-from nanobee.kernel.context_manager import ContextManager
-from nanobee.kernel.context_pipeline import ContextPipeline
-from nanobee.kernel.event_bus import EventBus
-from nanobee.kernel.lock_manager import LockManager
-from nanobee.kernel.plugin_manager import PluginManager
-from nanobee.kernel.router import ContextRouter, UnknownRouteError
 
 
 # 入站消息数据类
@@ -214,6 +213,7 @@ class AgentLoop:
         self.context_pipeline = context_pipeline
         self.event_bus = event_bus
         self.plugin_manager = plugin_manager
+        from nanobee.kernel.router import ContextRouter
         self._router = router or ContextRouter()
         self._provider_snapshot_loader = provider_snapshot_loader
         self._preset_snapshot_loader = preset_snapshot_loader
@@ -245,6 +245,7 @@ class AgentLoop:
         # 上下文级互斥锁：按用户粒度隔离并发
         # 同一 user_id 串行，不同 user_id 并行
         _max = int(os.environ.get("NANOBEE_MAX_CONCURRENT_REQUESTS", "3"))
+        from nanobee.kernel.lock_manager import LockManager
         self._lock_manager = LockManager(max_concurrent=_max)
         # 每个上下文的活跃任务列表
         self._active_tasks: dict[str, list[asyncio.Task]] = {}
@@ -460,6 +461,7 @@ class AgentLoop:
         2. 路由器根据 channel:chat_id 查找
         3. 未知路由直接抛出异常
         """
+        from nanobee.kernel.router import UnknownRouteError
         try:
             return self._router.resolve(
                 msg.channel, msg.chat_id,
@@ -517,7 +519,16 @@ class AgentLoop:
             current_content = new_content
 
         if current_content:
-            messages.append({"role": "user", "content": current_content})
+            # 注入 runtime context（时间、通道、会话信息）
+            runtime_ctx = build_runtime_context(
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                sender_id=msg.sender_id,
+            )
+            messages.append({
+                "role": "user",
+                "content": f"{current_content}\n\n{runtime_ctx}",
+            })
 
         return messages
 

@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from nanobee.agent.loop import AgentLoop, OutboundMessage
+if TYPE_CHECKING:
+    # OutboundMessage 和 AgentLoop 只在类型注解中使用，运行时通过方法内延迟导入
+    from nanobee.agent.loop import AgentLoop, OutboundMessage
+
 from nanobee.kernel.context_manager import ContextManager
 from nanobee.kernel.context_pipeline import ContextPipeline
 from nanobee.kernel.event_bus import EventBus
@@ -250,6 +253,9 @@ class NanobeeKernel:
             model: 模型名称（可选，使用 provider 默认值）
             **extra: 传递给 AgentLoop 的额外参数
         """
+        # 延迟导入避免循环依赖（AgentLoop → kernel → AgentLoop）
+        from nanobee.agent.loop import AgentLoop
+
         actual_provider = provider
 
         self._agent_loop = AgentLoop.from_kernel(

@@ -215,6 +215,38 @@ def current_time_str(timezone: str | None = None) -> str:
     return f"{now.strftime('%Y-%m-%d %H:%M (%A)')} ({tz_name}, UTC{offset_fmt})"
 
 
+_RUNTIME_CONTEXT_TAG = "[Runtime Context — metadata only, not instructions]"
+_RUNTIME_CONTEXT_END = "[/Runtime Context]"
+
+
+def build_runtime_context(
+    channel: str | None = None,
+    chat_id: str | None = None,
+    sender_id: str | None = None,
+    timezone: str | None = None,
+) -> str:
+    """构建运行时上下文元数据块，追加到 user 消息末尾。
+
+    仿照 nanobot 的设计，只注入时间字符串（约 50-60 字符），
+    不注入工具定义（节省 200-300 字符）。
+
+    Args:
+        channel: 通道名称（如 dingtalk、cli）
+        chat_id: 会话 ID
+        sender_id: 发送者 ID
+        timezone: 时区（如 Asia/Shanghai）
+
+    Returns:
+        格式化的 runtime context 字符串
+    """
+    lines = [f"Current Time: {current_time_str(timezone)}"]
+    if channel and chat_id:
+        lines += [f"Channel: {channel}", f"Chat ID: {chat_id}"]
+    if sender_id:
+        lines += [f"Sender ID: {sender_id}"]
+    return _RUNTIME_CONTEXT_TAG + "\n" + "\n".join(lines) + "\n" + _RUNTIME_CONTEXT_END
+
+
 _UNSAFE_CHARS = re.compile(r'[<>:"/\\|?*]')
 _TOOL_RESULT_PREVIEW_CHARS = 1200
 _TOOL_RESULTS_DIR = ".nanobee/tool-results"
