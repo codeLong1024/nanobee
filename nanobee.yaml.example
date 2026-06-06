@@ -101,3 +101,11 @@ providers:
 # routing:
 #   "cli:default": "user-alice"
 #   "http:chat-123": "user-bob"
+
+# 安全配置
+# tools:
+#   # SSRF 白名单 CIDR（可选）：允许访问的私有/内网 CIDR 范围
+#   # 例如：Tailscale 用户可添加 "100.64.0.0/10"
+#   # 格式：CIDR 字符串列表
+#   ssrfWhitelist:
+#     - "100.64.0.0/10"

@@ -30,6 +30,25 @@ class AgentHookContext:
     error: str | None = None
 
 
+@dataclass(slots=True)
+class AgentRunHookContext:
+    """运行级上下文快照，暴露给 Runner Hook。
+
+    before_run / after_run / on_error / on_finally 使用此类型，
+    与迭代级 AgentHookContext 完全分离。
+    """
+
+    messages: list[dict[str, Any]]
+    final_content: str | None = None
+    tools_used: list[str] = field(default_factory=list)
+    usage: dict[str, int] = field(default_factory=dict)
+    stop_reason: str | None = None
+    error: str | None = None
+    tool_events: list[dict[str, str]] = field(default_factory=list)
+    had_injections: bool = False
+    exception: BaseException | None = None
+
+
 class AgentHook:
     """Minimal lifecycle surface for shared runner customization."""
 
@@ -63,6 +82,27 @@ class AgentHook:
         pass
 
     async def after_iteration(self, context: AgentHookContext) -> None:
+        pass
+
+    # ── Run-level lifecycle ──────────────────────────────────────────────
+
+    async def before_run(self, context: AgentRunHookContext) -> None:
+        """在迭代循环开始前调用。"""
+        pass
+
+    async def after_run(self, context: AgentRunHookContext) -> None:
+        """在迭代循环正常结束后调用（仅在 on_finally 之前）。"""
+        pass
+
+    async def on_error(self, context: AgentRunHookContext) -> None:
+        """在迭代循环因异常或业务错误终止时调用。
+
+        排除 asyncio.CancelledError（取消不应视为错误）。
+        """
+        pass
+
+    async def on_finally(self, context: AgentRunHookContext) -> None:
+        """无论正常/异常/取消，始终在 run() 返回前调用。"""
         pass
 
     def finalize_content(self, context: AgentHookContext, content: str | None) -> str | None:
@@ -118,6 +158,20 @@ class CompositeHook(AgentHook):
     async def after_iteration(self, context: AgentHookContext) -> None:
         await self._for_each_hook_safe("after_iteration", context)
 
+    # ── Run-level fan-out ────────────────────────────────────────────────
+
+    async def before_run(self, context: AgentRunHookContext) -> None:
+        await self._for_each_hook_safe("before_run", context)
+
+    async def after_run(self, context: AgentRunHookContext) -> None:
+        await self._for_each_hook_safe("after_run", context)
+
+    async def on_error(self, context: AgentRunHookContext) -> None:
+        await self._for_each_hook_safe("on_error", context)
+
+    async def on_finally(self, context: AgentRunHookContext) -> None:
+        await self._for_each_hook_safe("on_finally", context)
+
     def finalize_content(self, context: AgentHookContext, content: str | None) -> str | None:
         for h in self._hooks:
             content = h.finalize_content(context, content)
@@ -140,6 +194,11 @@ class SDKCaptureHook(AgentHook):
     async def after_iteration(self, context: AgentHookContext) -> None:
         for call in context.tool_calls:
             self.tools_used.append(call.name)
+        self.messages = list(context.messages)
+
+    async def after_run(self, context: AgentRunHookContext) -> None:
+        """权威快照：after_run 快照优于 after_iteration 增量。"""
+        self.tools_used = list(context.tools_used)
         self.messages = list(context.messages)
 
 

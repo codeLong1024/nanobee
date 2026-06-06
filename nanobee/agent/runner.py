@@ -11,6 +11,7 @@ import inspect
 import json
 import os
 from contextlib import suppress
+from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, TypedDict
@@ -19,9 +20,10 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-from nanobee.agent.hook import AgentHook, AgentHookContext
+from nanobee.agent.hook import AgentHook, AgentHookContext, AgentRunHookContext
 from nanobee.agent.tools.registry import ToolRegistry
 from nanobee.providers.base import LLMProvider, LLMResponse, ToolCallRequest
+from nanobee.security.network import SSRF_BOUNDARY_NOTE
 from nanobee.utils.file_edit_events import (
     build_file_edit_end_event,
     build_file_edit_error_event,
@@ -314,10 +316,65 @@ class AgentRunner:
     async def run(self, spec: AgentRunSpec) -> AgentRunResult:
         """执行 Agent 迭代循环（LLM 调用 + 工具执行）。
 
-        核心流程：上下文治理 → LLM 调用 → 工具执行 → 结果处理 → 循环/终止。
+        外层包裹 run-level hook（before_run / after_run / on_error / on_finally），
+        迭代循环逻辑委托给 _run_core()。
         """
         hook = spec.hook or AgentHook()
         messages = list(spec.initial_messages)
+        context = AgentRunHookContext(messages=deepcopy(messages))
+
+        try:
+            await hook.before_run(context)
+        except Exception:
+            logger.exception("AgentHook.before_run failed")
+
+        try:
+            result = await self._run_core(spec, hook, messages)
+        except asyncio.CancelledError:
+            context.messages = deepcopy(messages)
+            context.stop_reason = "cancelled"
+            context.exception = asyncio.CancelledError
+            raise
+        except Exception as exc:
+            context.messages = deepcopy(messages)
+            context.stop_reason = "error"
+            context.error = f"Error: {type(exc).__name__}: {exc}"
+            context.exception = exc
+            await hook.on_error(context)
+            raise
+        else:
+            context.messages = deepcopy(result.messages)
+            context.final_content = result.final_content
+            context.tools_used = list(result.tools_used)
+            context.usage = dict(result.usage)
+            context.stop_reason = result.stop_reason
+            context.error = result.error
+            context.tool_events = deepcopy(result.tool_events)
+            context.had_injections = result.had_injections
+            context.exception = None
+            if context.error is not None:
+                await hook.on_error(context)
+            await hook.after_run(context)
+            return result
+        finally:
+            try:
+                await hook.on_finally(context)
+            except Exception:
+                logger.exception(
+                    "AgentHook.on_finally error after %s",
+                    context.stop_reason or "run exception",
+                )
+
+    async def _run_core(
+        self,
+        spec: AgentRunSpec,
+        hook: AgentHook,
+        messages: list[dict[str, Any]],
+    ) -> AgentRunResult:
+        """迭代循环核心（LLM 调用 + 工具执行），由 run() 包裹。
+
+        核心流程：上下文治理 → LLM 调用 → 工具执行 → 结果处理 → 循环/终止。
+        """
         final_content: str | None = None
         tools_used: list[str] = []
         usage: dict[str, int] = {"prompt_tokens": 0, "completion_tokens": 0}
@@ -1087,15 +1144,12 @@ class AgentRunner:
         "internal/private url detected",
         "private/internal address",
         "private address",
+        "解析为私有/内网地址",
+        "私有/内网地址",
+        "内网 URL",
     )
-    _SSRF_BOUNDARY_NOTE: str = (
-        "This is a non-bypassable security boundary. Stop trying to access "
-        "private/internal URLs. Do not retry with curl, wget, encoded IPs, "
-        "alternate DNS, redirects, proxies, or another tool. Ask the user for "
-        "local files, logs, screenshots, or an explicit safe public URL instead. "
-        "If the user explicitly trusts this private URL, ask them to whitelist "
-        "the exact IP/CIDR via tools.ssrfWhitelist."
-    )
+    # 从 security 模块导入的 SSRF 边界提示
+    _SSRF_BOUNDARY_NOTE: str = SSRF_BOUNDARY_NOTE
 
     # 非 SSRF 边界标记，作为可恢复的工具错误返回给 LLM。
     _WORKSPACE_VIOLATION_MARKERS: tuple[str, ...] = (

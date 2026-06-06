@@ -19,6 +19,7 @@ from typing import Any
 
 from nanobee.kernel.sandbox import ContextSandbox
 from nanobee.plugins.tool import ToolPlugin
+from nanobee.security.network import contains_internal_url
 
 logger = logging.getLogger(__name__)
 
@@ -337,7 +338,7 @@ class ToolShellPlugin(ToolPlugin):
         return None
 
     def _guard_command(self, command: str, cwd: str) -> str | None:
-        """安全守卫：阻止危险命令
+        """安全守卫：阻止危险命令和内网 URL
 
         Args:
             command: 命令字符串
@@ -352,6 +353,13 @@ class ToolShellPlugin(ToolPlugin):
         for pattern in _DENY_PATTERNS:
             if re.search(pattern, lower):
                 return "错误：命令被 deny 模式过滤器阻止"
+
+        # SSRF 守卫：检测命令中的内网 URL（如 curl http://169.254.169.254/）
+        if contains_internal_url(cmd):
+            return (
+                "错误：命令被 SSRF 守卫阻止（检测到内网 URL）"
+                + _WORKSPACE_BOUNDARY_NOTE
+            )
 
         if self.restrict_to_workspace:
             if "..\\" in cmd or "../" in cmd:

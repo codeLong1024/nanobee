@@ -19,7 +19,7 @@
 
 ## 项目状态
 
-**版本 v0.1.0** — 核心框架（微内核、Agent 引擎、LLM Provider、插件体系）已通过 **396 个单元测试**验证。
+**版本 v0.1.0** — 核心框架（微内核、Agent 引擎、LLM Provider、插件体系）已通过 **504 个单元测试**验证。
 
 ```
 Kernel 内核     ████████████████████████████████  95%
@@ -35,7 +35,9 @@ CLI 命令        ████████████████████�
 - **NanobeeKernel** — 统一入口，管理插件生命周期、消息路由、灵魂文件保护
 - **多租户隔离内核** — LockManager 并发锁、UserContext 元数据、ContextRouter 路由、ContextSandbox 沙箱、ToolCollector 双重过滤
 - **Agent 状态机** — 6 态驱动循环（RESTORE → COMPACT → BUILD → RUN → SAVE → RESPOND），支持流式输出、中轮注入、并发锁
-- **Plugin Hook 机制** — 5 个核心契约接口，插件可在关键切面注入逻辑
+- **Plugin Hook 机制** — 5 个核心契约接口（contribute_to_prompt/contribute_to_tools/on_pre_invoke/on_post_invoke/on_message_completed），插件可在关键切面注入逻辑
+
+- **Run-level Hook 机制** — AgentRunner 外层生命周期：before_run / after_run / on_error / on_finally，包裹整个 LLM 迭代循环，支持启动初始化、完成汇总、错误记录、资源释放
 - **技能管理** — Skill 数据模型 + SkillManager，用户通过对话创建/编辑/删除技能，支持 visibility 共享
 - **技能元数据扩展** — SkillMeta 支持 `compatibility` / `license` 字段，description 自动校验（≤1024 字符、禁止 `<>`）
 - **技能校验器** — `skill_validator.py` 校验 name kebab-case 格式、frontmatter 完整性、白名单检查，CreateSkillTool 前置调用
@@ -50,14 +52,13 @@ CLI 命令        ████████████████████�
 - **max_iterations 配置化** — 支持从 `nanobee.yaml` 配置 LLM 最大对话循环次数（默认 10）
 - **OpenAI 兼容 HTTP API** — `POST /v1/chat/completions`（SSE 流式 + JSON 非流式）、`GET /v1/models`、API Key 认证，支持 LobeChat 等第三方客户端连接
 - **Pipeline 三明治防御** — SkillStage 加 `[SKILL BEGIN/END]` 边界标记；共享技能 body 每行 `>` 引用包裹 + `⚠️ 外部技能` 警告；`FinalGuardStage(priority 90)` 追加不可绕过的优先级规则段
-- **统一异常层次结构** — `NanobeeError` 基类 + 4 个领域分支（Kernel/Provider/Agent/Storage），共 20 个异常类，所有框架异常可通过 `except NanobeeError` 统一捕获
+- **安全模块** — SSRF 前置拦截（DNS 解析 + 私有 IP 校验 + IPv6-mapped IPv4 标准化）、CIDR 白名单、shell 命令内网 URL 检测（`contains_internal_url`）、路径边界工具函数（多 root 支持）
 
 ### 尚不完整的功能
 
 | 模块 | 说明 | 优先级 |
 |------|------|--------|
 | `cli/hub.py` | `search/install/uninstall` 子命令仅有 echo 占位 | 低 |
-| `security/` | 安全策略模块为空 | 中 |
 
 ## 快速开始
 
@@ -165,7 +166,7 @@ ChannelPlugin ──▶ EventBus ──▶ NanobeeKernel
 |------|------|
 | `NanobeeKernel` | 统一入口，管理插件生命周期、消息路由 |
 | `AgentLoop` | 6 态状态机驱动循环（RESTORE → COMPACT → BUILD → RUN → SAVE → RESPOND → DONE） |
-| `AgentRunner` | LLM 调用 + 工具执行迭代（含 Hook 调用、上下文治理、SSRF 拦截） |
+| `AgentRunner` | LLM 调用 + 工具执行迭代（含迭代级/run-level 双层 Hook、上下文治理、SSRF 拦截） |
 | `ContextManager` | 多租户上下文隔离（每个用户独立目录） |
 | `ContextPipeline` | System Prompt 构建（Soul → Skill → Memory → Rules 管线） |
 | `PluginManager` | 插件扫描、加载、生命周期控制 |
@@ -232,7 +233,7 @@ class MyPlugin(NanobeePlugin):
         return None
 ```
 
-### 5 个 Hook 接口
+### 5 个 Plugin Hook 接口
 
 | Hook | 时机 | 用途 |
 |------|------|------|
@@ -242,13 +243,25 @@ class MyPlugin(NanobeePlugin):
 | `on_post_invoke(context, name, result)` | 工具执行后 | 结果修改、副作用 |
 | `on_message_completed(context, messages)` | 对话轮次结束 | 审计日志、后台整理 |
 
+### 4 个 Run-level Hook 接口（AgentRunner 底层）
+
+| Hook | 时机 | 用途 |
+|------|------|------|
+| `before_run(context)` | 迭代循环开始前 | 启动计时、初始化计数器 |
+| `after_run(context)` | 迭代循环正常结束后 | 总 token 消耗记录、汇总统计 |
+| `on_error(context)` | 迭代循环因异常/业务错误终止时 | 错误诊断信息采集 |
+| `on_finally(context)` | 无论正常/异常/取消始终调用 | 释放临时资源 |
+
+> Run-level Hook 通过 `AgentRunHookContext` 传递运行级快照（messages、final_content、tools_used、usage、stop_reason、error、tool_events、exception），
+> 与迭代级的 `AgentHookContext` 完全分离。现有自定义 Hook 子类不受影响（新方法默认 pass）。
+
 ## 测试
 
 ```bash
 # 安装开发依赖
 pip install -e ".[dev]"
 
-# 运行全部测试（396 个用例）
+# 运行全部测试（504 个用例）
 python -m pytest tests/ -v --tb=short
 
 # 查看覆盖率
@@ -275,9 +288,10 @@ python -m pytest tests/ --cov=nanobee --cov-report=term-missing
 | `test_skill_validator.py` | 12 | 技能校验器（name 格式、meta 完整性、白名单检查） |
 | `test_skill_injection.py` | 7 | 三明治注入防御（指令覆盖、markdown 伪造、guard 位置、引用前缀） |
 | `test_exceptions.py` | 24 | 统一异常层次结构（NanobeeError 子类、catch-all、模块导出、向后兼容） |
+| `test_security.py` | 61 | SSRF 防护、CIDR 白名单、内网 URL 检测、路径边界工具 |
 | `test_cli_plugin.py` | 23 | 插件发现/列表/创建/启用/禁用 CLI 命令 |
 | `test_tool_dingtalk.py` | 42 | 钉钉插件（文档/多维表/管道 + MCP 客户端 + CSV 解析） |
-| 其他 | 120+ | 流式 Hook、Shell 沙箱、Cron 隔离、钉钉文件、Runtime Context、Heartbeat 等 |
+| 其他 | 128+ | 流式 Hook、Shell 沙箱、Cron 隔离、钉钉文件、Runtime Context、Heartbeat、Run-level Hook 等 |
 
 ## 项目结构
 
@@ -286,7 +300,7 @@ nanobee/
 ├── agent/                 # Agent 核心引擎
 │   ├── loop.py           # 6 态状态机消息循环
 │   ├── runner.py         # LLM 调用 + 工具执行引擎
-│   ├── hook.py           # 复合 Hook 管理器
+│   ├── hook.py           # 复合 Hook + Run-level Hook（AgentRunHookContext / before_run / after_run / on_error / on_finally）
 │   ├── model_presets.py  # 模型预设切换
 │   └── tools/            # 工具体系
 │       ├── base.py       # Tool/Schema 抽象基类
@@ -331,7 +345,7 @@ nanobee/
 │   └── core_parser.py    # core.md 解析
 ├── plugins/              # 插件接口定义
 ├── providers/            # LLM Provider（6 个实现 + 注册表）
-├── security/             # 安全策略 🚧 空模块
+├── security/             # 安全策略（SSRF 防护 + 路径边界工具）
 └── utils/                # 工具函数
 ```
 

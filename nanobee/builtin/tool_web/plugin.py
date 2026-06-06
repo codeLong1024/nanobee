@@ -19,6 +19,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 from nanobee.plugins.tool import ToolPlugin
+from nanobee.security.network import validate_resolved_url, validate_url_target
 
 # ---------------------------------------------------------------------------
 # 共享常量
@@ -45,14 +46,26 @@ def _normalize(text: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
-def _validate_url(url: str) -> tuple[bool, str]:
-    """验证 URL scheme/domain"""
+def _validate_url(url: str, *, check_ssrf: bool = True) -> tuple[bool, str]:
+    """验证 URL scheme/domain + SSRF 前置拦截
+
+    Args:
+        url: 待验证的 URL
+        check_ssrf: 是否执行 SSRF DNS 解析检查（默认启用）
+
+    Returns:
+        (ok, error_message)
+    """
     try:
         p = urlparse(url)
         if p.scheme not in ("http", "https"):
             return False, f"仅允许 http/https，实际为 '{p.scheme or 'none'}'"
         if not p.netloc:
             return False, "缺少域名"
+        if check_ssrf:
+            ok, msg = validate_url_target(url)
+            if not ok:
+                return False, msg
         return True, ""
     except Exception as e:
         return False, str(e)
