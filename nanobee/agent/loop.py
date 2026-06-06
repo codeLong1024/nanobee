@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 from nanobee.agent import model_presets as preset_helpers
 from nanobee.agent.hook import AgentHook, CompositeHook
-from nanobee.agent.runner import _MAX_INJECTIONS_PER_TURN, AgentRunner, AgentRunSpec
+from nanobee.agent.runner import _MAX_INJECTIONS_PER_TURN, AgentRunner, AgentRunSpec, PluginHooks
 from nanobee.agent.tools.registry import ToolRegistry, ToolPluginAdapter
 from nanobee.providers.base import LLMProvider
 from nanobee.providers.factory import ProviderSnapshot
@@ -573,7 +573,7 @@ class AgentLoop:
             hook = CompositeHook(list(self._extra_hooks))
 
         # 构造插件 Hook 闭包列表（on_pre_invoke / on_post_invoke）
-        plugin_hooks: dict[str, list[Any]] | None = None
+        plugin_hooks: PluginHooks | None = None
         enabled_plugins = self._get_enabled_plugins()
         if enabled_plugins:
             try:

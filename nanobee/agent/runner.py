@@ -12,7 +12,7 @@ import os
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, TypedDict
 
 import logging
 
@@ -72,6 +72,18 @@ _BACKFILL_CONTENT = "[Tool result unavailable — call was interrupted or lost]"
 
 # 向后兼容的模块属性，供测试/扩展 monkeypatch 使用
 prepare_file_edit_tracker = _prepare_file_edit_tracker
+
+
+class PluginHooks(TypedDict, total=False):
+    """插件 Hook 回调字典。
+
+    Attributes:
+        pre_invoke: 工具执行前拦截钩子，签名 (tool_name: str, args: dict) → args
+        post_invoke: 工具执行后拦截钩子，签名 (tool_name: str, result: Any) → result
+    """
+
+    pre_invoke: list[Callable[[str, dict[str, Any]], dict[str, Any]]]
+    post_invoke: list[Callable[[str, Any], Any]]
 
 
 def _resolve_sandbox_for_tool(tool: Any, spec_sandbox: Any) -> Any:
@@ -155,13 +167,11 @@ class AgentRunSpec:
     llm_timeout_s: float | None = None
     sandbox: Any | None = None
     filtered_tool_names: list[str] | None = None
-    plugin_hooks: dict[str, list[Any]] | None = None
+    plugin_hooks: PluginHooks | None = None
     # 通道上下文（用于工具插件的 set_context 调用）
     channel: str = ""
     chat_id: str = ""
     sender_id: str = ""
-    # plugin_hooks 格式: {"pre_invoke": [callable(context, name, args) → args],
-    #                      "post_invoke": [callable(context, name, result) → result]}
 
 
 @dataclass(slots=True)

@@ -206,8 +206,8 @@ class NanobeeKernel:
                 "或通过 set_agent_loop() 设置 Agent Loop。"
             )
 
-        if self._agent_loop is not None:
-            await self._agent_loop._connect_mcp()
+        # 连接 MCP 服务器（此时 self._agent_loop 必然非 None）
+        await self._agent_loop._connect_mcp()
 
         msg = InboundMessage(
             channel="direct",
