@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import os
 from contextlib import suppress
 from dataclasses import dataclass, field
@@ -1209,8 +1210,15 @@ class AgentRunner:
         tool_name: str,
         result: Any,
     ) -> Any:
-        """标准化工具结果：确保非空、持久化、截断。"""
+        """标准化工具结果：确保非空、持久化、截断、序列化。"""
         result = ensure_nonempty_tool_result(tool_name, result)
+        # 非字符串结果（如工具返回的 dict）转为 JSON 字符串，防止 LLM 后端
+        # 将其解析为缺失 type 字段的多模态内容导致 400 错误。
+        if not isinstance(result, str) and result is not None:
+            try:
+                result = json.dumps(result, ensure_ascii=False, default=str)
+            except Exception:
+                result = str(result)
         try:
             content = maybe_persist_tool_result(
                 spec.workspace,

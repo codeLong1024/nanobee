@@ -646,8 +646,10 @@ class AgentLoop:
 
         if result.stop_reason == "max_iterations":
             logger.warning("达到最大迭代次数 (%s)", self.max_iterations)
-            if on_stream and on_stream_end:
+            # 独立调用 on_stream / on_stream_end，避免 on_stream_end 为 None 时跳过整个流式路径
+            if on_stream:
                 await on_stream(result.final_content or "")
+            if on_stream_end:
                 await on_stream_end(resuming=False)
         elif result.stop_reason == "error":
             logger.error("LLM 返回错误: %s", (result.final_content or "")[:200])
@@ -1100,7 +1102,9 @@ class AgentLoop:
         logger.info("回复 %s: %s: %s", msg.channel, msg.sender_id, preview)
 
         meta = dict(msg.metadata or {})
-        if on_stream is not None and stop_reason not in {"error", "tool_error"}:
+        # max_iterations 时强制不标记 _streamed，确保通道通过常规 API 发送终止消息
+        # （流式路径可能在 on_stream_end 为 None 时未实际发送消息）
+        if on_stream is not None and stop_reason not in {"error", "tool_error", "max_iterations"}:
             meta["_streamed"] = True
         if turn_latency_ms is not None:
             meta["latency_ms"] = int(turn_latency_ms)

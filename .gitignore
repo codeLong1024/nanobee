@@ -64,4 +64,5 @@ contexts/
 
 # 钉钉频道插件（包含敏感配置）
 nanobee/builtin/channel_dingtalk/
+nanobee/builtin/tool_dingtalk/
 core.md.sha256

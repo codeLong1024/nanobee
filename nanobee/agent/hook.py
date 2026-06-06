@@ -146,7 +146,9 @@ class SDKCaptureHook(AgentHook):
 class StreamBridgeHook(AgentHook):
     """桥接 Kernel.handle_message 的流式回调 → AgentHook 系统。
 
-    仅桥接 on_stream（流式增量），不桥接 on_stream_end。
+    桥接 on_stream（流式增量）和 on_stream_end（流结束/工具调用暂停）。
+    on_stream_end(resuming=True) 用于通知通道"LLM 暂停流式输出以调用工具"，
+    通道可据此更新表情（如 🔧 工具调用中）。
     结束事件由调用者返回后统一处理，
     避免运行器内部的 on_stream_end 与通道的二次发送产生时序冲突。
     """
@@ -154,9 +156,9 @@ class StreamBridgeHook(AgentHook):
     def __init__(self, on_stream: Any = None, on_stream_end: Any = None) -> None:
         super().__init__()
         self._on_stream = on_stream
-        # on_stream_end 不使用：运行器内部触发会导致重复 _stream_end
-        # 改为由 handle_message 返回后调用者统一发送
-        _ = on_stream_end
+        self._on_stream_end = on_stream_end
+        # 跟踪最后一次 resuming 值，供 handle_message 返回后使用
+        self._last_resuming: bool = False
 
     def wants_streaming(self) -> bool:
         return self._on_stream is not None
@@ -169,8 +171,15 @@ class StreamBridgeHook(AgentHook):
                 logger.exception("[StreamBridgeHook] on_stream callback failed, delta=%s...", delta[:80])
 
     async def on_stream_end(self, context: Any, *, resuming: bool = False) -> None:
-        # no-op：结束事件由 handle_message 返回后统一处理
-        pass
+        # 记录最后一次 resuming 值
+        self._last_resuming = resuming
+        # 透传给通道：resuming=True → 通道更新表情为 🔧 工具调用中
+        #             resuming=False → 通道最终化卡片并切换 ✅ 已完成
+        if self._on_stream_end:
+            try:
+                await self._on_stream_end(resuming=resuming)
+            except Exception:
+                logger.exception("[StreamBridgeHook] on_stream_end callback failed")
 
     def finalize_content(self, context: Any, content: str | None) -> str | None:
         """Pass-through: StreamBridgeHook does not modify content."""

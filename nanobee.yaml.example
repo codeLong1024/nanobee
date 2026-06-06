@@ -86,6 +86,15 @@ providers:
 #     port: 8080
 #     # API Key（可选，配置后在请求头中传递 Authorization: Bearer <key>）
 #     # api_key: "sk-your-http-api-key"
+#   dingtalk:
+#     # 钉钉文档 MCP 服务器 URL（对应环境变量 DINGTALK_DOC_SERVER_URL）
+#     # doc_server_url: "https://mcp-gw.dingtalk.com/..."
+#     # 钉钉多维表 MCP 服务器 URL（对应环境变量 DINGTALK_AITABLE_SERVER_URL）
+#     # aitable_server_url: "https://mcp-gw.dingtalk.com/..."
+#     # 默认目标文件夹 ID（创建文档/多维表时未指定 folder_id 时使用）
+#     # folder_id: "kDnRL6jAJM3jqBKRIXX2YxadWyMoPYe1"
+#     # MCP API Key（可选）
+#     # api_key: "your-api-key"
 
 # 路由配置（多租户映射）
 # 格式："{channel}:{chat_id}" → user_id

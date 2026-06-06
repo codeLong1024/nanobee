@@ -206,6 +206,7 @@ ChannelPlugin ──▶ EventBus ──▶ NanobeeKernel
 | `tool_shell` | Tool | ✅ 完整 | Shell 命令工具（execute_shell），含 deny 模式拦截危险命令 |
 | `tool_web` | Tool | ✅ 完整 | Web 工具（web_search, web_fetch），含 HTML 清理、SSRF 保护 |
 | `tool_cron` | Tool | ✅ 完整 | Cron 定时任务（add, list, remove） |
+| `tool_dingtalk` | Tool | ✅ 完整 | 钉钉工具（文档操作、多维表操作、数据管道） |
 | `memory_file` | Memory | ✅ 完整 | JSONL 文件记忆存储，ADD-only 设计，关键词检索 + 时间衰减 |
 | `audit_logger` | Audit | ✅ 完整 | 参考：on_message_completed 审计日志 |
 | `channel_http` | Channel | ✅ 完整 | OpenAI 兼容 HTTP API（/v1/chat/completions、/v1/models），支持流式 SSE，API Key 认证 |
@@ -275,6 +276,7 @@ python -m pytest tests/ --cov=nanobee --cov-report=term-missing
 | `test_skill_injection.py` | 7 | 三明治注入防御（指令覆盖、markdown 伪造、guard 位置、引用前缀） |
 | `test_exceptions.py` | 24 | 统一异常层次结构（NanobeeError 子类、catch-all、模块导出、向后兼容） |
 | `test_cli_plugin.py` | 23 | 插件发现/列表/创建/启用/禁用 CLI 命令 |
+| `test_tool_dingtalk.py` | 42 | 钉钉插件（文档/多维表/管道 + MCP 客户端 + CSV 解析） |
 | 其他 | 120+ | 流式 Hook、Shell 沙箱、Cron 隔离、钉钉文件、Runtime Context、Heartbeat 等 |
 
 ## 项目结构
@@ -293,11 +295,12 @@ nanobee/
 │       ├── mcp.py        # MCP 桥接（stdio/SSE/HTTP）
 │       ├── skill_manager.py  # 技能管理工具（Create/List/Update/Delete/Fork + 前置校验）
 │       └── message.py    # 消息工具
-├── builtin/              # 内置插件（9 个已实现）
+├── builtin/              # 内置插件（10 个已实现）
 │   ├── channel_cli/      # CLI 通道
 │   ├── channel_http/     # OpenAI 兼容 HTTP API
 │   ├── memory_file/      # JSONL 记忆存储
 │   ├── audit_logger/     # 审计日志参考
+│   ├── tool_dingtalk/    # 钉钉工具（文档/多维表/管道）
 │   ├── tool_fs/          # 文件系统工具
 │   ├── tool_shell/       # Shell 命令工具
 │   ├── tool_web/         # Web 工具
