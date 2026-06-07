@@ -192,6 +192,7 @@ class AgentLoop:
         context_pipeline: ContextPipeline,
         event_bus: EventBus | None = None,
         plugin_manager: PluginManager | None = None,
+        skill_manager: SkillManager | None = None,
         router: ContextRouter | None = None,
         model: str | None = None,
         max_iterations: int = 10,
@@ -215,6 +216,7 @@ class AgentLoop:
         self.context_pipeline = context_pipeline
         self.event_bus = event_bus
         self.plugin_manager = plugin_manager
+        self.skill_manager = skill_manager
         from nanobee.kernel.router import ContextRouter
         self._router = router or ContextRouter()
         self._provider_snapshot_loader = provider_snapshot_loader
@@ -269,6 +271,7 @@ class AgentLoop:
         context_pipeline: Any,
         event_bus: Any,
         plugin_manager: Any,
+        skill_manager: Any = None,
         router: Any = None,
         config: dict | None = None,
         **extra: Any,
@@ -285,6 +288,7 @@ class AgentLoop:
             context_pipeline: 上下文管线
             event_bus: 事件总线
             plugin_manager: 插件管理器
+            skill_manager: 技能管理器
             router: 路由器（可选）
             config: 配置字典（可选，用于读取 agents.defaults）
             **extra: 传递给 AgentLoop.__init__ 的额外参数
@@ -310,6 +314,7 @@ class AgentLoop:
             context_pipeline=context_pipeline,
             event_bus=event_bus,
             plugin_manager=plugin_manager,
+            skill_manager=skill_manager,
             router=router,
             **extra,
         )
@@ -350,10 +355,9 @@ class AgentLoop:
         这些工具让用户通过对话创建/编辑/删除自己的技能。
         使用 kernel.skill_manager 统一实例，避免路径分裂。
         """
-        if self.context_pipeline is None:
+        if self.skill_manager is None:
             return
-        kernel = self.context_pipeline.kernel
-        skill_mgr: SkillManager = kernel.skill_manager
+        skill_mgr: SkillManager = self.skill_manager
         from nanobee.agent.tools.skill_manager import (
             CreateSkillTool, DeleteSkillTool, ForkSkillTool,
             ListSkillsTool, UpdateSkillTool,
@@ -372,11 +376,7 @@ class AgentLoop:
         """获取所有已启用的插件。"""
         if self.plugin_manager is None:
             return []
-        return [
-            self.plugin_manager._plugins[name]
-            for name in self.plugin_manager.list_plugins()
-            if self.plugin_manager._plugins[name].is_enabled
-        ]
+        return self.plugin_manager.get_enabled_plugins()
 
     def _get_memory_plugins(self) -> list[Any]:
         """获取所有已启用的 memory 类型插件。"""
@@ -563,7 +563,6 @@ class AgentLoop:
         chat_id: str = "",
         sender_id: str = "",
         trace_id: str | None = None,
-        sandbox: Any | None = None,
         filtered_tool_names: list[str] | None = None,
         on_progress: Callable[..., Awaitable[None]] | None = None,
         on_stream: Callable[[str], Awaitable[None]] | None = None,
@@ -639,7 +638,6 @@ class AgentLoop:
             stream_progress_deltas=on_stream is not None,
             retry_wait_callback=on_retry_wait,
             injection_callback=_drain_pending,
-            sandbox=sandbox,
             filtered_tool_names=filtered_tool_names,
             plugin_hooks=plugin_hooks,
         ))
@@ -1000,6 +998,10 @@ class AgentLoop:
         """运行 Agent 迭代循环。"""
         sandbox = await self._build_sandbox(ctx.context_id)
 
+        # 使用 ContextVar 绑定沙箱，替代方法参数透传
+        from nanobee.kernel.context_sandbox_var import bind_sandbox, reset_sandbox
+        _sandbox_token = bind_sandbox(sandbox) if sandbox else None
+
         # 获取用户上下文
         user_ctx = await self.context_manager.get_or_create(ctx.context_id)
 
@@ -1024,20 +1026,23 @@ class AgentLoop:
 
         # 从 ctx.msg 提取通道上下文（用于工具插件 set_context 注入）
         msg = ctx.msg
-        result = await self._run_agent_loop(
-            ctx.initial_messages,
-            context_id=ctx.context_id,
-            channel=msg.channel,
-            chat_id=msg.chat_id,
-            sender_id=msg.sender_id,
-            trace_id=ctx.trace_id,
-            sandbox=sandbox,
-            filtered_tool_names=filtered_tool_names,
-            on_progress=ctx.on_progress,
-            on_stream=ctx.on_stream,
-            on_stream_end=ctx.on_stream_end,
-            pending_queue=ctx.pending_queue,
-        )
+        try:
+            result = await self._run_agent_loop(
+                ctx.initial_messages,
+                context_id=ctx.context_id,
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                sender_id=msg.sender_id,
+                trace_id=ctx.trace_id,
+                filtered_tool_names=filtered_tool_names,
+                on_progress=ctx.on_progress,
+                on_stream=ctx.on_stream,
+                on_stream_end=ctx.on_stream_end,
+                pending_queue=ctx.pending_queue,
+            )
+        finally:
+            if _sandbox_token is not None:
+                reset_sandbox(_sandbox_token)
         final_content, tools_used, all_msgs, stop_reason, had_injections = result
         ctx.final_content = final_content
         ctx.tools_used = tools_used

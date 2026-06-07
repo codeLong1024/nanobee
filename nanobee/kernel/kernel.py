@@ -60,8 +60,13 @@ class NanobeeKernel:
         self.plugin_manager = PluginManager(self, resolved_plugin_dirs)
         self.context_manager = ContextManager(self)
         self.skill_manager = SkillManager(self.work_dir / "skills")
-        self.context_pipeline = ContextPipeline(self)
         self.soul_guard = SoulGuard(self)
+        core_md_path = self.config.get("core_md_path", "core.md")
+        self.context_pipeline = ContextPipeline(
+            core_md_path=core_md_path,
+            skill_manager=self.skill_manager,
+            soul_guard=self.soul_guard,
+        )
         self.router = ContextRouter()
 
         # 从配置加载路由表
@@ -369,6 +374,7 @@ class NanobeeKernel:
             context_pipeline=self.context_pipeline,
             event_bus=self.event_bus,
             plugin_manager=self.plugin_manager,
+            skill_manager=self.skill_manager,
             router=self.router,
             config=self.config,
             model=model,

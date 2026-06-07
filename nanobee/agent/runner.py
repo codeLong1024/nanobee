@@ -2,6 +2,7 @@
 
 核心逻辑完全保留：LLM 调用循环、工具执行、上下文裁剪、注入处理、重试与恢复。
 改造点：AgentRunSpec 新增 context_id 替代 session_key，移除废弃依赖。
+沙箱传递：通过 ContextVar 注入，消除逐层参数透传。
 """
 
 from __future__ import annotations
@@ -89,21 +90,6 @@ class PluginHooks(TypedDict, total=False):
     post_invoke: list[Callable[[str, Any], Any]]
 
 
-def _resolve_sandbox_for_tool(tool: Any, spec_sandbox: Any) -> Any:
-    """解析工具执行时使用的沙箱实例（请求级上下文传递）
-
-    替代方案：通过参数传递而非属性注入，避免并发竞态。
-
-    Args:
-        tool: 工具实例（可能是 ToolPluginAdapter 或直接工具）
-        spec_sandbox: AgentRunSpec 中传递的沙箱实例
-
-    Returns:
-        请求级的沙箱实例，无则返回 None
-    """
-    return spec_sandbox
-
-
 def _inject_context_to_tool(tool: Any, spec: AgentRunSpec) -> None:
     """调用工具插件的 set_context() 注入会话上下文。
 
@@ -168,7 +154,6 @@ class AgentRunSpec:
     checkpoint_callback: Any | None = None
     injection_callback: Any | None = None
     llm_timeout_s: float | None = None
-    sandbox: Any | None = None
     filtered_tool_names: list[str] | None = None
     plugin_hooks: PluginHooks | None = None
     # 通道上下文（用于工具插件的 set_context 调用）
@@ -1013,8 +998,10 @@ class AgentRunner:
             }
             return f"Error: Tool '{tool_call.name}' not found. Available: {', '.join(spec.filtered_tool_names)}" + hint, event, None
 
-        # 沙箱拦截：在工具执行前清洗路径参数（L1 防线）
-        request_sandbox = _resolve_sandbox_for_tool(tool, spec.sandbox)
+        # 沙箱拦截：通过 ContextVar 获取当前任务沙箱，清洗路径参数（L1 防线）
+        from nanobee.kernel.context_sandbox_var import current_sandbox
+
+        request_sandbox = current_sandbox()
         if request_sandbox is not None and isinstance(params, dict):
             try:
                 params = request_sandbox.sanitize_params(tool_call.name, params)
@@ -1046,14 +1033,9 @@ class AgentRunner:
                     logger.exception("on_pre_invoke hook 执行出错: %s", e)
                     # 不阻止工具执行，仅记录日志
 
-        # 构建请求级执行参数（包含 sandbox 上下文）
-        exec_params = dict(params) if isinstance(params, dict) else {}
-        if request_sandbox is not None:
-            exec_params["_sandbox"] = request_sandbox
-
         try:
             if tool is not None:
-                result = await tool.execute(**exec_params)
+                result = await tool.execute(**params)
             else:
                 result = await spec.tools.execute(tool_call.name, params)
 

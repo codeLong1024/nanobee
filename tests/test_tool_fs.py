@@ -350,14 +350,18 @@ class TestToolDefinitions:
 # 
 #         assert "safe content" in result
 # 
-#     def test_sandbox_property_exists(self):
-        """ToolPlugin 具有 sandbox 属性"""
-        plugin = _create_plugin()
-
-        assert hasattr(plugin, "sandbox")
-        assert plugin.sandbox is None
-
-        # 设置 sandbox
-        sandbox = ContextSandbox(Path.cwd())
-        plugin.sandbox = sandbox
-        assert plugin.sandbox is sandbox
+#     # def test_sandbox_contextvar_injection(self, tmp_path):
+    #     """ContextVar 注入沙箱后，_resolve_path 能正确使用"""
+    #     from nanobee.kernel.context_sandbox_var import bind_sandbox, reset_sandbox
+    #     root = tmp_path / "contexts" / "user-a"
+    #     root.mkdir(parents=True, exist_ok=True)
+    #     sandbox = ContextSandbox(root)
+    #     plugin = _create_plugin()
+    #     token = bind_sandbox(sandbox)
+    #     try:
+    #         inside = root / "test.txt"
+    #         inside.touch()
+    #         result = plugin._resolve_path(str(inside))
+    #         assert result == inside.resolve()
+    #     finally:
+    #         reset_sandbox(token)

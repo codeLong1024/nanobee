@@ -73,25 +73,14 @@ class TestMessageCompletedPlugin(NanobeePlugin):
 
 # ---- 辅助工具 ----
 
-def _make_kernel_with_core(tmp_path: Path) -> FakeKernel:
-    """创建带有效 core.md 的 FakeKernel，隔离 work_dir 到 tmp_path。"""
+def _make_context_pipeline(tmp_path: Path) -> ContextPipeline:
+    """创建带有效 core.md 的 ContextPipeline，隔离 work_dir 到 tmp_path。"""
     core_md = tmp_path / "core.md"
     core_md.write_text("# Test\n\n## Soul\nTest personality\n\n## Rules\nBe helpful.\n", encoding="utf-8")
-    return FakeKernel(str(core_md), work_dir=str(tmp_path))
-
-
-class FakeKernel:
-    """模拟内核，仅提供 ContextPipeline 所需的最少接口。"""
-
-    def __init__(self, core_md_path: str = "", work_dir: str = "."):
-        self.config = {}
-        if core_md_path:
-            self.config["core_md_path"] = core_md_path
-        if work_dir:
-            self.config["work_dir"] = work_dir
-            self.work_dir = Path(work_dir)
-        # 统一 SkillManager 实例（避免路径分裂）
-        self.skill_manager = SkillManager(self.config.get("work_dir", ".") + "/skills")
+    return ContextPipeline(
+        core_md_path=str(core_md),
+        skill_manager=SkillManager(tmp_path / "skills"),
+    )
 
 
 class FakeUserContext:
@@ -154,8 +143,7 @@ class TestContextPipelineWithPlugins:
     @pytest.mark.asyncio
     async def test_build_with_no_plugins(self, tmp_path: Path):
         """无插件时行为同 build()"""
-        kernel = _make_kernel_with_core(tmp_path)
-        pipeline = ContextPipeline(kernel)
+        pipeline = _make_context_pipeline(tmp_path)
         result = await pipeline.build_with_plugins(
             {"system_prompt": ""},
             FakeUserContext(),
@@ -167,8 +155,7 @@ class TestContextPipelineWithPlugins:
     @pytest.mark.asyncio
     async def test_memory_plugin_contributes_to_prompt(self, tmp_path: Path):
         """记忆插件通过 contribute_to_prompt 注入内容"""
-        kernel = _make_kernel_with_core(tmp_path)
-        pipeline = ContextPipeline(kernel)
+        pipeline = _make_context_pipeline(tmp_path)
         plugin = TestMemoryPlugin()
         result = await pipeline.build_with_plugins(
             {"system_prompt": "## Soul\n你好\n"},
@@ -180,8 +167,7 @@ class TestContextPipelineWithPlugins:
     @pytest.mark.asyncio
     async def test_multiple_plugins_ordered(self, tmp_path: Path):
         """多个插件按类型分组"""
-        kernel = _make_kernel_with_core(tmp_path)
-        pipeline = ContextPipeline(kernel)
+        pipeline = _make_context_pipeline(tmp_path)
         plugins = [TestMemoryPlugin(), TestSkillPlugin()]
         result = await pipeline.build_with_plugins(
             {"system_prompt": "## Soul\n你好\n"},

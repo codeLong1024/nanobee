@@ -122,9 +122,9 @@ class SkillStage(PipelineStage):
     共享技能 body 每行使用 > 引用包裹。
     """
 
-    def __init__(self, kernel: Any) -> None:
+    def __init__(self, skill_manager: SkillManager) -> None:
         super().__init__(priority=28)  # 在 Memory(30) 之前
-        self._skill_mgr: SkillManager = kernel.skill_manager
+        self._skill_mgr = skill_manager
 
     async def process(self, context: dict[str, Any]) -> dict[str, Any]:
         """注入技能段 —— 渐进式注入策略。
@@ -201,20 +201,26 @@ class ContextPipeline:
     按优先级顺序执行多个 Stage，构建最终的系统提示词。
     """
 
-    def __init__(self, kernel: Any):
+    def __init__(
+        self,
+        core_md_path: str,
+        skill_manager: SkillManager,
+        soul_guard: Any | None = None,
+    ):
         """初始化
 
         Args:
-            kernel: NanobeeKernel 实例
+            core_md_path: core.md 文件路径
+            skill_manager: SkillManager 实例
+            soul_guard: SoulGuard 实例（可选，用于 build_with_plugins 的安全规则注入）
         """
-        self.kernel = kernel
+        self._soul_guard = soul_guard
         self._stages: list[PipelineStage] = []
 
         # 注册默认 Stage
-        core_md_path = kernel.config.get("core_md_path", "core.md")
         self.register(SoulStage(core_md_path))
         self.register(RulesStage(core_md_path))
-        self.register(SkillStage(kernel))
+        self.register(SkillStage(skill_manager))
 
     def register(self, stage: PipelineStage) -> None:
         """注册管道阶段
@@ -305,7 +311,7 @@ class ContextPipeline:
                 system_prompt += "\n\n" + "\n\n".join(plugin_sections)
 
         # 4. [P90] 安全规则：从 SoulGuard 读取不可绕过的优先级规则
-        soul_guard = getattr(self.kernel, "soul_guard", None)
+        soul_guard = self._soul_guard
         if soul_guard is not None:
             guard_text = getattr(soul_guard, "guard_text", None)
             if guard_text:

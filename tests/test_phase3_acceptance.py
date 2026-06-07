@@ -23,15 +23,14 @@ from nanobee.kernel.skill_manager import SkillManager, SkillVisibility
 # ---- 辅助工具 ----
 
 
-def _make_kernel_with_core(tmp_path: Path) -> MagicMock:
-    """创建带有效 core.md 的 mock kernel。"""
+def _make_context_pipeline(tmp_path: Path) -> ContextPipeline:
+    """创建带有效 core.md 的 ContextPipeline。"""
     core_md = tmp_path / "core.md"
     core_md.write_text("# Test\n\n## Soul\n你是一个助手\n\n## Rules\n请遵守规则。\n", encoding="utf-8")
-    kernel = MagicMock()
-    kernel.config = {"core_md_path": str(core_md), "work_dir": str(tmp_path)}
-    # 统一 SkillManager 实例（避免路径分裂）
-    kernel.skill_manager = SkillManager(tmp_path / "skills")
-    return kernel
+    return ContextPipeline(
+        core_md_path=str(core_md),
+        skill_manager=SkillManager(tmp_path / "skills"),
+    )
 
 
 def _make_user_context(tmp_path: Path, user_id: str = "test-user") -> MagicMock:
@@ -68,7 +67,7 @@ class TestSkillStage:
                            "分析 git 提交历史", "分析 git log 输出\n\n1. 获取提交列表\n2. 统计变更")
 
         ctx = _make_user_context(tmp_path, user_id)
-        stage = SkillStage(_make_kernel_with_core(tmp_path))
+        stage = SkillStage(skill_manager=SkillManager(tmp_path / "skills"))
         context = {"system_prompt": "## Soul\n你是一个助手\n", "user_context": ctx}
         result = await stage.process(context)
 
@@ -86,7 +85,7 @@ class TestSkillStage:
     async def test_no_skills_no_injection(self, tmp_path: Path):
         """无技能时不注入技能段。"""
         ctx = _make_user_context(tmp_path, "alice")
-        stage = SkillStage(_make_kernel_with_core(tmp_path))
+        stage = SkillStage(skill_manager=SkillManager(tmp_path / "skills"))
         context = {"system_prompt": "## Soul\n你是一个助手\n", "user_context": ctx}
         result = await stage.process(context)
 
@@ -95,7 +94,7 @@ class TestSkillStage:
     @pytest.mark.asyncio
     async def test_no_user_context_skips(self, tmp_path: Path):
         """user_context 为 None 时跳过。"""
-        stage = SkillStage(_make_kernel_with_core(tmp_path))
+        stage = SkillStage(skill_manager=SkillManager(tmp_path / "skills"))
         context = {"system_prompt": "## Soul\n你是一个助手\n"}
         result = await stage.process(context)
 
@@ -113,7 +112,7 @@ class TestSkillStage:
 
         # 用户 B 查看时应包含 A 的共享技能（元数据）
         ctx_b = _make_user_context(tmp_path, "bob")
-        stage = SkillStage(_make_kernel_with_core(tmp_path))
+        stage = SkillStage(skill_manager=SkillManager(tmp_path / "skills"))
         context = {"system_prompt": "## Soul\n你是一个助手\n", "user_context": ctx_b}
         result = await stage.process(context)
 
@@ -135,7 +134,7 @@ class TestSkillStage:
                            visibility=SkillVisibility.SHARED)
 
         ctx = _make_user_context(tmp_path, "alice")
-        stage = SkillStage(_make_kernel_with_core(tmp_path))
+        stage = SkillStage(skill_manager=SkillManager(tmp_path / "skills"))
         context = {"system_prompt": "## Soul\n", "user_context": ctx}
         result = await stage.process(context)
 
@@ -224,8 +223,7 @@ class TestAllPluginsTogether:
         ctx = _make_user_context(tmp_path, "test")
         plugin = AuditLoggerPlugin()
 
-        kernel = _make_kernel_with_core(tmp_path)
-        pipeline = ContextPipeline(kernel)
+        pipeline = _make_context_pipeline(tmp_path)
 
         result_with = await pipeline.build_with_plugins(
             {"system_prompt": "## Soul\n你是一个助手\n"},

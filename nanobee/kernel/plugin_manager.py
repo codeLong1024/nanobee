@@ -249,6 +249,10 @@ class PluginManager:
         """列出所有已加载的插件名称"""
         return list(self._plugins.keys())
 
+    def get_enabled_plugins(self) -> list[NanobeePlugin]:
+        """获取所有已启用的插件。"""
+        return [p for p in self._plugins.values() if p.is_enabled]
+
     # ---- 插件生命周期 ----
 
     def _set_enabled(self, name: str, state: bool, callback: str) -> bool:

@@ -2,6 +2,7 @@
 Tool Shell 插件 - Shell 命令工具（execute_shell, write_stdin）
 
 基于 nanobot/agent/tools/shell.py 适配 nanobee 插件架构。
+沙箱通过 ContextVar 注入（见 context_sandbox_var.py），消除逐层参数透传。
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from nanobee.kernel.sandbox import ContextSandbox
+from nanobee.kernel.context_sandbox_var import current_sandbox as _current_sandbox
 from nanobee.plugins.tool import ToolPlugin
 from nanobee.security.network import contains_internal_url
 
@@ -70,7 +71,7 @@ class ToolShellPlugin(ToolPlugin):
 
     支持双层沙箱校验：
     - L1: restrict_to_workspace 启用时，以 _workspace 为边界校验路径
-    - L2: 注入的 self.sandbox（ContextSandbox）优先，实现防御纵深
+    - L2: ContextVar 注入的 ContextSandbox 优先，实现防御纵深
     """
 
     name = "tool_shell"
@@ -144,7 +145,7 @@ class ToolShellPlugin(ToolPlugin):
 
         Args:
             tool_name: 工具名称
-            **kwargs: 工具参数，可选包含 _sandbox 键（请求级沙箱实例）
+            **kwargs: 工具参数（沙箱通过 ContextVar 注入，无需额外传递）
 
         Returns:
             工具执行结果
@@ -152,11 +153,8 @@ class ToolShellPlugin(ToolPlugin):
         Raises:
             ValueError: 工具不存在
         """
-        # 从 kwargs 中提取请求级 sandbox（线程安全）
-        request_sandbox = kwargs.pop("_sandbox", None)
-        
         if tool_name == "execute_shell":
-            return await self._execute_shell(**kwargs, _sandbox=request_sandbox)
+            return await self._execute_shell(**kwargs)
         raise ValueError(f"未知工具: {tool_name}")
 
     def _execute_shell_desc(self) -> str:
@@ -180,10 +178,9 @@ class ToolShellPlugin(ToolPlugin):
         timeout: int | None = None,
         shell: str | None = None,
         login: bool | None = None,
-        _sandbox: ContextSandbox | None = None,
         **kwargs: Any,
     ) -> str:
-        """执行 shell 命令
+        """执行 shell 命令（沙箱通过 ContextVar 注入）
 
         Args:
             command: 要执行的命令
@@ -191,7 +188,6 @@ class ToolShellPlugin(ToolPlugin):
             timeout: 超时秒数
             shell: shell 解释器
             login: 登录 shell 模式
-            _sandbox: 请求级沙箱实例（线程安全）
 
         Returns:
             命令输出
@@ -199,7 +195,7 @@ class ToolShellPlugin(ToolPlugin):
         if not command:
             return "错误：缺少命令参数。提供 command。"
 
-        prepared = self._prepare_command(command, working_dir, timeout, shell, login, sandbox=_sandbox)
+        prepared = self._prepare_command(command, working_dir, timeout, shell, login)
         if isinstance(prepared, str):
             return prepared
 
@@ -263,14 +259,10 @@ class ToolShellPlugin(ToolPlugin):
         timeout: int | None = None,
         shell: str | None = None,
         login: bool | None = None,
-        sandbox: ContextSandbox | None = None,
     ) -> _PreparedCommand | str:
         """准备命令：解析工作目录、执行安全校验、构建环境变量
 
-        优先级：
-        1. 请求级 sandbox（L2 防线，防御纵深，线程安全）
-        2. restrict_to_workspace + _workspace（L1 防线）
-        3. 默认使用 working_dir 或 _workspace
+        沙箱通过 ContextVar 注入（L2 防线），restrict_to_workspace 为 L1 防线。
 
         Args:
             command: 命令字符串
@@ -278,7 +270,6 @@ class ToolShellPlugin(ToolPlugin):
             timeout: 超时
             shell: shell 名称或路径
             login: 是否登录 shell
-            sandbox: 请求级沙箱实例（线程安全）
 
         Returns:
             _PreparedCommand 或错误字符串
@@ -286,14 +277,14 @@ class ToolShellPlugin(ToolPlugin):
         # 确定工作目录
         cwd = working_dir or self._workspace or os.getcwd()
 
-        # L2 防线：优先使用请求级 sandbox 校验（防御纵深，线程安全）
-        sandbox_error = self._check_sandbox_path(cwd, sandbox=sandbox)
+        # L2 防线：通过 ContextVar 获取当前任务沙箱校验（线程安全）
+        sandbox_error = self._check_sandbox_path(cwd)
         if sandbox_error:
             return sandbox_error
 
         # L1 防线：当 restrict_to_workspace 启用时，
         # 阻止 LLM 提供的 working_dir 逃逸（防御降级）
-        # 注意：如果已使用请求级 sandbox（L2），L1 作为额外防护仍然生效
+        # 注意：如果已使用 ContextVar 沙箱（L2），L1 作为额外防护仍然生效
         if self.restrict_to_workspace and self._workspace:
             try:
                 requested = Path(cwd).expanduser().resolve()
@@ -525,19 +516,19 @@ class ToolShellPlugin(ToolPlugin):
         }
         return env
 
-    def _check_sandbox_path(self, path: str, *, sandbox: ContextSandbox | None = None) -> str | None:
-        """检查路径是否在请求级 sandbox 内（L2 防线）
+    def _check_sandbox_path(self, path: str) -> str | None:
+        """检查路径是否在 ContextVar 沙箱内（L2 防线）
 
-        使用请求级 sandbox 实现线程安全。如果 sandbox 未传递，
-        则跳过 L2 校验。
+        通过 ContextVar 获取当前任务沙箱，实现线程安全。
+        如果当前任务未绑定沙箱，则跳过 L2 校验。
 
         Args:
             path: 待校验的路径
-            sandbox: 请求级沙箱实例（优先使用）
 
         Returns:
             错误字符串或 None（安全）
         """
+        sandbox = _current_sandbox()
         if sandbox is None:
             return None
 

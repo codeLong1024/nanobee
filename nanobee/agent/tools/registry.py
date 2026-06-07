@@ -44,19 +44,15 @@ class ToolPluginAdapter(Tool):
         return dict(self._func.get("parameters", {"type": "object", "properties": {}}))
 
     async def execute(self, **kwargs: Any) -> Any:
-        """执行工具（通过 kwargs 传递 sandbox 上下文）
+        """执行工具（沙箱通过 ContextVar 注入，无需参数传递）
 
         Args:
-            **kwargs: 工具参数，可选包含 _sandbox 键（请求级沙箱实例）
+            **kwargs: 工具参数
 
         Returns:
             工具执行结果
         """
-        # 从 kwargs 中提取请求级 sandbox（线程安全）
-        request_sandbox = kwargs.pop("_sandbox", None)
-        return await self._plugin.execute_tool(
-            self.name, **kwargs, _sandbox=request_sandbox,
-        )
+        return await self._plugin.execute_tool(self.name, **kwargs)
 
 
 class ToolRegistry:
