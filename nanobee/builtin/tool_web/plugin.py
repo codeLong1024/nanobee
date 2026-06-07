@@ -14,9 +14,8 @@ from typing import Any
 from urllib.parse import quote, urljoin, urlparse
 
 import httpx
-import logging
+from nanobee.utils.logger import logger
 
-logger = logging.getLogger(__name__)
 
 from nanobee.plugins.tool import ToolPlugin
 from nanobee.security.network import validate_resolved_url, validate_url_target
@@ -251,7 +250,7 @@ class ToolWebPlugin(ToolPlugin):
         except ImportError:
             return "错误: 未安装 duckduckgo-search。运行: pip install \"nanobee[web]\""
         except Exception as e:
-            logger.warning("DuckDuckGo 搜索失败: %s", e)
+            logger.warning("DuckDuckGo 搜索失败: {}", e)
             return f"错误: DuckDuckGo 搜索失败 ({e})"
 
     # ---- web_fetch 实现 ----------------------------------------------------
@@ -330,7 +329,7 @@ class ToolWebPlugin(ToolPlugin):
                 ensure_ascii=False,
             )
         except Exception as e:
-            logger.debug("Jina Reader 失败，回退到 readability: %s", e)
+            logger.debug("Jina Reader 失败，回退到 readability: {}", e)
             return None
 
     async def _fetch_via_readability(

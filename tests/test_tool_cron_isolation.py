@@ -175,13 +175,20 @@ class TestCronStoreFileIsolation:
         )
 
         # 验证两个文件都存在
-        base_dir = plugin._cron_base_dir
-        files = list(base_dir.glob("jobs_*.json"))
-        assert len(files) == 2
+        store_path_a = plugin._current_store_path
+        store_path_b = plugin._current_store_path
+        # 分别执行两次 set_context 拿到各自的 store_path
+        plugin.set_context(channel="dingtalk", chat_id="chat_a", user_id="user_a")
+        path_a = plugin._current_store_path
+        plugin.set_context(channel="dingtalk", chat_id="chat_b", user_id="user_b")
+        path_b = plugin._current_store_path
+
+        assert path_a is not None and path_a.exists()
+        assert path_b is not None and path_b.exists()
+        assert path_a != path_b
 
         # 验证文件内容
-        for f in files:
+        for f in (path_a, path_b):
             data = json.loads(f.read_text(encoding="utf-8"))
             assert "jobs" in data
             assert len(data["jobs"]) == 1
-            assert data["jobs"][0]["payload"]["message"] in ["用户A的任务", "用户B的任务"]

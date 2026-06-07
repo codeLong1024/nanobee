@@ -22,11 +22,6 @@ agents:
     # max_iterations: 10
     # 历史消息条数上限（超过此值×1.5 时压缩，回放时也受此限制）
     # max_messages: 120
-    # 后台心跳服务配置
-    # heartbeat:
-    #   enabled: false  # 默认禁用,需显式启用
-    #   interval_s: 1800  # 唤醒间隔(秒),默认 30 分钟
-    #   timezone: "Asia/Shanghai"  # 时区(可选)
 
 # Provider 配置
 providers:

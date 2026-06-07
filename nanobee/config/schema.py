@@ -1,4 +1,4 @@
-"""Configuration schema using Pydantic (MVP 最小化实现)."""
+"""Configuration schema using Pydantic."""
 from __future__ import annotations
 
 from typing import Any
@@ -85,15 +85,23 @@ class AgentsConfig(Base):
     defaults: AgentDefaults = AgentDefaults()
 
 
+class ToolsConfig(Base):
+    """工具安全配置。"""
+
+    ssrf_whitelist: list[str] = []
+
+
 class Config(BaseModel):
-    """nanobee 顶层配置对象（MVP 最小化版本）。
+    """nanobee 顶层配置对象。
 
     提供 factory.py 和 model_presets.py 所需的所有方法签名。
-    实际使用时应从 YAML/JSON/TOML 文件加载。
+    实际使用时应从 YAML 文件加载。
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
+    work_dir: str = "~/.nanobee"
+    core_md_path: str = "core.md"
     plugin_dirs: list[str] = []
     model_presets: dict[str, ModelPresetConfig] = {}
     agents: AgentsConfig = AgentsConfig()
@@ -102,6 +110,7 @@ class Config(BaseModel):
     routing: dict[str, str] = {}
     channels: dict[str, dict[str, Any]] = {}
     plugins: dict[str, dict[str, Any]] = {}
+    tools: ToolsConfig = ToolsConfig()
 
     def resolve_preset(self, name: str | None) -> ModelPresetConfig:
         """按名称解析模型预设，返回 None 时使用默认预设。"""

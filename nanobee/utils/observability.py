@@ -5,11 +5,14 @@ from __future__ import annotations
 import logging
 import random
 import string
+import sys
 import time
 from collections import defaultdict
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any
+
+from loguru import logger as _loguru_logger
 
 _trace_id_var: ContextVar[str | None] = ContextVar("trace_id", default=None)
 
@@ -32,15 +35,6 @@ def get_trace_id() -> str | None:
 def reset_trace_id() -> None:
     """重置当前协程的 Trace ID。"""
     _trace_id_var.set(None)
-
-
-class TraceIDFilter(logging.Filter):
-    """为所有日志记录注入 trace_id 字段。"""
-
-    def filter(self, record: logging.LogRecord) -> bool:
-        tid = get_trace_id()
-        record.trace_id = tid or "-"
-        return True
 
 
 # 需要抑制噪音的第三方日志命名空间列表
@@ -66,94 +60,59 @@ def _suppress_noisy_loggers() -> None:
         noisy.setLevel(logging.WARNING)
 
 
+class TraceIDFilter(logging.Filter):
+    """为所有日志记录注入 trace_id 字段。"""
+    
+    def filter(self, record: logging.LogRecord) -> bool:
+        tid = get_trace_id()
+        record.trace_id = tid or "-"
+        return True
+
+
 def setup_structured_logging(
     level: int = logging.INFO,
     json_output: bool = False,
 ) -> None:
-    """配置结构化日志。
-
+    """配置结构化日志（使用 loguru）。
+    
     Args:
         level: 日志级别
         json_output: 是否输出 JSON 格式（生产环境用 True）
     """
-    root = logging.getLogger()
-    root.setLevel(level)
-
     # 清除已有的 handler，避免重复添加
+    root = logging.getLogger()
     for handler in list(root.handlers):
         root.removeHandler(handler)
-
+    
     root.addFilter(TraceIDFilter())
-
+    
     # 抑制第三方噪音日志
     _suppress_noisy_loggers()
-
-    # 尝试使用 structlog 库
-    # 当前依赖中未包含 structlog，此处保留元能力，待依赖就绪后激活
-    _try_structlog(level, json_output)
-
-    if not root.handlers:
-        handler = logging.StreamHandler()
-        formatter = logging.Formatter(
-            "%(asctime)s [%(levelname)s] [%(trace_id)s] %(name)s: %(message)s"
+    
+    # 移除 loguru 默认的 handler
+    _loguru_logger.remove()
+    
+    if json_output:
+        # JSON 格式（生产环境）
+        _loguru_logger.add(
+            sys.stderr,
+            format="{message}",
+            serialize=True,
+            level=logging.getLevelName(level).upper(),
         )
-        handler.setFormatter(formatter)
-        root.addHandler(handler)
-
-
-def _try_structlog(level: int, json_output: bool) -> None:
-    """尝试使用 structlog 配置日志格式。"""
-    try:
-        import structlog  # type: ignore[import-untyped]
-
-        def _add_trace_id(logger, method_name, event_dict):
-            """structlog processor：注入 trace_id。"""
-            event_dict["trace_id"] = get_trace_id() or "-"
-            return event_dict
-
-        # 配置 structlog 处理器链（不包含最终渲染器）
-        structlog.configure(
-            processors=[
-                structlog.stdlib.filter_by_level,
-                _add_trace_id,
-                structlog.stdlib.add_log_level,
-                structlog.stdlib.PositionalArgumentsFormatter(),
-                structlog.processors.TimeStamper(fmt="iso"),
-                structlog.stdlib.add_logger_name,
-            ],
-            wrapper_class=structlog.stdlib.BoundLogger,
-            logger_factory=structlog.stdlib.LoggerFactory(),
-            cache_logger_on_first_use=True,
+    else:
+        # 自定义格式（开发环境）
+        _loguru_logger.add(
+            sys.stderr,
+            format="{time:YYYY-MM-DD HH:mm:ss.SSS} | <level>{level:<8}</level> | {name}:{function}:{line} - {message}",
+            level=logging.getLevelName(level).upper(),
+            colorize=True,
+            enqueue=True,
+            diagnose=False,
         )
-
-        root = logging.getLogger()
-        root.handlers.clear()
-
-        # foreign_pre_chain：处理标准 logging LogRecord 的前置处理器链。
-        # 注意：不在 foreign_pre_chain 中使用 filter_by_level，
-        # 因为标准 LogRecord 传入时 logger 参数为 None，会导致崩溃。
-        # root logger 已经通过 setLevel 做了级别过滤。
-        foreign_pre_chain: list[Any] = [
-            _add_trace_id,
-            structlog.stdlib.add_log_level,
-            structlog.stdlib.PositionalArgumentsFormatter(),
-            structlog.processors.TimeStamper(fmt="iso"),
-            structlog.stdlib.add_logger_name,
-        ]
-
-        handler = logging.StreamHandler()
-        handler.setFormatter(
-            structlog.stdlib.ProcessorFormatter(
-                processor=structlog.processors.JSONRenderer()
-                if json_output
-                else structlog.dev.ConsoleRenderer(),
-                foreign_pre_chain=foreign_pre_chain,
-            )
-        )
-        root.addHandler(handler)
-    except ImportError:
-        # structlog 未安装，降级为标准日志
-        pass
+    
+    # 将 loguru 适配为标准 logging
+    logging.getLogger().setLevel(level)
 
 
 @dataclass
@@ -177,10 +136,10 @@ class MetricsCollector:
 
     支持 Token 消耗、延迟分布、工具调用、错误计数等关键指标。
     """
-
+    
     def __init__(self) -> None:
         self._snapshot = MetricsSnapshot()
-
+    
     def record_token_usage(
         self,
         prompt_tokens: int,
@@ -194,7 +153,7 @@ class MetricsCollector:
         """
         self._snapshot.total_prompt_tokens += prompt_tokens
         self._snapshot.total_completion_tokens += completion_tokens
-
+    
     def record_latency(self, duration_ms: float) -> None:
         """记录操作延迟（滚动窗口，最多 1000 样本）。
 
@@ -206,7 +165,7 @@ class MetricsCollector:
         if len(samples) > 1000:
             samples.pop(0)
         self._snapshot.avg_latency_ms = sum(samples) / len(samples)
-
+    
     def record_tool_invocation(self, tool_name: str, success: bool) -> None:
         """记录工具调用。
 
@@ -219,7 +178,7 @@ class MetricsCollector:
         stats["calls"] += 1
         if not success:
             stats["errors"] += 1
-
+    
     def record_error(self, error_kind: str) -> None:
         """记录错误。
 
@@ -228,11 +187,11 @@ class MetricsCollector:
         """
         self._snapshot.error_count += 1
         self._snapshot.error_kinds[error_kind] += 1
-
+    
     def record_turn(self) -> None:
         """记录一个完整的 Turn。"""
         self._snapshot.total_turns += 1
-
+    
     def get_report(self) -> dict[str, Any]:
         """获取指标报告。
 
@@ -251,7 +210,7 @@ class MetricsCollector:
             "error_kinds": dict(s.error_kinds),
             "tool_stats": {k: dict(v) for k, v in s.tool_stats.items()},
         }
-
+    
     def reset(self) -> None:
         """重置所有指标。"""
         self._snapshot = MetricsSnapshot()

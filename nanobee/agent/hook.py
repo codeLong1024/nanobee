@@ -5,9 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-import logging
+from nanobee.utils.logger import logger
 
-logger = logging.getLogger(__name__)
 
 from nanobee.providers.base import LLMResponse, ToolCallRequest
 
@@ -135,7 +134,7 @@ class CompositeHook(AgentHook):
             try:
                 await getattr(h, method_name)(*args, **kwargs)
             except Exception:
-                logger.exception("AgentHook.%s error in %s", method_name, type(h).__name__)
+                logger.exception("AgentHook.{} error in {}", method_name, type(h).__name__)
 
     async def before_iteration(self, context: AgentHookContext) -> None:
         await self._for_each_hook_safe("before_iteration", context)
@@ -227,7 +226,7 @@ class StreamBridgeHook(AgentHook):
             try:
                 await self._on_stream(delta)
             except Exception:
-                logger.exception("[StreamBridgeHook] on_stream callback failed, delta=%s...", delta[:80])
+                logger.exception("[StreamBridgeHook] on_stream callback failed, delta={}...", delta[:80])
 
     async def on_stream_end(self, context: Any, *, resuming: bool = False) -> None:
         # 记录最后一次 resuming 值

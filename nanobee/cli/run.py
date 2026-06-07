@@ -3,7 +3,7 @@ Nanobee Run - 轻量级 Agent CLI 模式
 
 对应 nanobot 的 ``agent`` 命令设计哲学：
 - 轻量级，仅启动 AgentLoop + 核心内核
-- 不启动通道、Heartbeat、Cron 等后台服务
+- 不启动通道、Cron 等后台服务
 - 支持单次消息模式（-m）和交互式模式
 - 支持流式输出
 """
@@ -22,7 +22,8 @@ from nanobee.kernel import NanobeeKernel
 from nanobee.providers.factory import make_provider
 from nanobee.utils.observability import setup_structured_logging
 
-logger = logging.getLogger(__name__)
+from nanobee.utils.logger import logger
+
 
 
 @click.command()
@@ -63,12 +64,12 @@ def run(
 ) -> None:
     """启动轻量级 Agent 会话（CLI 模式）
 
-    不启动通道、Heartbeat 等后台服务。
+    不启动通道等后台服务。
     适用于开发调试和命令行交互。
     """
     log_level = logging.DEBUG if verbose else logging.WARNING
     setup_structured_logging(level=log_level)
-    logger.debug("CLI run 命令已启动，verbose=%s，session=%s", verbose, session_id)
+    logger.debug("CLI run 命令已启动，verbose={}，session={}", verbose, session_id)
 
     # 自动发现配置文件
     config_path: Path | None
@@ -79,7 +80,7 @@ def run(
         candidates = [home_config, Path("nanobee.yaml"), Path.cwd() / "nanobee.yaml"]
         config_path = next((p for p in candidates if p.is_file()), None)
         if config_path:
-            logger.debug("Auto-discovered config: %s", config_path)
+            logger.debug("Auto-discovered config: {}", config_path)
     cfg = load_config(config_path)
 
     # 创建内核并运行会话（轻量模式）
@@ -108,17 +109,16 @@ def _run_agent_session(
         click.echo(f"  Provider 已初始化: {provider.__class__.__name__}")
 
         # 确定插件目录
-        kernel_config = dict(cfg)
         effective_plugin_dirs = []
         if plugin_dir:
             effective_plugin_dirs = [plugin_dir]
-        elif config_plugin_dirs:
-            effective_plugin_dirs = list(config_plugin_dirs)
+        elif cfg.plugin_dirs:
+            effective_plugin_dirs = list(cfg.plugin_dirs)
         else:
             effective_plugin_dirs = ["builtin", "plugins"]
 
-        # 创建内核（轻量模式：不启动通道和 Heartbeat）
-        kernel = NanobeeKernel(config=kernel_config, plugin_dirs=effective_plugin_dirs)
+        # 创建内核（轻量模式：不启动通道）
+        kernel = NanobeeKernel(config=cfg, plugin_dirs=effective_plugin_dirs)
         await kernel.boot_with_provider(provider, model=cfg.agents.defaults.model)
 
         click.echo("🤖 Nanobee Agent 已启动")

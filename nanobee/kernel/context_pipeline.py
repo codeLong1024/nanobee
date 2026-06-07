@@ -1,11 +1,12 @@
 """上下文管道 - 构建 Agent 的系统提示词
 
 从 kernel.skill_manager 统一读取技能数据，避免路径分裂。
+使用 dataclass（PromptBuildContext）替代裸 dict 传递上下文。
 """
 
 from __future__ import annotations
 
-import logging
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -14,7 +15,8 @@ from nanobee.kernel.core_parser import CoreMDParser
 if TYPE_CHECKING:
     from nanobee.kernel.skill_manager import SkillManager
 
-logger = logging.getLogger(__name__)
+from nanobee.utils.logger import logger
+
 
 # 插件类型 → 提示词段标题映射
 _PLUGIN_TYPE_STAGE_MAP: dict[str, str] = {
@@ -42,6 +44,62 @@ def _map_plugin_stage(plugin: Any) -> str:
     return _PLUGIN_TYPE_STAGE_MAP.get(plugin_type, f"## {plugin_type}")
 
 
+@dataclass
+class PromptBuildContext:
+    """类型安全的提示词构建上下文，替代裸 dict 传递。
+
+    包含构建 system prompt 所需的全部字段。
+    """
+
+    system_prompt: str = ""
+    user_context: Any = None
+    context_id: str = ""
+    messages: list[dict[str, Any]] = field(default_factory=list)
+
+    def get_system_prompt(self) -> str:
+        """获取当前 system prompt（兼容旧 dict 访问）。"""
+        return self.system_prompt
+
+    def set_system_prompt(self, value: str) -> None:
+        """设置 system prompt。"""
+        self.system_prompt = value
+
+    def append_system_prompt(self, text: str) -> None:
+        """追加内容到 system prompt 末尾。"""
+        if self.system_prompt:
+            self.system_prompt += "\n\n" + text
+        else:
+            self.system_prompt = text
+
+    def prepend_system_prompt(self, text: str) -> None:
+        """在 system prompt 前面插入内容。"""
+        if self.system_prompt:
+            self.system_prompt = text + "\n\n" + self.system_prompt
+        else:
+            self.system_prompt = text
+
+    @staticmethod
+    def _from_compat(context: PromptBuildContext | dict[str, Any]) -> PromptBuildContext:
+        """将 dict 或 PromptBuildContext 统一为 PromptBuildContext。"""
+        if isinstance(context, PromptBuildContext):
+            return context
+        return PromptBuildContext(
+            system_prompt=context.get("system_prompt", ""),
+            user_context=context.get("user_context"),
+            context_id=context.get("context_id", ""),
+            messages=context.get("messages", []),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        """转换为 dict（向后兼容）。"""
+        return {
+            "system_prompt": self.system_prompt,
+            "user_context": self.user_context,
+            "context_id": self.context_id,
+            "messages": self.messages,
+        }
+
+
 class PipelineStage:
     """管道阶段基类"""
 
@@ -53,14 +111,19 @@ class PipelineStage:
         """
         self.priority = priority
 
-    async def process(self, context: dict[str, Any]) -> dict[str, Any]:
+    async def process(
+        self,
+        context: PromptBuildContext | dict[str, Any],
+    ) -> PromptBuildContext | dict[str, Any]:
         """处理上下文
 
+        接受 PromptBuildContext 或兼容 dict（自动转换）。
+
         Args:
-            context: 上下文字典，包含 messages, system_prompt 等
+            context: PromptBuildContext 实例或兼容 dict
 
         Returns:
-            处理后的上下文
+            处理后的上下文（与输入类型相同：PromptBuildContext → PromptBuildContext, dict → dict）
         """
         return context
 
@@ -72,14 +135,17 @@ class SoulStage(PipelineStage):
         super().__init__(priority=10)  # 最高优先级，最先注入
         self.core_md_path = core_md_path
 
-    async def process(self, context: dict[str, Any]) -> dict[str, Any]:
+    async def process(
+        self,
+        context: PromptBuildContext | dict[str, Any],
+    ) -> PromptBuildContext | dict[str, Any]:
+        from_dict = isinstance(context, dict)
+        ctx = PromptBuildContext._from_compat(context)  # type: ignore[arg-type]
         parser = CoreMDParser(self.core_md_path)
         soul_content = parser.soul
         if soul_content:
-            if "system_prompt" not in context:
-                context["system_prompt"] = ""
-            context["system_prompt"] = soul_content + "\n\n" + context["system_prompt"]
-        return context
+            ctx.prepend_system_prompt(soul_content)
+        return ctx.to_dict() if from_dict else ctx
 
 
 class RulesStage(PipelineStage):
@@ -89,12 +155,17 @@ class RulesStage(PipelineStage):
         super().__init__(priority=20)
         self.core_md_path = core_md_path
 
-    async def process(self, context: dict[str, Any]) -> dict[str, Any]:
+    async def process(
+        self,
+        context: PromptBuildContext | dict[str, Any],
+    ) -> PromptBuildContext | dict[str, Any]:
+        from_dict = isinstance(context, dict)
+        ctx = PromptBuildContext._from_compat(context)  # type: ignore[arg-type]
         parser = CoreMDParser(self.core_md_path)
         rules_content = parser.rules
 
         # 注入用户身份信息 —— 让 LLM 知道自己的 user_id
-        user_ctx = context.get("user_context")
+        user_ctx = ctx.user_context
         if user_ctx is not None:
             user_id = getattr(user_ctx, "user_id", None)
             if user_id:
@@ -105,10 +176,8 @@ class RulesStage(PipelineStage):
                     rules_content = identity_line
 
         if rules_content:
-            if "system_prompt" not in context:
-                context["system_prompt"] = ""
-            context["system_prompt"] += "\n\n## 行为规则\n\n" + rules_content
-        return context
+            ctx.append_system_prompt("## 行为规则\n\n" + rules_content)
+        return ctx.to_dict() if from_dict else ctx
 
 
 class SkillStage(PipelineStage):
@@ -126,18 +195,18 @@ class SkillStage(PipelineStage):
         super().__init__(priority=28)  # 在 Memory(30) 之前
         self._skill_mgr = skill_manager
 
-    async def process(self, context: dict[str, Any]) -> dict[str, Any]:
+    async def process(
+        self,
+        context: PromptBuildContext | dict[str, Any],
+    ) -> PromptBuildContext | dict[str, Any]:
         """注入技能段 —— 渐进式注入策略。
 
         只注入技能元数据（name + description），不注入完整 body。
         LLM 会根据描述自行判断是否需要读取完整的 skill.md 文件。
-
-        优势：
-        - 减少 system prompt 体积（节省 60-80% token）
-        - LLM 按需读取技能指令（减少首次响应延迟）
-        - 支持大量技能场景（不膨胀上下文）
         """
-        user_ctx = context.get("user_context")
+        from_dict = isinstance(context, dict)
+        ctx = PromptBuildContext._from_compat(context)  # type: ignore[arg-type]
+        user_ctx = ctx.user_context
         if user_ctx is None:
             return context
         user_id = getattr(user_ctx, "user_id", None)
@@ -149,7 +218,7 @@ class SkillStage(PipelineStage):
         # 1. 用户自己的技能（受信任）
         for skill in self._skill_mgr.list_skills(user_id):
             lines = [
-                f"---",
+                "---",
                 f"[SKILL: {skill.meta.name}]",
                 "",
                 f"### {skill.meta.name}",
@@ -167,7 +236,7 @@ class SkillStage(PipelineStage):
             if skill.meta.author == user_id:
                 continue  # 自己已在上方加载
             lines = [
-                f"---",
+                "---",
                 f"[SKILL: {skill.meta.name} (@{skill.meta.author})]",
                 "",
                 f"### {skill.meta.name} (@{skill.meta.author})",
@@ -184,15 +253,11 @@ class SkillStage(PipelineStage):
             sections.append("\n".join(lines))
 
         if not sections:
-            return context
+            return ctx.to_dict() if from_dict else ctx
 
-        system_prompt = context.get("system_prompt", "")
         skills_section = "\n\n".join(sections)
-        if system_prompt:
-            context["system_prompt"] = system_prompt + "\n\n## 技能\n\n" + skills_section
-        else:
-            context["system_prompt"] = "## 技能\n\n" + skills_section
-        return context
+        ctx.append_system_prompt("## 技能\n\n" + skills_section)
+        return ctx.to_dict() if from_dict else ctx
 
 
 class ContextPipeline:
@@ -232,28 +297,24 @@ class ContextPipeline:
         # 按优先级排序
         self._stages.sort(key=lambda s: s.priority)
 
-    async def build(self, context: dict[str, Any]) -> str:
+    async def build(self, context: dict[str, Any] | PromptBuildContext) -> str:
         """构建系统提示词
 
         Args:
-            context: 上下文字典
+            context: PromptBuildContext 实例或兼容 dict
 
         Returns:
             构建完成的系统提示词
         """
-        # 初始化上下文
-        if "system_prompt" not in context:
-            context["system_prompt"] = ""
-
+        ctx = self._to_context(context)
         # 依次执行所有 Stage
         for stage in self._stages:
-            context = await stage.process(context)
-
-        return context.get("system_prompt", "")
+            ctx = await stage.process(ctx)
+        return ctx.system_prompt
 
     async def build_with_plugins(
         self,
-        context: dict[str, Any],
+        context: dict[str, Any] | PromptBuildContext,
         user_context: Any,
         plugins: list[Any],
     ) -> str:
@@ -266,27 +327,23 @@ class ContextPipeline:
         4. [P90] FinalGuard：不可绕过的优先级规则
 
         每个段有内容时才注入，无内容时跳过。
-        向后兼容：不提供 plugins 或 plugins 为空时，行为同 build()。
 
         Args:
-            context: 上下文字典
+            context: PromptBuildContext 实例或兼容 dict
             user_context: 当前用户上下文（UserContext 实例）
             plugins: 已启用的插件列表
 
         Returns:
             构建完成的系统提示词
         """
-        context["user_context"] = user_context
-
-        # 初始化上下文
-        if "system_prompt" not in context:
-            context["system_prompt"] = ""
+        ctx = self._to_context(context)
+        ctx.user_context = user_context
 
         # 1. 执行所有内置 Stage（Soul, Rules, Skill）
         for stage in self._stages:
-            context = await stage.process(context)
+            ctx = await stage.process(ctx)
 
-        system_prompt = context.get("system_prompt", "")
+        system_prompt = ctx.system_prompt
 
         # 2. 收集插件贡献，按段标题分组
         stages_content: dict[str, list[str]] = {}
@@ -294,7 +351,7 @@ class ContextPipeline:
             try:
                 content = plugin.contribute_to_prompt(user_context)
             except Exception:
-                logger.exception("插件 %s.contribute_to_prompt 出错", getattr(plugin, "name", "?"))
+                logger.exception("插件 {}.contribute_to_prompt 出错", getattr(plugin, "name", "?"))
                 continue
             if content:
                 stage = _map_plugin_stage(plugin)
@@ -311,11 +368,17 @@ class ContextPipeline:
                 system_prompt += "\n\n" + "\n\n".join(plugin_sections)
 
         # 4. [P90] 安全规则：从 SoulGuard 读取不可绕过的优先级规则
-        soul_guard = self._soul_guard
-        if soul_guard is not None:
-            guard_text = getattr(soul_guard, "guard_text", None)
+        if self._soul_guard is not None:
+            guard_text = getattr(self._soul_guard, "guard_text", None)
             if guard_text:
                 system_prompt += "\n\n" + guard_text
 
         return system_prompt
+
+    @staticmethod
+    def _to_context(
+        context: dict[str, Any] | PromptBuildContext,
+    ) -> PromptBuildContext:
+        """将 dict 或 PromptBuildContext 统一为 PromptBuildContext。"""
+        return PromptBuildContext._from_compat(context)
 

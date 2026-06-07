@@ -4,6 +4,9 @@
 遵循 nanobot/security/workspace_access.py 的设计模式，
 在异步任务边界通过 ContextVar 注入沙箱，消除逐层传递 _sandbox 参数。
 
+同时还管理 per-request 的 tmp 路径 ContextVar，
+让插件通过 self.tmp 动态获取当前用户上下文的临时目录。
+
 使用方式：
     from nanobee.kernel.context_sandbox_var import bind_sandbox, current_sandbox
 
@@ -20,6 +23,7 @@
 from __future__ import annotations
 
 from contextvars import ContextVar, Token
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -27,6 +31,13 @@ if TYPE_CHECKING:
 
 _CURRENT_SANDBOX: ContextVar["ContextSandbox | None"] = ContextVar(
     "nanobee_sandbox",
+    default=None,
+)
+
+# 当前请求的 tmp 根目录（per-user: ~/.nanobee/contexts/<user>/tmp/）
+# 插件访问 self.tmp 时会自动加上插件名作为子目录
+_CURRENT_TMP: ContextVar[Path | None] = ContextVar(
+    "nanobee_tmp",
     default=None,
 )
 
@@ -61,8 +72,44 @@ def current_sandbox() -> ContextSandbox | None:
     return _CURRENT_SANDBOX.get()
 
 
+def bind_tmp(tmp_dir: Path) -> Token[Path | None]:
+    """在当前异步任务中绑定 tmp 根目录。
+
+    Args:
+        tmp_dir: per-user 的 tmp 根目录
+
+    Returns:
+        Token 用于后续 reset_tmp 恢复
+    """
+    return _CURRENT_TMP.set(tmp_dir)
+
+
+def reset_tmp(token: Token[Path | None]) -> None:
+    """恢复绑定的 tmp 到绑定前的状态。
+
+    Args:
+        token: bind_tmp 返回的 Token
+    """
+    _CURRENT_TMP.reset(token)
+
+
+def current_tmp() -> Path | None:
+    """获取当前异步任务中绑定的 tmp 根目录。
+
+    插件通过 self.tmp 属性访问（自动追加插件名），
+    无需直接调用此函数。
+
+    Returns:
+        tmp 根目录，未绑定时返回 None
+    """
+    return _CURRENT_TMP.get()
+
+
 __all__ = [
     "bind_sandbox",
     "current_sandbox",
     "reset_sandbox",
+    "bind_tmp",
+    "current_tmp",
+    "reset_tmp",
 ]

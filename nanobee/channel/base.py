@@ -11,7 +11,6 @@ Channel Plugin 基类 — 所有通讯通道插件必须继承此基类。
 
 from __future__ import annotations
 
-import logging
 from abc import ABC, abstractmethod
 from typing import Any, AsyncGenerator
 
@@ -19,7 +18,8 @@ from nanobee.channel.message import ChannelMessage, OutboundMessage, StreamingDe
 from nanobee.kernel.context_manager import ContextManager
 from nanobee.plugins.base import NanobeePlugin
 
-logger = logging.getLogger(__name__)
+from nanobee.utils.logger import logger
+
 
 
 class ChannelPlugin(NanobeePlugin, ABC):
@@ -59,7 +59,7 @@ class ChannelPlugin(NanobeePlugin, ABC):
         """通道插件加载时自注册到内核。"""
         if not self.display_name:
             self.display_name = self.metadata.name
-        logger.info("通道 %s (%s) 已加载", self.display_name, self.metadata.plugin_type)
+        logger.info("通道 {} ({}) 已加载", self.display_name, self.metadata.plugin_type)
 
     # ====== 抽象方法 ======
     @abstractmethod
@@ -117,7 +117,7 @@ class ChannelPlugin(NanobeePlugin, ABC):
             回复消息列表（非流式模式时返回）。
         """
         if not self.is_allowed(pairing_code):
-            logger.warning("通道 %s 拒绝未授权连接（pairing_code=%s）", self.metadata.name, pairing_code)
+            logger.warning("通道 {} 拒绝未授权连接（pairing_code={}）", self.metadata.name, pairing_code)
             return [
                 OutboundMessage(
                     channel=self.metadata.name,

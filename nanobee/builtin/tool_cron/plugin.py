@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -16,7 +15,8 @@ from nanobee.builtin.tool_cron.service import CronService
 from nanobee.builtin.tool_cron.types import CronJob, CronSchedule
 from nanobee.plugins.tool import ToolPlugin
 
-logger = logging.getLogger(__name__)
+from nanobee.utils.logger import logger
+
 
 
 class ToolCronPlugin(ToolPlugin):
@@ -51,13 +51,11 @@ class ToolCronPlugin(ToolPlugin):
 
         self._default_timezone = self.get_config("default_timezone", "UTC")
 
-        # 构建存储路径：~/.nanobee/cron/（按用户隔离）
-        work_dir = Path(kernel.work_dir) if hasattr(kernel, "work_dir") else Path.cwd()
-        self._cron_base_dir = work_dir / "cron"
-        self._cron_base_dir.mkdir(parents=True, exist_ok=True)
+        # 存储路径延迟初始化 — 在 set_context() 中基于 self.tmp 确定
+        self._cron_base_dir: Path | None = None
         self._current_store_path: Path | None = None
 
-        logger.info("Cron 服务基础目录: %s", self._cron_base_dir)
+        logger.info("Cron 插件初始化完成")
 
     def on_enable(self) -> None:
         """启用时启动 CronService。"""
@@ -67,7 +65,7 @@ class ToolCronPlugin(ToolPlugin):
                 self._cron.start()
                 self._enabled = True
             except RuntimeError as e:
-                logger.error("Cron 服务启动失败: %s", e)
+                logger.error("Cron 服务启动失败: {}", e)
 
     def on_disable(self) -> None:
         """禁用时停止 CronService。"""
@@ -104,7 +102,17 @@ class ToolCronPlugin(ToolPlugin):
 
         # 根据 user_id 切换存储路径
         if user_id:
-            self._current_store_path = self._cron_base_dir / f"jobs_{user_id}.json"
+            # 优先使用 per-request tmp（框架在 context_root 下创建）
+            if self.tmp is not None:
+                self._current_store_path = self.tmp / f"jobs_{user_id}.json"
+                self._current_store_path.parent.mkdir(parents=True, exist_ok=True)
+            else:
+                # 回退：boot 阶段或非请求上下文
+                if self._cron_base_dir is None:
+                    work_dir = Path(self._kernel.work_dir) if self._kernel and hasattr(self._kernel, "work_dir") else Path.cwd()
+                    self._cron_base_dir = work_dir / "cron"
+                    self._cron_base_dir.mkdir(parents=True, exist_ok=True)
+                self._current_store_path = self._cron_base_dir / f"jobs_{user_id}.json"
             # 如果 user_id 变化或 _cron 未初始化，创建新的 CronService 实例
             if self._cron is None or getattr(self._cron, "store_path", None) != self._current_store_path:
                 # 停止旧实例
@@ -115,9 +123,7 @@ class ToolCronPlugin(ToolPlugin):
                     on_job=self._on_job_execute,
                     max_sleep_ms=300_000,
                 )
-                # 注意：不在这里调用 start()，因为 on_enable() 已经启动过服务
-                # 如果需要切换用户后重启服务，由外部调用者负责
-                logger.info("Cron 服务存储路径: %s", self._current_store_path)
+                logger.info("Cron 服务存储路径: {}", self._current_store_path)
         else:
             self._current_store_path = None
             if self._cron is not None:
@@ -243,6 +249,15 @@ class ToolCronPlugin(ToolPlugin):
         if self._cron is None:
             return "错误：Cron 服务未初始化"
 
+        # 确保服务已启动（懒加载模式：在首次添加任务时启动）
+        if not getattr(self._cron, "_running", False):
+            try:
+                self._cron.start()
+                logger.info("Cron 服务已启动（懒加载），存储路径: {}", self._current_store_path)
+            except RuntimeError as e:
+                logger.error("Cron 服务启动失败: {}", e)
+                return f"错误：Cron 服务启动失败: {e}"
+
         message = kwargs.get("message", "")
         if not message:
             return (
@@ -301,6 +316,7 @@ class ToolCronPlugin(ToolPlugin):
             delete_after_run=delete_after,
             channel_meta=self._context_metadata,
             session_key=self._session_key or None,
+            user_id=self._user_id or None,
         )
         return f"已创建任务 '{job.name}' (id: {job.id})"
 
@@ -405,24 +421,26 @@ class ToolCronPlugin(ToolPlugin):
             Agent 的回复文本
         """
         if not self.kernel or not self.kernel.agent_loop:
-            logger.warning("Cron: Agent Loop 不可用，无法执行任务 %s", job.id)
+            logger.warning("Cron: Agent Loop 不可用，无法执行任务 {}", job.id)
             return None
 
         if not job.payload.message:
-            logger.warning("Cron: 任务 %s 消息为空，跳过执行", job.id)
+            logger.warning("Cron: 任务 {} 消息为空，跳过执行", job.id)
             return None
 
-        logger.info("Cron: 触发任务 %s, 消息: %s", job.id, job.payload.message[:100])
+        logger.info("Cron: 触发任务 {}, 消息: {}", job.id, job.payload.message[:100])
         try:
+            # 使用创建任务时的用户 ID 作为上下文，避免沙箱路径问题
+            context_id = job.payload.user_id or job.payload.to or "cron"
             result = await self.kernel.handle_message(
                 message=job.payload.message,
-                context_id=job.payload.to or "cron",
+                context_id=context_id,
                 sender_id="system",
             )
             content_text = result.content if result else ""
             if job.payload.deliver and content_text:
-                logger.info("Cron: 任务 %s 执行完成", job.id)
+                logger.info("Cron: 任务 {} 执行完成", job.id)
             return content_text
         except Exception:
-            logger.exception("Cron: 任务 %s 执行异常", job.id)
+            logger.exception("Cron: 任务 {} 执行异常", job.id)
             return None

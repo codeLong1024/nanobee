@@ -27,7 +27,6 @@ plugins:
 from __future__ import annotations
 
 import json
-import logging
 import time
 import uuid
 from typing import Any
@@ -37,7 +36,8 @@ from aiohttp import web
 from nanobee.channel.base import ChannelPlugin
 from nanobee.channel.message import OutboundMessage, StreamingDelta
 
-logger = logging.getLogger(__name__)
+from nanobee.utils.logger import logger
+
 
 
 # =============================================================================
@@ -225,20 +225,15 @@ class HTTPChannelPlugin(ChannelPlugin):
     def initialize(self, kernel: Any) -> None:
         """初始化插件时读取配置。"""
         super().initialize(kernel)
-        # 从配置读取模型名称（支持字典和 Pydantic 对象）
-        agents_config = kernel.config.get("agents", {})
-        if isinstance(agents_config, dict):
-            defaults = agents_config.get("defaults", {})
-            self._model = defaults.get("model", "default") if isinstance(defaults, dict) else "default"
+        # 从配置读取模型名称（兼容 Config 对象和 dict）
+        cfg = kernel.config
+        if hasattr(cfg, "agents"):
+            self._model = cfg.agents.defaults.model or "default"
         else:
-            # Pydantic 对象（AgentsConfig）
-            defaults = getattr(agents_config, "defaults", None)
-            if defaults is not None:
-                model = getattr(defaults, "model", None)
-                self._model = model if model else "default"
-            else:
-                self._model = "default"
-        logger.info("HTTP 通道模型: %s", self._model)
+            agents = cfg.get("agents", {})
+            defaults = agents.get("defaults", {}) if isinstance(agents, dict) else {}
+            self._model = defaults.get("model", "default") if isinstance(defaults, dict) else "default"
+        logger.info("HTTP 通道模型: {}", self._model)
 
     async def start(self) -> None:
         """启动 aiohttp HTTP 服务器。"""
@@ -274,11 +269,11 @@ class HTTPChannelPlugin(ChannelPlugin):
 
     async def send(self, message: OutboundMessage, context_id: str = "default") -> None:
         """HTTP 通道不使用 send（响应在 handler 中直接返回）。"""
-        logger.debug("HTTP 通道 send() 被调用（无操作）: %s", context_id)
+        logger.debug("HTTP 通道 send() 被调用（无操作）: {}", context_id)
 
     async def send_delta(self, delta: StreamingDelta, context_id: str = "default") -> None:
         """HTTP 通道不使用 send_delta（流式由 SSE 处理）。"""
-        logger.debug("HTTP 通道 send_delta() 被调用（无操作）: %s", context_id)
+        logger.debug("HTTP 通道 send_delta() 被调用（无操作）: {}", context_id)
 
     async def _process_incoming(self, message: Any, context_manager: Any) -> list[OutboundMessage]:
         """HTTP 通道不使用 _process_incoming（由 handler 直接处理）。"""
@@ -417,9 +412,9 @@ class HTTPChannelPlugin(ChannelPlugin):
                 await response.write(f"data: {_DONE_MARKER}\n\n".encode())
 
             except ConnectionResetError:
-                logger.warning("HTTP 客户端断开连接 (conversation=%s)", conversation_id)
+                logger.warning("HTTP 客户端断开连接 (conversation={})", conversation_id)
             except Exception:
-                logger.exception("流式处理出错 (conversation=%s)", conversation_id)
+                logger.exception("流式处理出错 (conversation={})", conversation_id)
                 # 尝试发送错误 SSE 事件
                 try:
                     await response.write(
@@ -443,7 +438,7 @@ class HTTPChannelPlugin(ChannelPlugin):
             )
             content = result.content if result else ""
         except Exception:
-            logger.exception("非流式处理出错 (conversation=%s)", conversation_id)
+            logger.exception("非流式处理出错 (conversation={})", conversation_id)
             return web.json_response(
                 {"error": {"message": "Internal server error", "type": "server_error", "code": 500}},
                 status=500,

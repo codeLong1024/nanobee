@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
 import os
 import time
 import uuid
@@ -30,7 +29,8 @@ from nanobee.builtin.tool_cron.types import (
     CronStore,
 )
 
-logger = logging.getLogger(__name__)
+from nanobee.utils.logger import logger
+
 
 
 def _now_ms() -> int:
@@ -286,7 +286,7 @@ class CronService:
         self._recompute_next_runs()
         self._save_store()
         self._arm_timer()
-        logger.info("Cron 服务已启动，共 %d 个任务", len(self._store.jobs if self._store else []))
+        logger.info("Cron 服务已启动，共 {} 个任务", len(self._store.jobs if self._store else []))
 
     def stop(self) -> None:
         """停止服务。"""
@@ -324,6 +324,15 @@ class CronService:
         if not self._running:
             return
 
+        # 检查是否有运行中的 event loop
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # 没有运行中的 event loop，跳过定时器设置
+            # 将在下次有 event loop 时自动启动（通过 _add_job 或 _on_timer）
+            logger.debug("Cron: 无运行中的 event loop，定时器延迟启动")
+            return
+
         next_wake = self._get_next_wake_ms()
         if next_wake is None:
             delay_ms = self.max_sleep_ms
@@ -336,7 +345,7 @@ class CronService:
             if self._running:
                 await self._on_timer()
 
-        self._timer_task = asyncio.create_task(tick())
+        self._timer_task = loop.create_task(tick())
 
     async def _on_timer(self) -> None:
         """定时器 tick：执行到期任务。"""
@@ -364,7 +373,7 @@ class CronService:
     async def _execute_job(self, job: CronJob) -> None:
         """执行单个任务。"""
         start_ms = _now_ms()
-        logger.info("Cron: 执行任务 '%s' (%s)", job.name, job.id)
+        logger.info("Cron: 执行任务 '{}' ({})", job.name, job.id)
 
         try:
             if self.on_job:
@@ -372,11 +381,11 @@ class CronService:
 
             job.state.last_status = "ok"
             job.state.last_error = None
-            logger.info("Cron: 任务 '%s' 完成", job.name)
+            logger.info("Cron: 任务 '{}' 完成", job.name)
         except Exception as e:
             job.state.last_status = "error"
             job.state.last_error = str(e)
-            logger.exception("Cron: 任务 '%s' 失败", job.name)
+            logger.exception("Cron: 任务 '{}' 失败", job.name)
 
         end_ms = _now_ms()
         job.state.last_run_at_ms = start_ms
@@ -419,6 +428,7 @@ class CronService:
         delete_after_run: bool = False,
         channel_meta: dict | None = None,
         session_key: str | None = None,
+        user_id: str | None = None,
     ) -> CronJob:
         """添加新任务。"""
         _validate_schedule_for_add(schedule)
@@ -437,6 +447,7 @@ class CronService:
                 to=to,
                 channel_meta=channel_meta or {},
                 session_key=session_key,
+                user_id=user_id,
             ),
             state=CronJobState(next_run_at_ms=_compute_next_run(schedule, now)),
             created_at_ms=now,
@@ -449,7 +460,7 @@ class CronService:
         self._save_store()
         self._arm_timer()
 
-        logger.info("Cron: 已添加任务 '%s' (%s)", name, job.id)
+        logger.info("Cron: 已添加任务 '{}' ({})", name, job.id)
         return job
 
     def register_system_job(self, job: CronJob) -> CronJob:
@@ -463,7 +474,7 @@ class CronService:
         store.jobs.append(job)
         self._save_store()
         self._arm_timer()
-        logger.info("Cron: 已注册系统任务 '%s' (%s)", job.name, job.id)
+        logger.info("Cron: 已注册系统任务 '{}' ({})", job.name, job.id)
         return job
 
     def remove_job(self, job_id: str) -> Literal["removed", "protected", "not_found"]:
@@ -473,7 +484,7 @@ class CronService:
         if job is None:
             return "not_found"
         if job.payload.kind == "system_event":
-            logger.info("Cron: 拒绝删除受保护的系统任务 %s", job_id)
+            logger.info("Cron: 拒绝删除受保护的系统任务 {}", job_id)
             return "protected"
 
         before = len(store.jobs)
@@ -483,7 +494,7 @@ class CronService:
         if removed:
             self._save_store()
             self._arm_timer()
-            logger.info("Cron: 已移除任务 %s", job_id)
+            logger.info("Cron: 已移除任务 {}", job_id)
             return "removed"
 
         return "not_found"
@@ -557,7 +568,7 @@ class CronService:
 
         self._save_store()
         self._arm_timer()
-        logger.info("Cron: 已更新任务 '%s' (%s)", job.name, job.id)
+        logger.info("Cron: 已更新任务 '{}' ({})", job.name, job.id)
         return job
 
     async def run_job(self, job_id: str, force: bool = False) -> bool:

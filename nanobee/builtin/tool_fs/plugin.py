@@ -10,7 +10,6 @@ Tool FS 插件 - 文件系统工具（read_file, write_file, edit_file, list_dir
 
 from __future__ import annotations
 
-import logging
 import os
 from pathlib import Path
 from typing import Any
@@ -18,7 +17,8 @@ from typing import Any
 from nanobee.kernel.sandbox import SandboxError
 from nanobee.plugins.tool import ToolPlugin
 
-logger = logging.getLogger(__name__)
+from nanobee.utils.logger import logger
+
 
 
 class ToolFileSystemPlugin(ToolPlugin):

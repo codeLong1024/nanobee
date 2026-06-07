@@ -8,13 +8,13 @@ and delivered through the channel's send mechanism.
 from __future__ import annotations
 
 import json
-import logging
 from pathlib import Path
 from typing import Any
 
 from nanobee.agent.tools.base import Tool, tool_parameters
 
-logger = logging.getLogger(__name__)
+from nanobee.utils.logger import logger
+
 
 
 @tool_parameters({

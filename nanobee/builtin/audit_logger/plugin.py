@@ -7,12 +7,12 @@ Phase 3 参考插件：纯监听型插件，不贡献提示词或工具，
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 
 from nanobee.plugins.base import NanobeePlugin
 
-logger = logging.getLogger(__name__)
+from nanobee.utils.logger import logger
+
 
 
 class AuditLoggerPlugin(NanobeePlugin):

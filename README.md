@@ -19,7 +19,7 @@
 
 ## 项目状态
 
-**版本 v0.1.0** — 核心框架（微内核、Agent 引擎、LLM Provider、插件体系）已通过 **504 个单元测试**验证。
+**版本 v0.1.0** — 核心框架（微内核、Agent 引擎、LLM Provider、插件体系）已通过 **465 个单元测试**验证。
 
 ```
 Kernel 内核     ████████████████████████████████  95%
@@ -41,14 +41,13 @@ CLI 命令        ████████████████████�
 - **技能管理** — Skill 数据模型 + SkillManager，用户通过对话创建/编辑/删除技能，支持 visibility 共享
 - **技能元数据扩展** — SkillMeta 支持 `compatibility` / `license` 字段，description 自动校验（≤1024 字符、禁止 `<>`）
 - **技能校验器** — `skill_validator.py` 校验 name kebab-case 格式、frontmatter 完整性、白名单检查，CreateSkillTool 前置调用
-- **上下文管理** — 按用户物理隔离的目录结构（context.yaml / history.jsonl / work / memory）
+- **上下文管理** — 按用户物理隔离的目录结构（context.yaml / history.jsonl / work / memory / tmp），框架通过 ContextVar 按请求向插件注入 `self.tmp`，插件自管清理
 - **灵魂守卫** — 三层保护（chmod 444 + 写入拦截 Hook + SHA-256 哈希校验）
 - **插件管理器** — 扫描、加载（含依赖拓扑排序）、启用/禁用/卸载生命周期
 - **LLM Provider** — Anthropic、OpenAI、Azure、Bedrock、GitHub Copilot、OpenAI 兼容接口、30+ 模型规格注册
 - **MCP 桥接** — 连接 MCP 服务器注册工具，支持 stdio / SSE / Streamable HTTP 三种传输协议
-- **CLI 命令** — `nanobee run`（轻量级 Agent CLI 模式，支持 `-m` 单次消息和 `-s` 会话 ID）、`nanobee gateway`（完整服务栈，通道 + Heartbeat + 健康端点）、`plugin list`/`create`/`enable`/`disable` 完整实现、`hub` 子命令🚧
+- **CLI 命令** — `nanobee run`（轻量级 Agent CLI 模式，支持 `-m` 单次消息和 `-s` 会话 ID）、`nanobee gateway`（完整服务栈，通道 + 健康端点）、`plugin list`/`create`/`enable`/`disable` 完整实现、`hub` 子命令🚧
 - **CLI/Gateway 职责分离** — 借鉴 nanobot 设计哲学：`boot()` 只做核心启动，`boot_services()` 启动后台服务。`nanobee run` 轻量无后台，`nanobee gateway` 启动完整服务栈
-- **工具插件 set_context** — 工具插件可通过 `set_context(channel, chat_id, user_id)` 接收会话上下文
 - **max_iterations 配置化** — 支持从 `nanobee.yaml` 配置 LLM 最大对话循环次数（默认 10）
 - **OpenAI 兼容 HTTP API** — `POST /v1/chat/completions`（SSE 流式 + JSON 非流式）、`GET /v1/models`、API Key 认证，支持 LobeChat 等第三方客户端连接
 - **Pipeline 三明治防御** — SkillStage 加 `[SKILL BEGIN/END]` 边界标记；共享技能 body 每行 `>` 引用包裹 + `⚠️ 外部技能` 警告；`FinalGuardStage(priority 90)` 追加不可绕过的优先级规则段
@@ -87,7 +86,7 @@ nanobee run -m "你好"                 # 单次消息模式
 nanobee run -s "my-session" -m "hi"  # 指定会话 + 单次消息
 nanobee run -c /path/to/config.yaml
 
-# 完整 Gateway 服务栈模式（生产部署：通道 + Heartbeat + 健康端点）
+# 完整 Gateway 服务栈模式（生产部署：通道 + 健康端点）
 nanobee gateway
 nanobee gateway --port 8080           # 带健康检查 HTTP 端点
 ```
@@ -152,11 +151,11 @@ ChannelPlugin ──▶ EventBus ──▶ NanobeeKernel
 ┌─────────────────────────────────────────────────────────┐
 │ nanobee run         轻量 Agent CLI 模式                  │
 │                     └→ Kernel.boot() 核心启动            │
-│                        (无通道/Heartbeat/健康端点)        │
+│                        (无通道/健康端点)                  │
 ├─────────────────────────────────────────────────────────┤
 │ nanobee gateway     Gateway 完整服务栈                   │
 │                     └→ Kernel.boot() + boot_services()   │
-│                        (通道插件 + Heartbeat + 健康端点)  │
+│                        (通道插件 + 健康端点)              │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -167,7 +166,7 @@ ChannelPlugin ──▶ EventBus ──▶ NanobeeKernel
 | `NanobeeKernel` | 统一入口，管理插件生命周期、消息路由 |
 | `AgentLoop` | 6 态状态机驱动循环（RESTORE → COMPACT → BUILD → RUN → SAVE → RESPOND → DONE） |
 | `AgentRunner` | LLM 调用 + 工具执行迭代（含迭代级/run-level 双层 Hook、上下文治理、SSRF 拦截） |
-| `ContextManager` | 多租户上下文隔离（每个用户独立目录） |
+| `ContextManager` | 多租户上下文隔离（每个用户独立目录：history.jsonl / work / memory / tmp） |
 | `ContextPipeline` | System Prompt 构建（Soul → Skill → Memory → Rules 管线） |
 | `PluginManager` | 插件扫描、加载、生命周期控制 |
 | `SkillManager` | 技能 CRUD + mtime 文件系统缓存（TTL 2 秒） |
@@ -176,6 +175,7 @@ ChannelPlugin ──▶ EventBus ──▶ NanobeeKernel
 | `LockManager` | 按用户粒度的 asyncio 并发锁 |
 | `ContextRouter` | 多租户路由（`channel:chat_id` → `user_id`） |
 | `ContextSandbox` | 沙箱拦截路径逃逸（`../` 检测） |
+| `context_sandbox_var` | ContextVar 注入：bind_sandbox/bind_tmp/reset_tmp/current_tmp |
 | `ToolCollector` | 工具白/黑名单双重过滤 |
 
 ### Pipeline 如何组装 System Prompt
@@ -196,6 +196,22 @@ ChannelPlugin ──▶ EventBus ──▶ NanobeeKernel
 ### 工具插件 set_context 机制
 
 工具插件可通过 `set_context(channel, chat_id, user_id)` 接收会话上下文。框架在每次工具执行前自动调用此方法（如果工具支持），使工具插件能获取当前会话信息（如钉钉通道的 chat_id、用户 ID）。
+
+### 插件临时目录（self.tmp）
+
+框架在 `contexts/<user>/tmp/` 下为每个用户创建临时目录，通过 ContextVar 按请求注入到插件。插件通过 `self.tmp` 获取自己的专属临时目录（`tmp/<plugin_name>/`）：
+
+```python
+class MyPlugin(ToolPlugin):
+    async def execute_tool(self, tool_name, **kwargs):
+        # self.tmp 按请求自动注入，路径：.../contexts/<user>/tmp/my_plugin/
+        cache_file = self.tmp / "cache.json"
+        # 框架只管创建和注入，清理由插件自行决定
+```
+
+- **框架做的事情**：创建目录、按请求注入 ContextVar、确保 `tmp/` 在沙箱边界内
+- **框架不做的**：不清理 tmp 目录、不关心里面放什么子目录、不定义回收策略
+- **插件决定**：何时清理、创建什么子目录、怎么用这个空间
 
 ## 内置插件
 
@@ -218,12 +234,18 @@ ChannelPlugin ──▶ EventBus ──▶ NanobeeKernel
 
 ```python
 from nanobee.plugins.base import NanobeePlugin
+from nanobee.utils.logger import logger
 
 class MyPlugin(NanobeePlugin):
     name = "my_plugin"
     version = "1.0.0"
     plugin_type = "echo"
     stage = "记忆"
+
+    def on_load(self) -> None:
+        # self.tmp 在请求上下文中可用，路径: contexts/<user>/tmp/my_plugin/
+        # 框架只管创建目录，清理由插件自己决定
+        logger.info("tmp 目录: {}", self.tmp)
 
     def contribute_to_prompt(self, context) -> str | None:
         """向 ## 记忆 段注入内容"""
@@ -261,7 +283,7 @@ class MyPlugin(NanobeePlugin):
 # 安装开发依赖
 pip install -e ".[dev]"
 
-# 运行全部测试（504 个用例）
+# 运行全部测试（465 个用例）
 python -m pytest tests/ -v --tb=short
 
 # 查看覆盖率
@@ -275,7 +297,7 @@ python -m pytest tests/ --cov=nanobee --cov-report=term-missing
 | `test_context_security.py` | 4 | 上下文安全边界 |
 | `test_e2e.py` | 4 | 端到端集成 |
 | `test_lock_manager.py` | 6 | 按用户并发锁隔离 |
-| `test_user_context.py` | 11 | 用户上下文/元数据 |
+| `test_user_context.py` | 15 | 用户上下文/元数据/tmp 注入 |
 | `test_router.py` | 12 | 路由解析/降级/自定义 |
 | `test_sandbox.py` | 16 | 路径逃逸拦截/边界 |
 | `test_tool_collector.py` | 11 | 白/黑名单过滤 |
@@ -291,7 +313,7 @@ python -m pytest tests/ --cov=nanobee --cov-report=term-missing
 | `test_security.py` | 61 | SSRF 防护、CIDR 白名单、内网 URL 检测、路径边界工具 |
 | `test_cli_plugin.py` | 23 | 插件发现/列表/创建/启用/禁用 CLI 命令 |
 | `test_tool_dingtalk.py` | 42 | 钉钉插件（文档/多维表/管道 + MCP 客户端 + CSV 解析） |
-| 其他 | 128+ | 流式 Hook、Shell 沙箱、Cron 隔离、钉钉文件、Runtime Context、Heartbeat、Run-level Hook 等 |
+| 其他 | 132+ | 流式 Hook、Shell 沙箱、Cron 隔离、钉钉文件、Runtime Context、Run-level Hook 等 |
 
 ## 项目结构
 
@@ -380,7 +402,8 @@ nanobee 从 [nanobot](https://github.com/HKUDS/nanobot) 衍生开发，核心差
 - 复杂的 facts.json / episodic.json 格式化
 - WebSocket 服务（由 `channel_ws` 插件实现）
 
-框架的责任是**画地为牢（隔离）**，插件的自由是**破土动工（注入）**。
+框架的责任是**画地为牢（隔离）**——`tmp/`目录、`ContextSandbox`沙箱、多租户上下文，都是给插件安全可靠的地盘。
+插件的自由是**破土动工（注入）**——在这个地盘里，怎么写记忆、怎么管临时文件、怎么定义工具，全部由插件决定。
 
 ## 开发
 

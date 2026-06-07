@@ -8,9 +8,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-import logging
+from nanobee.utils.logger import logger
 
-logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -112,10 +111,10 @@ class GitStore:
                 author=b"nanobee <nanobee@dream>",
                 committer=b"nanobee <nanobee@dream>",
             )
-            logger.info("Git store initialized at %s", self._workspace)
+            logger.info("Git store initialized at {}", self._workspace)
             return True
         except Exception:
-            logger.exception("Git store init failed for %s", self._workspace)
+            logger.exception("Git store init failed for {}", self._workspace)
             return False
 
     # -- daily operations ------------------------------------------------------
@@ -148,10 +147,10 @@ class GitStore:
             if sha_bytes is None:
                 return None
             sha = sha_bytes.hex()[:8]
-            logger.debug("Git auto-commit: %s (%s)", sha, message)
+            logger.debug("Git auto-commit: {} ({})", sha, message)
             return sha
         except Exception:
-            logger.exception("Git auto-commit failed: %s", message)
+            logger.exception("Git auto-commit failed: {}", message)
             return None
 
     # -- internal helpers ------------------------------------------------------
@@ -268,7 +267,7 @@ class GitStore:
 
             annotated = porcelain.annotate(str(self._workspace), file_path)
         except Exception:
-            logger.exception("Git line_ages annotate failed for %s", file_path)
+            logger.exception("Git line_ages annotate failed for {}", file_path)
             return []
 
         if not annotated:
@@ -338,7 +337,7 @@ class GitStore:
 
             full_sha = self._resolve_sha(commit)
             if not full_sha:
-                logger.warning("Git revert: SHA not found: %s", commit)
+                logger.warning("Git revert: SHA not found: {}", commit)
                 return None
 
             with Repo(str(self._workspace)) as repo:
@@ -347,7 +346,7 @@ class GitStore:
                     return None
 
                 if not commit_obj.parents:
-                    logger.warning("Git revert: cannot revert root commit %s", commit)
+                    logger.warning("Git revert: cannot revert root commit {}", commit)
                     return None
 
                 # Use the parent's tree — this undoes the commit's changes
@@ -369,7 +368,7 @@ class GitStore:
             msg = f"revert: undo {commit}"
             return self.auto_commit(msg)
         except Exception:
-            logger.exception("Git revert failed for %s", commit)
+            logger.exception("Git revert failed for {}", commit)
             return None
 
     @staticmethod

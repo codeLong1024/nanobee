@@ -11,13 +11,13 @@ from __future__ import annotations
 
 import hashlib
 import json
-import logging
 from pathlib import Path
 from typing import Any
 
 from nanobee.plugins.memory import MemoryPlugin
 
-logger = logging.getLogger(__name__)
+from nanobee.utils.logger import logger
+
 
 
 _EXCERPT_MAX_CHARS = 200
@@ -160,7 +160,7 @@ class MemoryFilePlugin(MemoryPlugin):
 
         new_total = len(existing_hashes)
         logger.info(
-            "memory_file.store: 存储了 %d 条新事实到 %s (总 %d 条)",
+            "memory_file.store: 存储了 {} 条新事实到 {} (总 {} 条)",
             len(new_entries),
             facts_path,
             new_total,

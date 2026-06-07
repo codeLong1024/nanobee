@@ -4,7 +4,6 @@ NanobeePlugin 基类 - 所有插件的基类
 
 from __future__ import annotations
 
-import logging
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, ClassVar
@@ -13,7 +12,8 @@ from pydantic import BaseModel, Field
 
 from .hook_mixin import PluginHookMixin
 
-logger = logging.getLogger(__name__)
+from nanobee.utils.logger import logger
+
 
 
 class PluginMetadata(BaseModel):
@@ -54,6 +54,7 @@ class NanobeePlugin(PluginHookMixin, ABC):
         self._kernel: Any | None = None  # 私有属性，禁止插件直接访问
         self._enabled = False
         self._config: dict[str, Any] = {}  # 插件专属配置（隔离）
+        self._tmp: Path | None = None  # 插件临时目录（框架注入）
 
     @property
     def metadata(self) -> PluginMetadata:
@@ -75,7 +76,7 @@ class NanobeePlugin(PluginHookMixin, ABC):
         """
         self._kernel = kernel
         self._extract_config()
-        logger.info("插件 %s 初始化完成", self._metadata.name)
+        logger.info("插件 {} 初始化完成", self._metadata.name)
 
     def _extract_config(self) -> None:
         """从内核配置中提取当前插件的专属配置（配置隔离）。
@@ -90,9 +91,13 @@ class NanobeePlugin(PluginHookMixin, ABC):
         if isinstance(self._kernel, dict):
             self._config = {}
             return
-        plugin_config = self._kernel.config.get("plugins", {}).get(
-            self._metadata.name, {}
-        )
+        # kernel.config 可能是 Config 对象（有 .plugins）或普通 dict
+        cfg = self._kernel.config
+        if hasattr(cfg, "plugins"):
+            plugins_cfg = cfg.plugins
+        else:
+            plugins_cfg = cfg.get("plugins", {})
+        plugin_config = plugins_cfg.get(self._metadata.name, {}) if isinstance(plugins_cfg, dict) else {}
         self._config = dict(plugin_config) if isinstance(plugin_config, dict) else {}
 
     def on_load(self) -> None:
@@ -102,12 +107,12 @@ class NanobeePlugin(PluginHookMixin, ABC):
     def on_enable(self) -> None:
         """插件启用时调用"""
         self._enabled = True
-        logger.info("插件 %s 已启用", self._metadata.name)
+        logger.info("插件 {} 已启用", self._metadata.name)
 
     def on_disable(self) -> None:
         """插件禁用时调用"""
         self._enabled = False
-        logger.info("插件 %s 已禁用", self._metadata.name)
+        logger.info("插件 {} 已禁用", self._metadata.name)
 
     def on_unload(self) -> None:
         """插件卸载前调用（清理资源）"""
@@ -117,9 +122,25 @@ class NanobeePlugin(PluginHookMixin, ABC):
     def destroy(self) -> None:
         """销毁插件（由 PluginManager 调用）"""
         self.on_unload()
-        logger.info("插件 %s 已销毁", self._metadata.name)
+        logger.info("插件 {} 已销毁", self._metadata.name)
 
     # ---- 工具方法 ----
+
+    @property
+    def tmp(self) -> Path | None:
+        """插件临时目录（框架通过 ContextVar 按请求注入）
+
+        路径：<context_root>/../tmp/<plugin_name>/
+        框架只创建目录，清理由插件自己决定。
+        未绑定 ContextVar 时返回 None（例如 boot 阶段或测试环境）。
+        """
+        from nanobee.kernel.context_sandbox_var import current_tmp
+        _tmp_base = current_tmp()
+        if _tmp_base is None:
+            return None
+        plugin_tmp = _tmp_base / self._metadata.name
+        plugin_tmp.mkdir(parents=True, exist_ok=True)
+        return plugin_tmp
 
     @property
     def is_enabled(self) -> bool:

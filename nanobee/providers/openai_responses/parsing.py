@@ -8,9 +8,8 @@ from typing import Any, AsyncGenerator
 
 import httpx
 import json_repair
-import logging
+from nanobee.utils.logger import logger
 
-logger = logging.getLogger(__name__)
 
 from nanobee.exceptions import ProviderAPIError
 from nanobee.providers.base import LLMResponse, ToolCallRequest
@@ -43,7 +42,7 @@ async def iter_sse(response: httpx.Response) -> AsyncGenerator[dict[str, Any], N
         try:
             return json.loads(data)
         except Exception:
-            logger.warning("Failed to parse SSE event JSON: %s", data[:200])
+            logger.warning("Failed to parse SSE event JSON: {}", data[:200])
             return None
 
     async for line in response.aiter_lines():

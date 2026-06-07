@@ -6,9 +6,8 @@ import re
 from pathlib import Path
 from typing import Any
 
-import logging
+from nanobee.utils.logger import logger
 
-logger = logging.getLogger(__name__)
 
 from nanobee.utils.helpers import stringify_text_blocks
 

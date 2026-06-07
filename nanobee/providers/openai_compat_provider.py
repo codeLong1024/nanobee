@@ -18,9 +18,8 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 import json_repair
-import logging
+from nanobee.utils.logger import logger
 
-logger = logging.getLogger(__name__)
 
 from nanobee.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 from nanobee.providers.openai_responses import (
@@ -128,10 +127,10 @@ def _float_env(name: str, default: float) -> float:
     try:
         value = float(raw)
     except (TypeError, ValueError):
-        logger.warning("Ignoring invalid %s=%r; using %s", name, raw, default)
+        logger.warning("Ignoring invalid {}={}; using {}", name, raw, default)
         return default
     if value <= 0:
-        logger.warning("Ignoring non-positive %s=%r; using %s", name, raw, default)
+        logger.warning("Ignoring non-positive {}={}; using {}", name, raw, default)
         return default
     return value
 

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -11,6 +10,7 @@ if TYPE_CHECKING:
     # OutboundMessage 和 AgentLoop 只在类型注解中使用，运行时通过方法内延迟导入
     from nanobee.agent.loop import AgentLoop, OutboundMessage
 
+from nanobee.config.schema import Config
 from nanobee.exceptions import ContextError
 from nanobee.kernel.context_manager import ContextManager
 from nanobee.kernel.context_pipeline import ContextPipeline
@@ -18,13 +18,14 @@ from nanobee.kernel.event_bus import EventBus
 from nanobee.kernel.lock_manager import LockManager
 from nanobee.kernel.plugin_manager import PluginManager
 from nanobee.kernel.router import ContextRouter, UnknownRouteError
+from nanobee.kernel.runtime_events import KernelBooted, RuntimeEventBus
 from nanobee.kernel.sandbox import ContextSandbox, SandboxError
 from nanobee.kernel.soul_guard import SoulGuard
 from nanobee.kernel.tool_collector import ToolCollector
 from nanobee.kernel.user_context import UserContext, UserMetadata
-from nanobee.utils.observability import MetricsCollector, setup_structured_logging
+from nanobee.utils.logger import logger
 
-logger = logging.getLogger(__name__)
+from nanobee.utils.observability import MetricsCollector, setup_structured_logging
 
 
 from nanobee.kernel.skill_manager import SkillManager
@@ -41,38 +42,40 @@ class NanobeeKernel:
 
     def __init__(
         self,
-        config: dict | None = None,
+        config: Config | dict | None = None,
         plugin_dirs: list[str] | None = None,
     ):
         """初始化内核
 
         Args:
-            config: 配置字典（从 config.yaml 加载）
-            plugin_dirs: 插件目录列表
+            config: 配置对象（Config 实例或字典，从 nanobee.yaml 加载）
+            plugin_dirs: 插件目录列表（覆盖配置中的 plugin_dirs）
         """
-        self.config = config or {}
-        self.work_dir = Path(self.config.get("work_dir", "~/.nanobee")).expanduser()
+        # 统一为 Config 对象（允许传入 dict 保持向后兼容）
+        if isinstance(config, dict):
+            config = Config(**config)
+        self.config = config or Config()
+        self.work_dir = Path(self.config.work_dir).expanduser()
 
         # 核心组件
-        self.event_bus = EventBus()
+        self.event_bus = EventBus()              # 字符串 key 事件（供插件使用）
+        self.runtime_events = RuntimeEventBus()  # 类型化运行时事件（内核内部通知）
         self.metrics = MetricsCollector()
-        resolved_plugin_dirs = plugin_dirs or self.config.get("plugin_dirs", ["builtin", "plugins"])
+        resolved_plugin_dirs = plugin_dirs or self.config.plugin_dirs or ["builtin", "plugins"]
         self.plugin_manager = PluginManager(self, resolved_plugin_dirs)
         self.context_manager = ContextManager(self)
         self.skill_manager = SkillManager(self.work_dir / "skills")
         self.soul_guard = SoulGuard(self)
-        core_md_path = self.config.get("core_md_path", "core.md")
         self.context_pipeline = ContextPipeline(
-            core_md_path=core_md_path,
+            core_md_path=self.config.core_md_path,
             skill_manager=self.skill_manager,
             soul_guard=self.soul_guard,
         )
         self.router = ContextRouter()
 
         # 从配置加载路由表
-        routing_config = self.config.get("routing", {})
-        if routing_config:
-            self.router.load_from_config(routing_config)
+        if self.config.routing:
+            self.router.load_from_config(self.config.routing)
 
         # Agent Loop（延迟初始化）
         self._agent_loop: AgentLoop | None = None
@@ -88,7 +91,7 @@ class NanobeeKernel:
         3. 扫描并加载插件
         4. 注册工具到 AgentLoop
 
-        注意：不启动通道和 Heartbeat 等后台服务，
+        注意：不启动通道等后台服务，
         需调用 boot_services() 来启动。
         """
         if self._booted:
@@ -110,7 +113,7 @@ class NanobeeKernel:
             if enabled_config:
                 self.plugin_manager.enable(name)
             else:
-                logger.info("插件 %s 已配置为禁用状态，跳过启用", name)
+                logger.info("插件 {} 已配置为禁用状态，跳过启用", name)
 
         # 3.1 注册工具插件到 AgentLoop（必须在插件加载完成后调用）
         if self._agent_loop:
@@ -120,8 +123,9 @@ class NanobeeKernel:
 
         logger.info("Nanobee 内核核心启动完成")
 
-        # 发射启动事件
+        # 发射启动事件（双总线：插件用字符串事件，内核用类型化事件）
         await self.event_bus.publish("kernel.booted", {"kernel": self})
+        await self.runtime_events.publish(KernelBooted())
 
     async def boot_services(self) -> None:
         """启动后台服务（通道插件 + Heartbeat）
@@ -138,75 +142,15 @@ class NanobeeKernel:
         channels = self.plugin_manager.get_by_type("channel")
         for channel in channels:
             if not getattr(channel, "safe_for_gateway", True):
-                logger.info("通道 %s 跳过 Gateway 启动（交互式通道）", getattr(channel, "name", "?"))
+                logger.info("通道 {} 跳过 Gateway 启动（交互式通道）", getattr(channel, "name", "?"))
                 continue
             try:
                 await channel.start()
             except Exception:
-                logger.exception("通道插件 %s 启动失败，已跳过", getattr(channel, "name", "?"))
-
-        # 2. 初始化 Heartbeat 服务
-        await self._start_heartbeat()
+                logger.exception("通道插件 {} 启动失败，已跳过", getattr(channel, "name", "?"))
 
         self._services_started = True
         logger.info("Nanobee 后台服务启动完成")
-
-    async def _start_heartbeat(self) -> None:
-        """初始化 Heartbeat 后台唤醒服务"""
-        from nanobee.heartbeat.service import HeartbeatService
-
-        agents_config = self.config.get("agents", {})
-        defaults = agents_config.get("defaults", {})
-        heartbeat_config = defaults.get("heartbeat", {})
-
-        enabled = heartbeat_config.get("enabled", False)
-        interval_s = heartbeat_config.get("interval_s", 30 * 60)
-        timezone = heartbeat_config.get("timezone")
-
-        if not enabled:
-            logger.info("Heartbeat 服务未在配置中启用")
-            return
-
-        provider = getattr(self, "_llm_provider", None)
-        model = getattr(self, "_llm_model", None)
-        if not provider:
-            logger.warning("Heartbeat 服务缺少 Provider，跳过")
-            return
-
-        async def _execute_task(tasks: str) -> str:
-            from nanobee.agent.loop import InboundMessage
-
-            msg = InboundMessage(
-                channel="heartbeat",
-                sender_id="heartbeat",
-                chat_id="default",
-                content=tasks,
-                media=[],
-            )
-            try:
-                response = await self._agent_loop._process_message(msg)
-                return response.content if response else ""
-            except Exception:
-                logger.exception("心跳任务执行失败")
-                return ""
-
-        async def _notify_user(response: str) -> None:
-            logger.info("心跳通知: %s", response[:200])
-
-        try:
-            self._heartbeat = HeartbeatService(
-                workspace=self.work_dir,
-                provider=provider,
-                model=model,
-                on_execute=_execute_task,
-                on_notify=_notify_user,
-                interval_s=interval_s,
-                enabled=enabled,
-                timezone=timezone,
-            )
-            await self._heartbeat.start()
-        except Exception:
-            logger.exception("初始化 Heartbeat 服务失败")
 
     async def handle_message(
         self,
@@ -308,7 +252,7 @@ class NanobeeKernel:
                     except asyncio.CancelledError:
                         raise
                     except Exception:
-                        logger.exception("处理上下文 %s 的消息出错", key)
+                        logger.exception("处理上下文 {} 的消息出错", key)
                         response = OutboundMessage(
                             channel=msg.channel,
                             chat_id=msg.chat_id,
@@ -326,7 +270,7 @@ class NanobeeKernel:
                         except asyncio.QueueEmpty:
                             break
                     if leftover:
-                        logger.info("上下文 %s 有 %s 条剩余消息被丢弃", key, leftover)
+                        logger.info("上下文 {} 有 {} 条剩余消息被丢弃", key, leftover)
 
             return response
         finally:
@@ -352,7 +296,7 @@ class NanobeeKernel:
         """使用指定的 LLM Provider 启动内核并初始化 Agent Loop。
 
         注意：仅启动核心组件（灵魂校验 + 插件加载 + 工具注册），
-        不启动通道和 Heartbeat 等后台服务。
+        不启动通道等后台服务。
         如需完整服务栈，请额外调用 boot_services()。
 
         Args:
@@ -383,6 +327,49 @@ class NanobeeKernel:
 
         await self.boot()
 
+    @classmethod
+    async def from_config(
+        cls,
+        config_path: str | Path | None = None,
+        *,
+        model: str | None = None,
+        plugin_dirs: list[str] | None = None,
+        start_services: bool = False,
+    ) -> NanobeeKernel:
+        """从配置文件创建并启动内核。
+
+        一行完成：配置加载 → Provider 创建 → Boot 全流程。
+        默认不启动后台服务（通道），
+        设置 start_services=True 可开启 Gateway 模式。
+
+        Args:
+            config_path: 配置文件路径。为 None 时使用默认配置。
+            model: 模型名称（可选，覆盖配置中的 model）
+            plugin_dirs: 插件目录列表（可选，覆盖配置中的 plugin_dirs）
+            start_services: 是否启动后台服务（通道）
+
+        Returns:
+            已启动的 NanobeeKernel 实例
+        """
+        from nanobee.config.loader import load_config, resolve_config_env_vars
+        from nanobee.providers.factory import make_provider
+
+        if config_path is not None:
+            cfg = resolve_config_env_vars(load_config(Path(config_path)))
+        else:
+            cfg = Config()
+
+        actual_model = model or cfg.agents.defaults.model
+
+        kernel = cls(config=cfg, plugin_dirs=plugin_dirs)
+        provider = make_provider(cfg, model=actual_model)
+        await kernel.boot_with_provider(provider, model=actual_model)
+
+        if start_services:
+            await kernel.boot_services()
+
+        return kernel
+
     @property
     def is_booted(self) -> bool:
         """内核是否已启动"""
@@ -396,10 +383,6 @@ class NanobeeKernel:
     async def shutdown(self) -> None:
         """关闭内核"""
         logger.info("正在关闭 Nanobee 内核...")
-
-        # 停止 Heartbeat 服务
-        if hasattr(self, "_heartbeat") and self._heartbeat is not None:
-            self._heartbeat.stop()
 
         # 停止 Agent Loop
         if self._agent_loop is not None:

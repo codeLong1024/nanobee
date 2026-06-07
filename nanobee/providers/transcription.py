@@ -5,9 +5,8 @@ import os
 from pathlib import Path
 
 import httpx
-import logging
+from nanobee.utils.logger import logger
 
-logger = logging.getLogger(__name__)
 
 _TRANSCRIPTIONS_PATH = "audio/transcriptions"
 
@@ -66,7 +65,7 @@ async def _post_transcription_with_retry(
     try:
         data = path.read_bytes()
     except OSError as e:
-        logger.exception("%s transcription error: cannot read audio file: %s", provider_label, e)
+        logger.exception("{} transcription error: cannot read audio file: {}", provider_label, e)
         return ""
     headers = {"Authorization": f"Bearer {api_key}"}
 
@@ -99,7 +98,7 @@ async def _post_transcription_with_retry(
                 )
                 return ""
             except Exception as e:
-                logger.exception("%s transcription error: %s", provider_label, e)
+                logger.exception("{} transcription error: {}", provider_label, e)
                 return ""
 
             if response.status_code in _RETRYABLE_STATUS and attempt < _MAX_RETRIES:
@@ -116,7 +115,7 @@ async def _post_transcription_with_retry(
             try:
                 response.raise_for_status()
             except Exception as e:
-                logger.exception("%s transcription error: %s", provider_label, e)
+                logger.exception("{} transcription error: {}", provider_label, e)
                 return ""
 
             try:
@@ -153,7 +152,7 @@ class OpenAITranscriptionProvider:
             "https://api.openai.com/v1/audio/transcriptions",
         )
         self.language = language or None
-        logger.debug("OpenAI transcription endpoint: %s", self.api_url)
+        logger.debug("OpenAI transcription endpoint: {}", self.api_url)
 
     async def transcribe(self, file_path: str | Path) -> str:
         if not self.api_key:
@@ -161,7 +160,7 @@ class OpenAITranscriptionProvider:
             return ""
         path = Path(file_path)
         if not path.exists():
-            logger.error("Audio file not found: %s", file_path)
+            logger.error("Audio file not found: {}", file_path)
             return ""
         return await _post_transcription_with_retry(
             self.api_url,
@@ -192,7 +191,7 @@ class GroqTranscriptionProvider:
             "https://api.groq.com/openai/v1/audio/transcriptions",
         )
         self.language = language or None
-        logger.debug("Groq transcription endpoint: %s", self.api_url)
+        logger.debug("Groq transcription endpoint: {}", self.api_url)
 
     async def transcribe(self, file_path: str | Path) -> str:
         """
@@ -210,7 +209,7 @@ class GroqTranscriptionProvider:
 
         path = Path(file_path)
         if not path.exists():
-            logger.error("Audio file not found: %s", file_path)
+            logger.error("Audio file not found: {}", file_path)
             return ""
 
         return await _post_transcription_with_retry(

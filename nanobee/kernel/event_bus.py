@@ -4,10 +4,10 @@
 
 from __future__ import annotations
 
-import logging
 from typing import Any, Callable
 
-logger = logging.getLogger(__name__)
+from nanobee.utils.logger import logger
+
 
 
 class EventBus:
@@ -49,7 +49,7 @@ class EventBus:
                 if hasattr(result, "__await__"):
                     await result
             except Exception:
-                logger.exception("事件处理器 %s 处理事件 %s 出错", handler, event)
+                logger.exception("事件处理器 {} 处理事件 {} 出错", handler, event)
 
     def unsubscribe(self, event: str, handler: Callable) -> None:
         """取消订阅

@@ -15,6 +15,8 @@ from typing import Any
 import click
 
 from nanobee.config.loader import load_config
+from nanobee.utils.logger import logger
+
 
 
 def _resolve_plugin_dirs(cfg: Any) -> list[Path]:
@@ -315,8 +317,7 @@ def _set_plugin_enabled(toml_path: Path, enabled: bool) -> None:
     with open(toml_path, "w", encoding="utf-8") as f:
         toml.dump(data, f)
 
-    logger = logging.getLogger(__name__)
-    logger.info("插件 %s 的 enabled 已设为 %s", toml_path.parent.name, enabled)
+    logger.info("插件 {} 的 enabled 已设为 {}", toml_path.parent.name, enabled)
 
 
 @plugin.command()

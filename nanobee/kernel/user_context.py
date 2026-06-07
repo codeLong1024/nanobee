@@ -7,18 +7,19 @@
     history.jsonl   # 对话历史
     memory/         # 记忆目录
     work/           # 工作目录
+    tmp/            # 插件临时目录（框架创建，插件自管清理）
 """
 
 from __future__ import annotations
 
 import json
-import logging
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-logger = logging.getLogger(__name__)
+from nanobee.utils.logger import logger
+
 
 # context.yaml 默认元数据
 _USER_META_DEFAULTS: dict[str, Any] = {
@@ -54,6 +55,7 @@ class ConversationContext:
     - 消息历史（history.jsonl）
     - 记忆目录（memory/）
     - 工作目录（work/）
+    - 临时目录（tmp/）
     """
 
     def __init__(self, context_id: str, base_dir: Path):
@@ -67,11 +69,13 @@ class ConversationContext:
         self.base_dir = base_dir
         self.work_dir = base_dir / "work"
         self.memory_dir = base_dir / "memory"
+        self.tmp_dir = base_dir / "tmp"
         self.history_file = base_dir / "history.jsonl"
 
         # 创建目录结构
         self.work_dir.mkdir(parents=True, exist_ok=True)
         self.memory_dir.mkdir(parents=True, exist_ok=True)
+        self.tmp_dir.mkdir(parents=True, exist_ok=True)
 
         self._messages: list[dict[str, Any]] = []
         self._load_history()
@@ -131,7 +135,7 @@ class ConversationContext:
         self._messages.clear()
         if self.history_file.exists():
             self.history_file.unlink()
-        logger.info("上下文 %s 已清空", self.context_id)
+        logger.info("上下文 {} 已清空", self.context_id)
 
 
 class UserContext:
@@ -185,14 +189,14 @@ class UserContext:
     def _load_metadata(self) -> UserMetadata:
         """从 context.yaml 加载元数据"""
         if not self.meta_file.exists():
-            logger.warning("元数据文件不存在，使用默认值: %s", self.meta_file)
+            logger.warning("元数据文件不存在，使用默认值: {}", self.meta_file)
             return UserMetadata({"user_id": self.user_id})
         try:
             with open(self.meta_file, "r", encoding="utf-8") as f:
                 data: dict[str, Any] = yaml.safe_load(f) or {}
             return UserMetadata(data)
         except Exception:
-            logger.exception("加载元数据失败: %s", self.meta_file)
+            logger.exception("加载元数据失败: {}", self.meta_file)
             return UserMetadata({"user_id": self.user_id})
 
     def _ensure_meta_file(self) -> None:
@@ -204,7 +208,7 @@ class UserContext:
         default["user_id"] = self.user_id
         with open(self.meta_file, "w", encoding="utf-8") as f:
             yaml.dump(default, f, allow_unicode=True, default_flow_style=False)
-        logger.info("已创建默认元数据: %s", self.meta_file)
+        logger.info("已创建默认元数据: {}", self.meta_file)
 
     # ---- 对话历史代理 ----
 
@@ -217,6 +221,11 @@ class UserContext:
     def memory_dir(self) -> Path:
         """记忆目录"""
         return self._conversation.memory_dir
+
+    @property
+    def tmp_dir(self) -> Path:
+        """插件临时目录"""
+        return self._conversation.tmp_dir
 
     @property
     def history_file(self) -> Path:

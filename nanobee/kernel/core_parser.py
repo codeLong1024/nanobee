@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import hashlib
-import logging
 from pathlib import Path
 from typing import Any
 
-logger = logging.getLogger(__name__)
+from nanobee.utils.logger import logger
+
 
 
 class CoreMDParser:
@@ -137,5 +137,5 @@ TODO: MVP 后实现
         with open(output_path, "w", encoding="utf-8") as f:
             f.write(default_content)
 
-        logger.info("已创建默认 core.md: %s", output_path)
+        logger.info("已创建默认 core.md: {}", output_path)
         return output_path

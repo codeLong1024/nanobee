@@ -9,11 +9,11 @@
 
 from __future__ import annotations
 
-import logging
 import re
 from typing import Any
 
-logger = logging.getLogger(__name__)
+from nanobee.utils.logger import logger
+
 
 # 允许的 frontmatter 顶级字段（白名单）
 ALLOWED_PROPERTIES: frozenset[str] = frozenset({
@@ -90,7 +90,7 @@ def check_allowed_properties(properties: dict[str, Any]) -> list[str]:
         if key not in ALLOWED_PROPERTIES and not key.startswith(("nanobot/", "nanobee/")):
             extra.append(key)
     if extra:
-        logger.warning("frontmatter 包含非标准字段: %s", extra)
+        logger.warning("frontmatter 包含非标准字段: {}", extra)
     return extra
 
 

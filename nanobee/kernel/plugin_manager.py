@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import importlib
-import logging
 import sys
 from pathlib import Path
 from typing import Any, Type
@@ -16,7 +15,8 @@ from nanobee.plugins.base import NanobeePlugin, PluginMetadata
 from nanobee.plugins.memory import MemoryPlugin
 from nanobee.plugins.tool import ToolPlugin
 
-logger = logging.getLogger(__name__)
+from nanobee.utils.logger import logger
+
 
 
 def _resolve_plugin_base(plugin_type: str) -> type[NanobeePlugin]:
@@ -87,7 +87,7 @@ class PluginDescriptor:
         """
         toml_path = plugin_dir / "plugin.toml"
         if not toml_path.exists():
-            logger.warning("插件目录 %s 中未找到 plugin.toml", plugin_dir)
+            logger.warning("插件目录 {} 中未找到 plugin.toml", plugin_dir)
             return None
         return cls(toml_path)
 
@@ -121,7 +121,7 @@ class PluginManager:
         descriptors = []
         for plugin_dir in self.plugin_dirs:
             if not plugin_dir.exists():
-                logger.warning("插件目录不存在: %s", plugin_dir)
+                logger.warning("插件目录不存在: {}", plugin_dir)
                 continue
             for sub_dir in plugin_dir.iterdir():
                 if not sub_dir.is_dir() or sub_dir.name.startswith("_"):
@@ -148,13 +148,13 @@ class PluginManager:
         # 检查依赖
         for dep in descriptor.metadata.dependencies:
             if dep not in self._plugins:
-                logger.error("插件 %s 缺少依赖: %s", name, dep)
+                logger.error("插件 {} 缺少依赖: {}", name, dep)
                 return None
 
         # 动态导入插件模块
         main_module = descriptor.main_module
         if main_module is None:
-            logger.error("插件 %s 缺少主模块（plugin.py 或 __init__.py）", name)
+            logger.error("插件 {} 缺少主模块（plugin.py 或 __init__.py）", name)
             return None
 
         try:
@@ -165,7 +165,7 @@ class PluginManager:
             module_name = f"_nanobee_plugins.{sanitized}.{name}"
             spec = importlib.util.spec_from_file_location(module_name, main_module)
             if spec is None or spec.loader is None:
-                logger.error("插件 %s 的文件无法加载为 Python 模块: %s", name, main_module)
+                logger.error("插件 {} 的文件无法加载为 Python 模块: {}", name, main_module)
                 return None
             module = importlib.util.module_from_spec(spec)
             sys.modules[spec.name] = module
@@ -174,7 +174,7 @@ class PluginManager:
             # 查找插件类（继承 NanobeePlugin 的类）
             plugin_class = self._find_plugin_class(module, descriptor.metadata.plugin_type)
             if plugin_class is None:
-                logger.error("插件 %s 中未找到有效的插件类", name)
+                logger.error("插件 {} 中未找到有效的插件类", name)
                 return None
 
             # 实例化插件
@@ -183,7 +183,7 @@ class PluginManager:
             plugin_instance.on_load()
 
             self._plugins[name] = plugin_instance
-            logger.info("插件 %s 加载成功", name)
+            logger.info("插件 {} 加载成功", name)
             return plugin_instance
 
         except Exception as e:
@@ -268,7 +268,7 @@ class PluginManager:
         """
         plugin = self._plugins.get(name)
         if plugin is None:
-            logger.error("插件 %s 未加载", name)
+            logger.error("插件 {} 未加载", name)
             return False
         method = getattr(plugin, callback, None)
         if method is not None and callable(method):
@@ -290,7 +290,7 @@ class PluginManager:
             return False
         plugin.destroy()
         del self._plugins[name]
-        logger.info("插件 %s 已卸载", name)
+        logger.info("插件 {} 已卸载", name)
         return True
 
     def unload_all(self) -> None:

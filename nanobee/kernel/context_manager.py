@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-import logging
 import shutil
 from pathlib import Path
 from typing import Any
 
 from nanobee.kernel.user_context import ConversationContext, UserContext
 
-logger = logging.getLogger(__name__)
+from nanobee.utils.logger import logger
+
 
 
 class ContextManager:
@@ -51,7 +51,7 @@ class ContextManager:
             ctx = UserContext(user_id, base_dir)
             ctx._ensure_meta_file()
             self._contexts[user_id] = ctx
-            logger.info("创建用户上下文: %s（目录: %s）", user_id, base_dir)
+            logger.info("创建用户上下文: {}（目录: {}）", user_id, base_dir)
 
         return self._contexts[user_id]
 
@@ -98,7 +98,7 @@ class ContextManager:
         try:
             base_dir.relative_to(allowed)
             if base_dir == allowed:
-                logger.error("安全拦截：不允许删除 contexts 根目录: %s", base_dir)
+                logger.error("安全拦截：不允许删除 contexts 根目录: {}", base_dir)
                 return False
         except ValueError:
             logger.error(
@@ -109,7 +109,7 @@ class ContextManager:
 
         if base_dir.exists():
             shutil.rmtree(base_dir)
-        logger.info("移除用户上下文: %s", user_id)
+        logger.info("移除用户上下文: {}", user_id)
         return True
 
     def list_contexts(self) -> list[str]:

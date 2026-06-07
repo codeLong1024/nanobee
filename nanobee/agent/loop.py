@@ -18,9 +18,8 @@ from enum import Enum, auto
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
-import logging
+from nanobee.utils.logger import logger
 
-logger = logging.getLogger(__name__)
 
 from nanobee.agent import model_presets as preset_helpers
 from nanobee.exceptions import LoopStateError
@@ -42,7 +41,7 @@ from nanobee.utils.image_generation_intent import image_generation_prompt as ima
 from nanobee.utils.runtime import EMPTY_FINAL_RESPONSE_MESSAGE
 
 if TYPE_CHECKING:
-    from nanobee.config.schema import AgentDefaults, ModelPresetConfig
+    from nanobee.config.schema import AgentDefaults, Config, ModelPresetConfig
     from nanobee.kernel.context_manager import ContextManager
     from nanobee.kernel.context_pipeline import ContextPipeline
     from nanobee.kernel.event_bus import EventBus
@@ -273,7 +272,7 @@ class AgentLoop:
         plugin_manager: Any,
         skill_manager: Any = None,
         router: Any = None,
-        config: dict | None = None,
+        config: Config | dict | None = None,
         **extra: Any,
     ) -> AgentLoop:
         """从 Kernel 子组件创建 AgentLoop。
@@ -290,22 +289,27 @@ class AgentLoop:
             plugin_manager: 插件管理器
             skill_manager: 技能管理器
             router: 路由器（可选）
-            config: 配置字典（可选，用于读取 agents.defaults）
+            config: 配置对象（Config 实例，用于读取 agents.defaults）
             **extra: 传递给 AgentLoop.__init__ 的额外参数
         """
-        cfg = config or {}
-        agents_config = cfg.get("agents", {})
-        defaults = agents_config.get("defaults", {}) if isinstance(agents_config, dict) else {}
+        # 统一为 Config 对象（允许传入 dict 保持向后兼容）
+        if isinstance(config, dict):
+            from nanobee.config.schema import Config as _Config
+            cfg = _Config(**config)
+        else:
+            cfg = config or Config()
+
+        defaults = cfg.agents.defaults
 
         # 从配置中提取 max_iterations（如果未在 extra 中指定）
         if "max_iterations" not in extra:
-            extra["max_iterations"] = int(defaults.get("max_iterations", 10))
+            extra["max_iterations"] = defaults.max_iterations
         # 从配置中提取 memory_store_threshold（如果未在 extra 中指定）
         if "memory_store_threshold" not in extra:
-            extra["memory_store_threshold"] = int(defaults.get("memory_store_threshold", 20))
+            extra["memory_store_threshold"] = defaults.memory_store_threshold
         # 从配置中提取 max_messages（如果未在 extra 中指定）
         if "max_messages" not in extra:
-            extra["max_messages"] = int(defaults.get("max_messages", 120))
+            extra["max_messages"] = defaults.max_messages
 
         return cls(
             provider=provider,
@@ -346,8 +350,8 @@ class AgentLoop:
                     self.tools.register(adapter)
                     registered.append(adapter.name)
             except Exception:
-                logger.exception("注册工具插件 %s 失败", getattr(plugin, "name", "unknown"))
-        logger.info("注册了 %s 个工具插件: %s", len(registered), registered)
+                logger.exception("注册工具插件 {} 失败", getattr(plugin, "name", "unknown"))
+        logger.info("注册了 {} 个工具插件: {}", len(registered), registered)
 
     def _register_skill_tools(self) -> None:
         """注册技能管理工具（不依赖插件系统，直接操作 SKILL.md）。
@@ -401,7 +405,7 @@ class AgentLoop:
                 if content:
                     contributions.append(content)
             except Exception:
-                logger.exception("插件 %s.contribute_to_prompt 出错", getattr(plugin, "name", "?"))
+                logger.exception("插件 {}.contribute_to_prompt 出错", getattr(plugin, "name", "?"))
         return "\n\n".join(contributions) if contributions else ""
 
     def _collect_plugin_tools(
@@ -423,7 +427,7 @@ class AgentLoop:
             try:
                 tool_names = plugin.contribute_to_tools(user_ctx, tool_names)
             except Exception:
-                logger.exception("插件 %s.contribute_to_tools 出错", getattr(plugin, "name", "?"))
+                logger.exception("插件 {}.contribute_to_tools 出错", getattr(plugin, "name", "?"))
         return tool_names
 
     async def _notify_plugins_message_completed(
@@ -447,11 +451,11 @@ class AgentLoop:
             try:
                 await plugin.on_message_completed(user_ctx, messages)
             except Exception:
-                logger.exception("插件 %s.on_message_completed 出错", getattr(plugin, "name", "?"))
+                logger.exception("插件 {}.on_message_completed 出错", getattr(plugin, "name", "?"))
 
     async def _connect_mcp(self) -> None:
         """连接配置的 MCP 服务器（一次性，懒加载）。"""
-        logger.info("MCP: 检查是否需要连接服务器 (connected=%s, connecting=%s, servers=%s)", 
+        logger.info("MCP: 检查是否需要连接服务器 (connected={}, connecting={}, servers={})", 
                     self._mcp_connected, self._mcp_connecting, bool(self._mcp_servers))
         if self._mcp_connected or self._mcp_connecting or not self._mcp_servers:
             return
@@ -459,18 +463,18 @@ class AgentLoop:
         from nanobee.agent.tools.mcp import connect_mcp_servers
 
         try:
-            logger.info("MCP: 开始连接 %s 个服务器", len(self._mcp_servers))
+            logger.info("MCP: 开始连接 {} 个服务器", len(self._mcp_servers))
             self._mcp_stacks = await connect_mcp_servers(self._mcp_servers, self.tools)
             if self._mcp_stacks:
                 self._mcp_connected = True
-                logger.info("MCP: 成功连接 %s 个服务器", len(self._mcp_stacks))
+                logger.info("MCP: 成功连接 {} 个服务器", len(self._mcp_stacks))
             else:
                 logger.warning("MCP: 没有 MCP 服务器成功连接（下次消息时重试）")
         except asyncio.CancelledError:
             logger.warning("MCP 连接被取消（下次消息时重试）")
             self._mcp_stacks.clear()
         except BaseException as e:
-            logger.warning("MCP 服务器连接失败（下次消息时重试）: %s", e)
+            logger.warning("MCP 服务器连接失败（下次消息时重试）: {}", e)
             self._mcp_stacks.clear()
         finally:
             self._mcp_connecting = False
@@ -511,12 +515,14 @@ class AgentLoop:
         history: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
         """构建 LLM 的初始消息列表。"""
+        from nanobee.kernel.context_pipeline import PromptBuildContext
+
         # 使用 ContextPipeline 构建系统提示词（含插件 Hook 贡献）
-        pipeline_context: dict[str, Any] = {
-            "context_id": msg.context_id,
-            "messages": history,
-            "system_prompt": "",
-        }
+        pipeline_context = PromptBuildContext(
+            context_id=msg.context_id,
+            messages=history,
+            system_prompt="",
+        )
 
         # 获取用户上下文和已启用插件，用于 build_with_plugins()
         user_ctx = await self.context_manager.get_or_create(msg.context_id)
@@ -643,14 +649,14 @@ class AgentLoop:
         ))
 
         if result.stop_reason == "max_iterations":
-            logger.warning("达到最大迭代次数 (%s)", self.max_iterations)
+            logger.warning("达到最大迭代次数 ({})", self.max_iterations)
             # 独立调用 on_stream / on_stream_end，避免 on_stream_end 为 None 时跳过整个流式路径
             if on_stream:
                 await on_stream(result.final_content or "")
             if on_stream_end:
                 await on_stream_end(resuming=False)
         elif result.stop_reason == "error":
-            logger.error("LLM 返回错误: %s", (result.final_content or "")[:200])
+            logger.error("LLM 返回错误: {}", (result.final_content or "")[:200])
 
         # 发射事件
         if self.event_bus:
@@ -688,7 +694,7 @@ class AgentLoop:
                     raise
                 continue
             except Exception as e:
-                logger.warning("消费入站消息出错: %s, 继续处理...", e)
+                logger.warning("消费入站消息出错: {}, 继续处理...", e)
                 continue
 
             effective_key = self._effective_context_id(msg)
@@ -697,9 +703,9 @@ class AgentLoop:
                 try:
                     self._pending_queues[effective_key].put_nowait(msg)
                 except asyncio.QueueFull:
-                    logger.warning("上下文 %s 待处理队列已满，回退为排队任务", effective_key)
+                    logger.warning("上下文 {} 待处理队列已满，回退为排队任务", effective_key)
                 else:
-                    logger.info("后续消息已路由到上下文 %s 的待处理队列", effective_key)
+                    logger.info("后续消息已路由到上下文 {} 的待处理队列", effective_key)
                     continue
 
             task = asyncio.create_task(self._dispatch(msg))
@@ -769,10 +775,10 @@ class AgentLoop:
                     else:
                         logger.debug("消息处理返回 None，不发送响应")
                 except asyncio.CancelledError:
-                    logger.info("上下文 %s 的任务被取消", context_id)
+                    logger.info("上下文 {} 的任务被取消", context_id)
                     raise
                 except Exception:
-                    logger.exception("处理上下文 %s 的消息出错", context_id)
+                    logger.exception("处理上下文 {} 的消息出错", context_id)
                     await self._publish_outbound(OutboundMessage(
                         channel=msg.channel, chat_id=msg.chat_id,
                         content="Sorry, I encountered an error.",
@@ -789,7 +795,7 @@ class AgentLoop:
                         break
                     leftover += 1
                 if leftover:
-                    logger.info("上下文 %s 有 %s 条剩余消息被丢弃", context_id, leftover)
+                    logger.info("上下文 {} 有 {} 条剩余消息被丢弃", context_id, leftover)
 
     async def _publish_outbound(self, msg: OutboundMessage) -> None:
         """发布出站消息（由通道插件调用）。"""
@@ -807,7 +813,7 @@ class AgentLoop:
             try:
                 await stack.aclose()
             except (RuntimeError, BaseExceptionGroup):
-                logger.debug("MCP 服务器 '%s' 清理错误（可忽略）", name)
+                logger.debug("MCP 服务器 '{}' 清理错误（可忽略）", name)
         self._mcp_stacks.clear()
 
     def stop(self) -> None:
@@ -920,7 +926,7 @@ class AgentLoop:
             msg = ctx.msg
 
         preview = msg.content[:80] + "..." if len(msg.content) > 80 else msg.content
-        logger.info("处理来自 %s:%s 的消息: %s", msg.channel, msg.sender_id, preview)
+        logger.info("处理来自 {}:{} 的消息: {}", msg.channel, msg.sender_id, preview)
 
         # 灵魂校验
         if self.event_bus:
@@ -991,19 +997,22 @@ class AgentLoop:
             user_ctx = await self.context_manager.get_or_create(user_id)
             return ContextSandbox(user_ctx.context_root)
         except Exception:
-            logger.debug("无法构建沙箱（非多租户模式）: %s", user_id)
+            logger.debug("无法构建沙箱（非多租户模式）: {}", user_id)
             return None
 
     async def _state_run(self, ctx: TurnContext) -> str:
         """运行 Agent 迭代循环。"""
         sandbox = await self._build_sandbox(ctx.context_id)
 
-        # 使用 ContextVar 绑定沙箱，替代方法参数透传
-        from nanobee.kernel.context_sandbox_var import bind_sandbox, reset_sandbox
+        # 使用 ContextVar 绑定沙箱 + tmp，替代方法参数透传
+        from nanobee.kernel.context_sandbox_var import (
+            bind_sandbox, bind_tmp, reset_sandbox, reset_tmp,
+        )
         _sandbox_token = bind_sandbox(sandbox) if sandbox else None
 
-        # 获取用户上下文
+        # 绑定 per-request tmp 路径（在获取 user_ctx 之后）
         user_ctx = await self.context_manager.get_or_create(ctx.context_id)
+        _tmp_token = bind_tmp(user_ctx.tmp_dir)
 
         # 让插件修改工具列表（在 ToolCollector 过滤之前）
         plugin_modified_tool_names = self._collect_plugin_tools(
@@ -1043,6 +1052,7 @@ class AgentLoop:
         finally:
             if _sandbox_token is not None:
                 reset_sandbox(_sandbox_token)
+            reset_tmp(_tmp_token)
         final_content, tools_used, all_msgs, stop_reason, had_injections = result
         ctx.final_content = final_content
         ctx.tools_used = tools_used
@@ -1104,7 +1114,7 @@ class AgentLoop:
         content = final_content or EMPTY_FINAL_RESPONSE_MESSAGE
 
         preview = content[:120] + "..." if len(content) > 120 else content
-        logger.info("回复 %s: %s: %s", msg.channel, msg.sender_id, preview)
+        logger.info("回复 {}: {}: {}", msg.channel, msg.sender_id, preview)
 
         meta = dict(msg.metadata or {})
         # max_iterations 时强制不标记 _streamed，确保通道通过常规 API 发送终止消息
@@ -1200,7 +1210,7 @@ class AgentLoop:
         self.context_window_tokens = snapshot.context_window_tokens
         self.runner.provider = provider
         self._provider_signature = snapshot.signature
-        logger.info("运行时模型切换: %s -> %s", old_model, model)
+        logger.info("运行时模型切换: {} -> {}", old_model, model)
 
     @property
     def model_preset(self) -> str | None:

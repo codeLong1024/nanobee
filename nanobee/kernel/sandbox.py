@@ -1,20 +1,20 @@
 """
 上下文沙箱 — 强制文件操作在用户上下文根目录内执行
 
-核心功能：
-- resolve_safe(path_str)：将路径解析为绝对路径，若越界则抛出 SandboxError
-- sanitize_params(tool_name, params)：在工具调用前清洗参数中的路径
+核心功能委托给 security.workspace_policy 中的纯函数，ContextSandbox
+只做轻量根目录持有 + 参数清洗整合。
 """
 
 from __future__ import annotations
 
-import logging
 from pathlib import Path
 from typing import Any
 
 from nanobee.exceptions import SandboxViolationError
+from nanobee.security.workspace_policy import require_path_within
 
-logger = logging.getLogger(__name__)
+from nanobee.utils.logger import logger
+
 
 # 包含路径的工具参数名（working_dir 特殊处理：只解析不拦截，拦截由 L2 工具层处理）
 _PATH_PARAM_KEYS: frozenset[str] = frozenset({
@@ -31,6 +31,10 @@ SandboxError = SandboxViolationError
 
 class ContextSandbox:
     """上下文沙箱 — 强制文件操作在 user context 内执行
+
+    底层使用 security.workspace_policy 纯函数：
+    - require_path_within: 路径边界校验
+    - resolve_path: 路径解析
 
     单用户模式下可设为 None（不启用沙箱）。
     """
@@ -51,9 +55,7 @@ class ContextSandbox:
     def resolve_safe(self, path_str: str) -> Path:
         """将路径解析为绝对路径，若越界则抛出 SandboxError
 
-        1. 将 path_str 解析为绝对路径（处理 .. 和符号链接）
-        2. 检查是否在 context_root 下
-        3. 如果越界则抛出异常
+        委托给 require_path_within 纯函数。
 
         Args:
             path_str: 路径字符串
@@ -64,23 +66,7 @@ class ContextSandbox:
         Raises:
             SandboxError: 路径越界
         """
-        target = Path(path_str).resolve()
-
-        # 检查目标路径是否以 context_root 开头
-        try:
-            target.relative_to(self._context_root)
-        except ValueError:
-            logger.warning(
-                "沙箱拦截: %s 不在 %s 下",
-                target, self._context_root,
-            )
-            raise SandboxError(
-                path=str(target),
-                context_root=str(self._context_root),
-                detail="路径逃逸拦截",
-            ) from None
-
-        return target
+        return require_path_within(path_str, self._context_root, message="路径逃逸拦截")
 
     def sanitize_params(
         self,
@@ -89,7 +75,7 @@ class ContextSandbox:
     ) -> dict[str, Any]:
         """清洗工具参数中的路径，确保所有路径都在沙箱内
 
-        对参数中所有已知的路径字段执行 resolve_safe 校验。
+        对参数中所有已知的路径字段执行沙箱校验。
         working_dir 参数特殊处理：只解析为绝对路径，不做沙箱拦截
         （拦截由 L2 工具层处理，因为 working_dir 可能指向项目根）。
 
@@ -125,21 +111,15 @@ class ContextSandbox:
     def assert_allowed(self, path: Path | str) -> None:
         """断言路径在沙箱内
 
+        委托给 require_path_within 纯函数。
+
         Args:
             path: 待检查的路径
 
         Raises:
             SandboxError: 路径越界
         """
-        p = Path(path).resolve()
-        try:
-            p.relative_to(self._context_root)
-        except ValueError:
-            raise SandboxError(
-                path=str(p),
-                context_root=str(self._context_root),
-                detail="路径越界断言失败",
-            ) from None
+        require_path_within(path, self._context_root, message="路径越界断言失败")
 
     def __repr__(self) -> str:
         return f"ContextSandbox(root={self._context_root})"

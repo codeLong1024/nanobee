@@ -181,3 +181,47 @@ async def test_context_manager_list(tmp_path: Path):
     await cm.get_or_create("user-b")
 
     assert set(cm.list_contexts()) == {"user-a", "user-b"}
+
+
+# ====== tmp 目录测试 ======
+
+
+def test_conversation_context_creates_tmp_dir(tmp_path: Path):
+    """ConversationContext 创建 tmp/ 目录"""
+    from nanobee.kernel.user_context import ConversationContext
+    ctx = ConversationContext("test", tmp_path)
+    assert ctx.tmp_dir == tmp_path / "tmp"
+    assert ctx.tmp_dir.exists()
+    assert ctx.tmp_dir.is_dir()
+
+
+def test_user_context_exposes_tmp_dir(tmp_path: Path):
+    """UserContext 暴露 tmp_dir 属性"""
+    user_ctx = UserContext("test-user", tmp_path)
+    assert user_ctx.tmp_dir == tmp_path / "tmp"
+    assert user_ctx.tmp_dir.exists()
+
+
+def test_plugin_tmp_returns_none_without_context_var():
+    """没有绑定 ContextVar 时 plugin.tmp 返回 None"""
+    from nanobee.plugins.base import NanobeePlugin
+    plugin = NanobeePlugin()
+    assert plugin.tmp is None
+
+
+@pytest.mark.asyncio
+async def test_plugin_tmp_with_context_var(tmp_path: Path):
+    """绑定 ContextVar 后 plugin.tmp 返回 per-plugin 路径"""
+    from nanobee.kernel.context_sandbox_var import bind_tmp, reset_tmp
+    from nanobee.plugins.base import NanobeePlugin
+
+    plugin = NanobeePlugin()
+    token = bind_tmp(tmp_path)
+    try:
+        result = plugin.tmp
+        assert result is not None
+        # 应返回 tmp/<plugin_name>/
+        assert result == tmp_path / "base"
+        assert result.exists()
+    finally:
+        reset_tmp(token)

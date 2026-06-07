@@ -2,7 +2,7 @@
 Nanobee Gateway - 完整服务栈模式
 
 对应 nanobot 的 ``gateway`` 命令设计哲学：
-- 启动完整服务栈：Kernel + 通道插件 + Heartbeat + 健康端点
+- 启动完整服务栈：Kernel + 通道插件 + 健康端点
 - 适用于生产部署
 """
 
@@ -19,9 +19,9 @@ import click
 from nanobee.config.loader import load_config
 from nanobee.kernel import NanobeeKernel
 from nanobee.providers.factory import make_provider
+from nanobee.utils.logger import logger
 from nanobee.utils.observability import setup_structured_logging
 
-logger = logging.getLogger(__name__)
 
 
 @click.command()
@@ -56,12 +56,12 @@ def gateway(
 ) -> None:
     """启动 Gateway 服务（完整服务栈）
 
-    启动所有已启用的通道插件、Heartbeat 服务
-    和健康检查端点。适用于生产部署。
+    启动所有已启用的通道插件和健康检查端点。
+    适用于生产部署。
     """
     log_level = logging.DEBUG if verbose else logging.WARNING
     setup_structured_logging(level=log_level)
-    logger.debug("Gateway 命令已启动，verbose=%s", verbose)
+    logger.debug("Gateway 命令已启动，verbose={}", verbose)
 
     # 自动发现配置文件
     config_path: Path | None
@@ -72,7 +72,7 @@ def gateway(
         candidates = [home_config, Path("nanobee.yaml"), Path.cwd() / "nanobee.yaml"]
         config_path = next((p for p in candidates if p.is_file()), None)
         if config_path:
-            logger.debug("Auto-discovered config: %s", config_path)
+            logger.debug("Auto-discovered config: {}", config_path)
     cfg = load_config(config_path)
 
     # 运行 Gateway 服务
@@ -113,7 +113,7 @@ def _run_gateway(
         kernel = NanobeeKernel(config=kernel_config, plugin_dirs=effective_plugin_dirs)
         await kernel.boot_with_provider(provider, model=cfg.agents.defaults.model)
 
-        # 启动后台服务（通道插件 + Heartbeat）
+        # 启动后台服务（通道插件）
         await kernel.boot_services()
 
         click.echo("🚪 Nanobee Gateway 已启动")
@@ -202,7 +202,7 @@ async def _health_server(host: str, health_port: int) -> None:
         writer.close()
 
     server = await asyncio.start_server(handle, host, health_port)
-    logger.info("健康端点已启动: http://%s:%s/health", host, health_port)
+    logger.info("健康端点已启动: http://{}:{}/health", host, health_port)
     async with server:
         await server.serve_forever()
 

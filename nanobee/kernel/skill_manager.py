@@ -8,7 +8,6 @@ Skill 不是 Plugin（研发侧代码扩展），
 
 from __future__ import annotations
 
-import logging
 import os
 import shutil
 import time
@@ -18,7 +17,8 @@ from typing import Any
 
 import yaml
 
-logger = logging.getLogger(__name__)
+from nanobee.utils.logger import logger
+
 
 
 class SkillVisibility(str, Enum):
@@ -168,7 +168,7 @@ class SkillManager:
         current_mtime = self._get_dir_mtime(self._get_cache_dir(key))
         if cached_mtime != current_mtime:
             # 文件已变更，清除缓存
-            logger.debug("技能缓存失效（文件变更）: %s", key)
+            logger.debug("技能缓存失效（文件变更）: {}", key)
             self._cache.pop(key, None)
             self._cache_time.pop(key, None)
             self._dir_mtime.pop(key, None)
@@ -247,7 +247,7 @@ class SkillManager:
         )
         skill_md = skill_dir / "SKILL.md"
         skill_md.write_text(self._serialize(meta, body), encoding="utf-8")
-        logger.info("用户 %s 创建技能 '%s' (type=%s)", user_id, name, visibility.value)
+        logger.info("用户 {} 创建技能 '{}' (type={})", user_id, name, visibility.value)
         # 清除缓存，确保新技能立即可见
         self._invalidate_cache()
         return Skill(meta=meta, body=body, file_path=skill_md)
@@ -303,7 +303,7 @@ class SkillManager:
         if not skill_dir.exists():
             return False
         shutil.rmtree(skill_dir)
-        logger.info("用户 %s 删除技能 '%s'", user_id, skill_name)
+        logger.info("用户 {} 删除技能 '{}'", user_id, skill_name)
         # 清除缓存，确保删除立即可见
         self._invalidate_cache()
         return True
@@ -344,7 +344,7 @@ class SkillManager:
             self._serialize(skill.meta, skill.body),
             encoding="utf-8",
         )
-        logger.info("用户 %s 更新技能 '%s'", user_id, skill_name)
+        logger.info("用户 {} 更新技能 '{}'", user_id, skill_name)
         # 清除缓存，确保更新立即可见
         self._invalidate_cache()
         return skill
@@ -395,7 +395,7 @@ class SkillManager:
             meta, body = self._parse(content)
             return Skill(meta=meta, body=body, file_path=skill_md)
         except Exception:
-            logger.exception("解析技能文件失败: %s", skill_md)
+            logger.exception("解析技能文件失败: {}", skill_md)
             return None
 
     @staticmethod

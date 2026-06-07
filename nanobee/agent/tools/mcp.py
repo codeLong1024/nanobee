@@ -9,9 +9,8 @@ from contextlib import AsyncExitStack, suppress
 from typing import Any
 
 import httpx
-import logging
+from nanobee.utils.logger import logger
 
-logger = logging.getLogger(__name__)
 
 from nanobee.agent.tools.base import Tool
 from nanobee.agent.tools.registry import ToolRegistry
@@ -233,7 +232,7 @@ class MCPToolWrapper(Tool):
                 task = asyncio.current_task()
                 if task is not None and task.cancelling() > 0:
                     raise
-                logger.warning("MCP tool '%s' was cancelled by server/SDK", self._name)
+                logger.warning("MCP tool '{}' was cancelled by server/SDK", self._name)
                 return "(MCP tool call was cancelled)"
             except Exception as exc:
                 if _is_transient(exc):
@@ -324,7 +323,7 @@ class MCPResourceWrapper(Tool):
                 task = asyncio.current_task()
                 if task is not None and task.cancelling() > 0:
                     raise
-                logger.warning("MCP resource '%s' was cancelled by server/SDK", self._name)
+                logger.warning("MCP resource '{}' was cancelled by server/SDK", self._name)
                 return "(MCP resource read was cancelled)"
             except Exception as exc:
                 if _is_transient(exc):
@@ -430,7 +429,7 @@ class MCPPromptWrapper(Tool):
                 task = asyncio.current_task()
                 if task is not None and task.cancelling() > 0:
                     raise
-                logger.warning("MCP prompt '%s' was cancelled by server/SDK", self._name)
+                logger.warning("MCP prompt '{}' was cancelled by server/SDK", self._name)
                 return "(MCP prompt call was cancelled)"
             except McpError as exc:
                 logger.exception(
@@ -510,7 +509,7 @@ async def connect_mcp_servers(
                         "sse" if cfg.url.rstrip("/").endswith("/sse") else "streamableHttp"
                     )
                 else:
-                    logger.warning("MCP server '%s': no command or url configured, skipping", name)
+                    logger.warning("MCP server '{}': no command or url configured, skipping", name)
                     await server_stack.aclose()
                     return name, None
 
@@ -524,11 +523,12 @@ async def connect_mcp_servers(
                     command=command,
                     args=args,
                     env=env,
+                    cwd=cfg.cwd or None,
                 )
                 read, write = await server_stack.enter_async_context(stdio_client(params))
             elif transport_type == "sse":
                 if not await _probe_http_url(cfg.url):
-                    logger.warning("MCP server '%s': %s unreachable, skipping", name, cfg.url)
+                    logger.warning("MCP server '{}': {} unreachable, skipping", name, cfg.url)
                     await server_stack.aclose()
                     return name, None
 
@@ -554,7 +554,7 @@ async def connect_mcp_servers(
                 )
             elif transport_type == "streamableHttp":
                 if not await _probe_http_url(cfg.url):
-                    logger.warning("MCP server '%s': %s unreachable, skipping", name, cfg.url)
+                    logger.warning("MCP server '{}': {} unreachable, skipping", name, cfg.url)
                     await server_stack.aclose()
                     return name, None
 
@@ -569,7 +569,7 @@ async def connect_mcp_servers(
                     streamable_http_client(cfg.url, http_client=http_client)
                 )
             else:
-                logger.warning("MCP server '%s': unknown transport type '%s'", name, transport_type)
+                logger.warning("MCP server '{}': unknown transport type '{}'", name, transport_type)
                 await server_stack.aclose()
                 return name, None
 
@@ -598,7 +598,7 @@ async def connect_mcp_servers(
                     continue
                 wrapper = MCPToolWrapper(session, name, tool_def, tool_timeout=cfg.tool_timeout)
                 registry.register(wrapper)
-                logger.debug("MCP: registered tool '%s' from server '%s'", wrapper.name, name)
+                logger.debug("MCP: registered tool '{}' from server '{}'", wrapper.name, name)
                 registered_count += 1
                 if enabled_tools:
                     if tool_def.name in enabled_tools:
@@ -630,7 +630,7 @@ async def connect_mcp_servers(
                         "MCP: registered resource '%s' from server '%s'", wrapper.name, name
                     )
             except Exception as e:
-                logger.debug("MCP server '%s': resources not supported or failed: %s", name, e)
+                logger.debug("MCP server '{}': resources not supported or failed: {}", name, e)
 
             try:
                 prompts_result = await session.list_prompts()
@@ -640,9 +640,9 @@ async def connect_mcp_servers(
                     )
                     registry.register(wrapper)
                     registered_count += 1
-                    logger.debug("MCP: registered prompt '%s' from server '%s'", wrapper.name, name)
+                    logger.debug("MCP: registered prompt '{}' from server '{}'", wrapper.name, name)
             except Exception as e:
-                logger.debug("MCP server '%s': prompts not supported or failed: %s", name, e)
+                logger.debug("MCP server '{}': prompts not supported or failed: {}", name, e)
 
             logger.info(
                 "MCP server '%s': connected, %s capabilities registered", name, registered_count
@@ -666,7 +666,7 @@ async def connect_mcp_servers(
                     " Hint: this looks like stdio protocol pollution. Make sure the MCP server writes "
                     "only JSON-RPC to stdout and sends logs/debug output to stderr instead."
                 )
-            logger.exception("MCP server '%s': failed to connect: %s", name, hint)
+            logger.exception("MCP server '{}': failed to connect: {}", name, hint)
             with suppress(Exception):
                 await server_stack.aclose()
             return name, None
@@ -680,7 +680,7 @@ async def connect_mcp_servers(
         try:
             result = await connect_single_server(name, cfg)
         except Exception as e:
-            logger.exception("MCP server '%s' connection failed: %s", name, e)
+            logger.exception("MCP server '{}' connection failed: {}", name, e)
             continue
         if result is not None and result[1] is not None:
             server_stacks[result[0]] = result[1]

@@ -12,9 +12,8 @@ from pathlib import Path
 from typing import Any
 
 import tiktoken
-import logging
+from nanobee.utils.logger import logger
 
-logger = logging.getLogger(__name__)
 
 
 def strip_think(text: str) -> str:
@@ -361,7 +360,11 @@ def maybe_persist_tool_result(
     *,
     max_chars: int,
 ) -> Any:
-    """Persist oversized tool output and replace it with a stable reference string."""
+    """Persist oversized tool output and replace it with a stable reference string.
+
+    优先写入 per-request 的 tmp 目录（沙箱隔离），
+    回退到 ``workspace / .nanobee/tool-results/``。
+    """
     if workspace is None or max_chars <= 0:
         return content
 
@@ -380,12 +383,18 @@ def maybe_persist_tool_result(
     if len(text_payload) <= max_chars:
         return content
 
-    root = ensure_dir(workspace / _TOOL_RESULTS_DIR)
+    # 优先使用 per-request tmp（沙箱内），回退 workspace
+    from nanobee.kernel.context_sandbox_var import current_tmp
+    _tmp_base = current_tmp()
+    if _tmp_base is not None:
+        root = ensure_dir(_tmp_base / "tool-results")
+    else:
+        root = ensure_dir(workspace / _TOOL_RESULTS_DIR)
     bucket = ensure_dir(root / safe_filename(session_key or "default"))
     try:
         _cleanup_tool_result_buckets(root, bucket)
     except Exception:
-        logger.exception("Failed to clean stale tool result buckets in %s", root)
+        logger.exception("Failed to clean stale tool result buckets in {}", root)
     path = bucket / f"{safe_filename(tool_call_id)}.{suffix}"
     if not path.exists():
         if suffix == "json" and isinstance(content, list):
@@ -657,6 +666,6 @@ def sync_workspace_templates(workspace: Path, silent: bool = False) -> list[str]
         )
         gs.init()
     except Exception:
-        logger.exception("Failed to initialize git store for %s", workspace)
+        logger.exception("Failed to initialize git store for {}", workspace)
 
     return added

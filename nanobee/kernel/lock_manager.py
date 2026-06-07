@@ -10,11 +10,11 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
-logger = logging.getLogger(__name__)
+from nanobee.utils.logger import logger
+
 
 
 class LockManager:

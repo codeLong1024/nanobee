@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from typing import Any
 
 from nanobee.channel.base import ChannelPlugin
 from nanobee.channel.message import ChannelMessage, OutboundMessage, StreamingDelta
 from nanobee.kernel.context_manager import ContextManager
 
-logger = logging.getLogger(__name__)
+from nanobee.utils.logger import logger
+
 
 
 class ChannelCLIPlugin(ChannelPlugin):

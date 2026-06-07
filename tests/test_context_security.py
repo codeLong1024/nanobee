@@ -79,11 +79,13 @@ async def test_soul_guard_intercept_write(tmp_path):
     core_md.write_text("# Test\n", encoding="utf-8")
 
     from nanobee.kernel.event_bus import EventBus
+    from nanobee.kernel.runtime_events import RuntimeEventBus
 
     class MockKernel:
         def __init__(self):
             self.config = {"core_md_path": str(core_md)}
             self.event_bus = EventBus()
+            self.runtime_events = RuntimeEventBus()
 
     kernel = MockKernel()
     guard = SoulGuard(kernel)

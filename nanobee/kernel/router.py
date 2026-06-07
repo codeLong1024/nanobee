@@ -9,12 +9,12 @@
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 
 from nanobee.exceptions import UnknownRouteError as _UnknownRouteError
 
-logger = logging.getLogger(__name__)
+from nanobee.utils.logger import logger
+
 
 
 class UnknownRouteError(_UnknownRouteError):
@@ -93,7 +93,7 @@ class ContextRouter:
         key = f"{channel}:{chat_id}"
         old = self._routing.get(key)
         self._routing[key] = user_id
-        logger.info("路由更新: %s → %s（原: %s）", key, user_id, old)
+        logger.info("路由更新: {} → {}（原: {}）", key, user_id, old)
 
     def remove_route(self, channel: str, chat_id: str) -> bool:
         """移除路由
@@ -108,7 +108,7 @@ class ContextRouter:
         key = f"{channel}:{chat_id}"
         if key in self._routing:
             del self._routing[key]
-            logger.info("路由已移除: %s", key)
+            logger.info("路由已移除: {}", key)
             return True
         return False
 
@@ -122,7 +122,7 @@ class ContextRouter:
         for key, value in routing_config.items():
             if isinstance(key, str) and isinstance(value, str):
                 self._routing[key] = value
-        logger.info("已从配置加载 %d 条路由", len(routing_config))
+        logger.info("已从配置加载 {} 条路由", len(routing_config))
 
     @property
     def mapping(self) -> dict[str, str]:

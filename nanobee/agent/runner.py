@@ -17,9 +17,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, TypedDict
 
-import logging
+from nanobee.utils.logger import logger
 
-logger = logging.getLogger(__name__)
 
 from nanobee.agent.hook import AgentHook, AgentHookContext, AgentRunHookContext
 from nanobee.agent.tools.registry import ToolRegistry
@@ -122,7 +121,7 @@ def _inject_context_to_tool(tool: Any, spec: AgentRunSpec) -> None:
                 user_id=spec.sender_id,
             )
         except Exception:
-            logger.debug("调用工具插件 set_context 失败: %s", type(plugin).__name__)
+            logger.debug("调用工具插件 set_context 失败: {}", type(plugin).__name__)
 
 
 @dataclass(slots=True)
@@ -1030,7 +1029,7 @@ class AgentRunner:
                     }
                     return str(e) + hint, event, None
                 except Exception as e:
-                    logger.exception("on_pre_invoke hook 执行出错: %s", e)
+                    logger.exception("on_pre_invoke hook 执行出错: {}", e)
                     # 不阻止工具执行，仅记录日志
 
         try:
@@ -1045,7 +1044,7 @@ class AgentRunner:
                     try:
                         result = await hook_fn(tool_call.name, result)
                     except Exception as e:
-                        logger.exception("on_post_invoke hook 执行出错: %s", e)
+                        logger.exception("on_post_invoke hook 执行出错: {}", e)
                         # 不阻止结果返回，仅记录日志
         except asyncio.CancelledError:
             raise

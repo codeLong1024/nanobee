@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import logging
 from abc import abstractmethod
 from typing import Any
 
 from nanobee.plugins.base import NanobeePlugin
 
-logger = logging.getLogger(__name__)
+from nanobee.utils.logger import logger
+
 
 
 class MemoryPlugin(NanobeePlugin):

@@ -35,6 +35,7 @@ class CronPayload:
     to: str | None = None
     channel_meta: dict[str, Any] = field(default_factory=dict)
     session_key: str | None = None
+    user_id: str | None = None
 
 
 @dataclass
