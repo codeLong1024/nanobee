@@ -28,7 +28,7 @@ from nanobee.utils.logger import logger
 from nanobee.utils.observability import MetricsCollector, setup_structured_logging
 
 
-from nanobee.kernel.skill_manager import SkillManager
+from nanobee.kernel.skill_manager import SkillsLoader
 
 
 class NanobeeKernel:
@@ -64,11 +64,16 @@ class NanobeeKernel:
         resolved_plugin_dirs = plugin_dirs or self.config.plugin_dirs or ["builtin", "plugins"]
         self.plugin_manager = PluginManager(self, resolved_plugin_dirs)
         self.context_manager = ContextManager(self)
-        self.skill_manager = SkillManager(self.work_dir / "skills")
+        # 内置技能目录：nanobee/builtin/skills/
+        _builtin_skills = Path(__file__).resolve().parent.parent / "builtin" / "skills"
+        self.skill_manager = SkillsLoader(
+            user_skills_dir=self.work_dir / "skills",
+            builtin_skills_dir=_builtin_skills,
+        )
         self.soul_guard = SoulGuard(self)
         self.context_pipeline = ContextPipeline(
             core_md_path=self.config.core_md_path,
-            skill_manager=self.skill_manager,
+            skill_loader=self.skill_manager,
             soul_guard=self.soul_guard,
         )
         self.router = ContextRouter()

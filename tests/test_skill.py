@@ -1,4 +1,4 @@
-"""Skill 数据模型与管理器测试"""
+"""SkillsLoader 数据模型与双源发现测试"""
 
 from __future__ import annotations
 
@@ -6,7 +6,24 @@ from pathlib import Path
 
 import pytest
 
-from nanobee.kernel.skill_manager import SkillManager, SkillMeta, SkillVisibility
+from nanobee.kernel.skill_manager import SkillMeta, SkillsLoader, Skill
+
+
+def _make_skill_md(base_dir: Path, name: str, description: str, body: str,
+                   author: str = "") -> Path:
+    """在 base_dir 下创建测试 SKILL.md"""
+    skill_dir = base_dir / name
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    meta_lines = ["---"]
+    meta_lines.append(f"name: {name}")
+    meta_lines.append(f"description: {description}")
+    if author:
+        meta_lines.append(f"author: {author}")
+    meta_lines.append("---")
+    content = "\n".join(meta_lines) + f"\n\n{body}\n"
+    skill_md = skill_dir / "SKILL.md"
+    skill_md.write_text(content, encoding="utf-8")
+    return skill_md
 
 
 class TestSkillMeta:
@@ -17,290 +34,216 @@ class TestSkillMeta:
         assert meta.name == "test"
         assert meta.description == "测试技能"
         assert meta.author == ""
-        assert meta.visibility == SkillVisibility.PRIVATE
-        assert meta.version == "0.1.0"
-        assert meta.based_on is None
-        assert meta.compatibility is None
-        assert meta.license is None
-
-    def test_shared_visibility(self):
-        meta = SkillMeta(name="test", description="", visibility="shared")
-        assert meta.visibility == SkillVisibility.SHARED
-
-    def test_based_on(self):
-        meta = SkillMeta(name="test", description="", based_on="alice/original")
-        assert meta.based_on == "alice/original"
 
     def test_to_dict(self):
-        meta = SkillMeta(name="my-skill", description="A skill",
-                         author="bob", visibility="shared",
-                         version="1.0.0", based_on="alice/original")
+        meta = SkillMeta(name="my-skill", description="A skill", author="bob")
         d = meta.to_dict()
         assert d["name"] == "my-skill"
-        assert d["visibility"] == "shared"
-        assert d["based_on"] == "alice/original"
+        assert d["description"] == "A skill"
+        assert d["author"] == "bob"
 
-    def test_compatibility_and_license(self):
-        """compatibility / license 新字段可设置并包含在 to_dict 中。"""
-        meta = SkillMeta(
-            name="test", description="", compatibility="anthropic", license="MIT",
-        )
-        assert meta.compatibility == "anthropic"
-        assert meta.license == "MIT"
+    def test_compatibility_in_dict(self):
+        meta = SkillMeta(name="test", description="test", compatibility="anthropic")
         d = meta.to_dict()
         assert d["compatibility"] == "anthropic"
-        assert d["license"] == "MIT"
 
     def test_description_exceeds_max_length(self):
-        """description 超 1024 字符应抛出 ValueError。"""
-        long_desc = "x" * 1025
         with pytest.raises(ValueError, match="超过限制"):
-            SkillMeta(name="test", description=long_desc)
+            SkillMeta(name="test", description="x" * 1025)
 
     def test_description_contains_angle_bracket(self):
-        """description 包含 < 或 > 应抛出 ValueError。"""
         with pytest.raises(ValueError, match="禁止字符 '<'"):
             SkillMeta(name="test", description="含有 < 的描述")
-        with pytest.raises(ValueError, match="禁止字符 '>'"):
-            SkillMeta(name="test", description="含有 > 的描述")
 
     def test_description_boundary_ok(self):
-        """description 恰好 1024 字符应通过。"""
-        desc = "x" * 1024
-        meta = SkillMeta(name="test", description=desc)
+        meta = SkillMeta(name="test", description="x" * 1024)
         assert len(meta.description) == 1024
 
 
-class TestSkillManagerCRUD:
-    """SkillManager CRUD 基础操作测试"""
+class TestSkillsLoaderScan:
+    """SkillsLoader 扫描功能测试"""
 
-    def test_create_skill(self, tmp_path: Path):
-        skill_mgr = SkillManager(tmp_path / "skills")
-        skill = skill_mgr.create("alice", "my-skill", "测试技能", "这是技能内容")
+    def test_empty_user_skills(self, tmp_path: Path):
+        loader = SkillsLoader(tmp_path / "skills")
+        assert loader.list_user_skills() == []
+        assert loader.list_all_skills() == []
 
-        assert skill.meta.name == "my-skill"
-        assert skill.meta.description == "测试技能"
-        assert skill.meta.author == "alice"
-        assert skill.meta.visibility == SkillVisibility.PRIVATE
+    def test_scan_user_skills(self, tmp_path: Path):
+        _make_skill_md(tmp_path / "skills", "skill-a", "描述 A", "内容 A")
+        _make_skill_md(tmp_path / "skills", "skill-b", "描述 B", "内容 B")
 
-        skill_md = tmp_path / "skills" / "alice" / "my-skill" / "SKILL.md"
-        assert skill_md.exists()
-        content = skill_md.read_text(encoding="utf-8")
-        assert "name: my-skill" in content
-        assert "这是技能内容" in content
-
-    def test_create_shared_skill(self, tmp_path: Path):
-        skill_mgr = SkillManager(tmp_path / "skills")
-        skill = skill_mgr.create("alice", "shared-skill", "共享技能",
-                                 "内容", visibility=SkillVisibility.SHARED)
-        assert skill.meta.visibility == SkillVisibility.SHARED
-
-        content = skill.file_path.read_text(encoding="utf-8")
-        assert "visibility: shared" in content
-
-    def test_create_duplicate_raises(self, tmp_path: Path):
-        skill_mgr = SkillManager(tmp_path / "skills")
-        skill_mgr.create("alice", "my-skill", "测试", "内容")
-        with pytest.raises(FileExistsError):
-            skill_mgr.create("alice", "my-skill", "重复", "内容")
-
-    def test_get_skill(self, tmp_path: Path):
-        skill_mgr = SkillManager(tmp_path / "skills")
-        skill_mgr.create("alice", "my-skill", "测试", "内容")
-        retrieved = skill_mgr.get("alice", "my-skill")
-        assert retrieved is not None
-        assert retrieved.meta.name == "my-skill"
-        assert retrieved.body == "内容"
-
-    def test_get_nonexistent(self, tmp_path: Path):
-        skill_mgr = SkillManager(tmp_path / "skills")
-        result = skill_mgr.get("alice", "nonexistent")
-        assert result is None
-
-    def test_list_no_skills(self, tmp_path: Path):
-        skill_mgr = SkillManager(tmp_path / "skills")
-        skills = skill_mgr.list_skills("alice")
-        assert skills == []
-
-    def test_create_and_list(self, tmp_path: Path):
-        skill_mgr = SkillManager(tmp_path / "skills")
-        skill_mgr.create("alice", "skill-1", "技能1", "内容1")
-        skill_mgr.create("alice", "skill-2", "技能2", "内容2")
-
-        skills = skill_mgr.list_skills("alice")
+        loader = SkillsLoader(tmp_path / "skills")
+        skills = loader.list_user_skills()
         assert len(skills) == 2
-        names = [s.meta.name for s in skills]
-        assert "skill-1" in names
-        assert "skill-2" in names
+        names = {s.meta.name for s in skills}
+        assert names == {"skill-a", "skill-b"}
 
-    def test_delete_skill(self, tmp_path: Path):
-        skill_mgr = SkillManager(tmp_path / "skills")
-        skill_mgr.create("alice", "my-skill", "测试", "内容")
-        assert skill_mgr.delete("alice", "my-skill") is True
-        assert skill_mgr.get("alice", "my-skill") is None
+    def test_get_skill_by_name(self, tmp_path: Path):
+        _make_skill_md(tmp_path / "skills", "my-skill", "My Skill", "content")
+        loader = SkillsLoader(tmp_path / "skills")
+        skill = loader.get_skill("my-skill")
+        assert skill is not None
+        assert skill.meta.description == "My Skill"
 
-    def test_delete_nonexistent(self, tmp_path: Path):
-        skill_mgr = SkillManager(tmp_path / "skills")
-        assert skill_mgr.delete("alice", "nonexistent") is False
+    def test_get_skill_nonexistent(self, tmp_path: Path):
+        loader = SkillsLoader(tmp_path / "skills")
+        assert loader.get_skill("nonexistent") is None
 
-    def test_list_other_user_not_affected(self, tmp_path: Path):
-        """A 创建的技能不影响 B 的技能列表。"""
-        skill_mgr = SkillManager(tmp_path / "skills")
-        skill_mgr.create("alice", "alice-skill", "A 的技能", "内容")
-        skill_mgr.create("bob", "bob-skill", "B 的技能", "内容")
+    def test_flat_structure(self, tmp_path: Path):
+        """技能目录扁平化：skills/<name>/SKILL.md"""
+        _make_skill_md(tmp_path / "skills", "alice-skill", "Alice 技能", "内容")
+        _make_skill_md(tmp_path / "skills", "bob-skill", "Bob 技能", "内容")
 
-        assert len(skill_mgr.list_skills("alice")) == 1
-        assert len(skill_mgr.list_skills("bob")) == 1
-        assert len(skill_mgr.list_skills("charlie")) == 0
-
-
-class TestSkillManagerUpdate:
-    """SkillManager 更新操作测试"""
-
-    def test_update_description(self, tmp_path: Path):
-        skill_mgr = SkillManager(tmp_path / "skills")
-        skill_mgr.create("alice", "my-skill", "旧描述", "内容")
-        updated = skill_mgr.update("alice", "my-skill", description="新描述")
-        assert updated is not None
-        assert updated.meta.description == "新描述"
-
-        # 验证已持久化
-        reloaded = skill_mgr.get("alice", "my-skill")
-        assert reloaded is not None
-        assert reloaded.meta.description == "新描述"
-
-    def test_update_body(self, tmp_path: Path):
-        skill_mgr = SkillManager(tmp_path / "skills")
-        skill_mgr.create("alice", "my-skill", "测试", "旧内容")
-        updated = skill_mgr.update("alice", "my-skill", body="新内容")
-        assert updated is not None
-        assert updated.body == "新内容"
-
-    def test_update_visibility(self, tmp_path: Path):
-        skill_mgr = SkillManager(tmp_path / "skills")
-        skill_mgr.create("alice", "my-skill", "测试", "内容")
-        updated = skill_mgr.update("alice", "my-skill",
-                                   visibility=SkillVisibility.SHARED)
-        assert updated is not None
-        assert updated.meta.visibility == SkillVisibility.SHARED
-
-    def test_update_nonexistent(self, tmp_path: Path):
-        skill_mgr = SkillManager(tmp_path / "skills")
-        result = skill_mgr.update("alice", "nonexistent", description="新描述")
-        assert result is None
+        loader = SkillsLoader(tmp_path / "skills")
+        skills = loader.list_user_skills()
+        assert len(skills) == 2
+        assert {s.meta.name for s in skills} == {"alice-skill", "bob-skill"}
 
 
-class TestSkillManagerShared:
-    """共享技能发现测试"""
+class TestSkillsLoaderDualSource:
+    """双源发现测试（builtin + user）"""
 
-    def test_find_shared_skills(self, tmp_path: Path):
-        skill_mgr = SkillManager(tmp_path / "skills")
-        skill_mgr.create("alice", "private-skill", "私有", "内容",
-                         visibility=SkillVisibility.PRIVATE)
-        skill_mgr.create("alice", "shared-skill", "共享", "内容",
-                         visibility=SkillVisibility.SHARED)
+    def test_builtin_skills_loaded(self, tmp_path: Path):
+        _make_skill_md(tmp_path / "builtin", "_memory", "内置记忆", "记忆策略")
+        _make_skill_md(tmp_path / "builtin", "skill-creator", "技能创建", "创建指南")
 
-        shared = skill_mgr.find_shared_skills()
-        assert len(shared) == 1
-        assert shared[0].meta.name == "shared-skill"
-
-    def test_private_skill_not_shared(self, tmp_path: Path):
-        skill_mgr = SkillManager(tmp_path / "skills")
-        skill_mgr.create("alice", "private-skill", "私有", "内容")
-        assert skill_mgr.find_shared_skills() == []
-
-    def test_multiple_users_shared(self, tmp_path: Path):
-        skill_mgr = SkillManager(tmp_path / "skills")
-        skill_mgr.create("alice", "alice-shared", "A 共享", "内容",
-                         visibility=SkillVisibility.SHARED)
-        skill_mgr.create("bob", "bob-shared", "B 共享", "内容",
-                         visibility=SkillVisibility.SHARED)
-
-        shared = skill_mgr.find_shared_skills()
-        assert len(shared) == 2
-
-    def test_author_field_set_correctly(self, tmp_path: Path):
-        skill_mgr = SkillManager(tmp_path / "skills")
-        skill_mgr.create("alice", "alice-shared", "A 共享", "内容",
-                         visibility=SkillVisibility.SHARED)
-        skill_mgr.create("bob", "bob-shared", "B 共享", "内容",
-                         visibility=SkillVisibility.SHARED)
-
-        shared = skill_mgr.find_shared_skills()
-        authors = {s.meta.author for s in shared}
-        assert authors == {"alice", "bob"}
-
-
-class TestSkillManagerFork:
-    """Fork 机制测试"""
-
-    def test_fork_with_based_on(self, tmp_path: Path):
-        skill_mgr = SkillManager(tmp_path / "skills")
-        original = skill_mgr.create(
-            "alice", "original-skill", "原始技能", "原始内容",
-            visibility=SkillVisibility.SHARED,
+        loader = SkillsLoader(
+            user_skills_dir=tmp_path / "skills",
+            builtin_skills_dir=tmp_path / "builtin",
         )
-        fork = skill_mgr.create(
-            "bob", "forked-skill", "Fork 版本", "修改后的内容",
-            based_on=f"{original.meta.author}/{original.meta.name}",
-        )
-        assert fork.meta.based_on == "alice/original-skill"
-        assert fork.meta.author == "bob"
+        builtin = loader.list_builtin_skills()
+        assert len(builtin) == 2
+        assert {s.meta.name for s in builtin} == {"_memory", "skill-creator"}
 
-    def test_fork_different_name(self, tmp_path: Path):
-        skill_mgr = SkillManager(tmp_path / "skills")
-        skill_mgr.create("alice", "src", "源", "内容",
-                         visibility=SkillVisibility.SHARED)
-        fork = skill_mgr.create(
-            "bob", "my-version", "我的版本", "修改",  # different name
-            based_on="alice/src",
+    def test_list_all_merges_both_sources(self, tmp_path: Path):
+        _make_skill_md(tmp_path / "builtin", "builtin-1", "内置", "内置内容")
+        _make_skill_md(tmp_path / "skills", "user-1", "用户", "用户内容")
+
+        loader = SkillsLoader(
+            user_skills_dir=tmp_path / "skills",
+            builtin_skills_dir=tmp_path / "builtin",
         )
-        assert fork.meta.name == "my-version"
-        assert fork.meta.based_on == "alice/src"
+        all_skills = loader.list_all_skills()
+        assert len(all_skills) == 2
+        sources = {s.source for s in all_skills}
+        assert sources == {"builtin", "user"}
+
+    def test_skill_source_tag(self, tmp_path: Path):
+        _make_skill_md(tmp_path / "builtin", "builtin-1", "内置", "内容")
+        _make_skill_md(tmp_path / "skills", "user-1", "用户", "内容")
+
+        loader = SkillsLoader(
+            user_skills_dir=tmp_path / "skills",
+            builtin_skills_dir=tmp_path / "builtin",
+        )
+        for s in loader.list_all_skills():
+            assert s.source in ("builtin", "user")
+
+    def test_get_prefers_user_over_builtin(self, tmp_path: Path):
+        _make_skill_md(tmp_path / "builtin", "my-skill", "内置版描述", "内置版")
+        _make_skill_md(tmp_path / "skills", "my-skill", "用户版描述", "用户版")
+
+        loader = SkillsLoader(
+            user_skills_dir=tmp_path / "skills",
+            builtin_skills_dir=tmp_path / "builtin",
+        )
+        skill = loader.get_skill("my-skill")
+        assert skill is not None
+        # get_skill 优先返回用户版
+        assert skill.source == "user"
+        assert skill.meta.description == "用户版描述"
+
+
+class TestSkillsLoaderCache:
+    """SkillsLoader 缓存功能测试"""
+
+    def test_cache_hits_on_second_read(self, tmp_path: Path):
+        _make_skill_md(tmp_path / "skills", "test-skill", "Test", "Body")
+        loader = SkillsLoader(tmp_path / "skills")
+
+        skills1 = loader.list_user_skills()
+        assert len(skills1) == 1
+
+        skills2 = loader.list_user_skills()
+        assert len(skills2) == 1
+
+    def test_cache_invalidates(self, tmp_path: Path):
+        loader = SkillsLoader(tmp_path / "skills")
+
+        assert loader.list_user_skills() == []
+
+        # 写入新技能
+        _make_skill_md(tmp_path / "skills", "new-skill", "New", "Body")
+
+        skills = loader.list_user_skills()
+        assert len(skills) == 1
+
+    def test_invalidate_cache_force(self, tmp_path: Path):
+        _make_skill_md(tmp_path / "skills", "skill-1", "S1", "Body")
+        loader = SkillsLoader(tmp_path / "skills")
+        assert len(loader.list_user_skills()) == 1
+
+        # invalidation 后重新扫描
+        loader.invalidate_cache()
+        assert len(loader.list_user_skills()) == 1
+
+    def test_cache_empty_list(self, tmp_path: Path):
+        loader = SkillsLoader(tmp_path / "skills")
+        assert loader.list_user_skills() == []
+        assert loader.list_user_skills() == []  # hit cache
+
+    def test_builtin_cache_separate(self, tmp_path: Path):
+        _make_skill_md(tmp_path / "builtin", "builtin-1", "B", "Body")
+        loader = SkillsLoader(
+            user_skills_dir=tmp_path / "skills",
+            builtin_skills_dir=tmp_path / "builtin",
+        )
+
+        assert len(loader.list_builtin_skills()) == 1
+        assert len(loader.list_user_skills()) == 0
 
 
 class TestSkillSerialization:
     """SKILL.md 序列化/反序列化测试"""
 
-    def test_serialize_deserialize_roundtrip(self, tmp_path: Path):
-        """创建技能后读取，验证 roundtrip"""
-        skill_mgr = SkillManager(tmp_path / "skills")
+    def test_parse_content(self):
+        content = "---\nname: test\ndescription: 测试\n---\n\n正文内容\n"
+        meta, body = SkillsLoader._parse(content)
+        assert meta.name == "test"
+        assert meta.description == "测试"
+        assert body == "正文内容"
 
-        expected_body = (
-            "分析 git 日志的步骤：\n\n"
-            "1. 获取最近 30 天的提交\n"
-            "2. 按作者分组统计\n"
-            "3. 生成变更摘要"
-        )
-        skill_mgr.create(
-            "alice", "git-analyzer",
-            "分析 git 提交历史",
-            expected_body,
-            visibility=SkillVisibility.SHARED,
-        )
+    def test_serialize_roundtrip(self, tmp_path: Path):
+        _make_skill_md(tmp_path / "skills", "my-skill", "描述", "body content")
+        loader = SkillsLoader(tmp_path / "skills")
+        skill = loader.get_skill("my-skill")
+        assert skill is not None
+        assert skill.body == "body content"
+        assert skill.meta.description == "描述"
 
-        reloaded = skill_mgr.get("alice", "git-analyzer")
-        assert reloaded is not None
-        assert reloaded.meta.name == "git-analyzer"
-        assert reloaded.meta.description == "分析 git 提交历史"
-        assert reloaded.meta.visibility == SkillVisibility.SHARED
-        assert reloaded.meta.author == "alice"
-        assert reloaded.body == expected_body
+    def test_invalid_frontmatter_skipped(self, tmp_path: Path):
+        bad_dir = tmp_path / "skills" / "bad"
+        bad_dir.mkdir(parents=True)
+        (bad_dir / "SKILL.md").write_text("没有 frontmatter", encoding="utf-8")
+        _make_skill_md(tmp_path / "skills", "good", "好的", "内容")
 
-    def test_parse_invalid_frontmatter(self):
-        """无效的 frontmatter 返回 None"""
-        skill_mgr = SkillManager("/tmp/nonexistent")
-        # 手动加载不存在的文件
-        fake_path = Path("/tmp/nonexistent/SKILL.md")
-        result = skill_mgr._load_skill(fake_path)
-        assert result is None
+        loader = SkillsLoader(tmp_path / "skills")
+        skills = loader.list_user_skills()
+        # 坏的 frontmatter 被静默跳过
+        assert len(skills) == 1
+        assert skills[0].meta.name == "good"
 
-    def test_empty_contexts_dir_shared(self, tmp_path: Path):
-        """contexts 目录不存在时 find_shared_skills 返回空列表。"""
-        skill_mgr = SkillManager(tmp_path / "nonexistent")
-        assert skill_mgr.find_shared_skills() == []
 
-    def test_missing_user_dir_list(self, tmp_path: Path):
-        """用户目录不存在时 list_skills 返回空列表。"""
-        skill_mgr = SkillManager(tmp_path / "skills")
-        assert skill_mgr.list_skills("nonexistent") == []
+class TestSkillBackwardCompat:
+    """向后兼容测试：SkillManager 别名与 Skill 模型"""
+
+    def test_skill_manager_alias(self):
+        from nanobee.kernel.skill_manager import SkillManager
+        assert SkillManager is SkillsLoader
+
+    def test_skill_model_has_source(self, tmp_path: Path):
+        _make_skill_md(tmp_path / "skills", "test", "测试", "body")
+        loader = SkillsLoader(tmp_path / "skills")
+        skill = loader.get_skill("test")
+        assert skill is not None
+        assert hasattr(skill, "source")

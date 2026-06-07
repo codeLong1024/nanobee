@@ -226,8 +226,8 @@ def build_runtime_context(
 ) -> str:
     """构建运行时上下文元数据块，追加到 user 消息末尾。
 
-    仿照 nanobot 的设计，只注入时间字符串（约 50-60 字符），
-    不注入工具定义（节省 200-300 字符）。
+    只注入每次轮次变化的信息（时间、通道），
+    不注入工作目录等持久信息——这些在 system prompt 中已有。
 
     Args:
         channel: 通道名称（如 dingtalk、cli）

@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, TypedDict
 
+from nanobee.exceptions import SandboxViolationError
 from nanobee.utils.logger import logger
 
 
@@ -121,7 +122,7 @@ def _inject_context_to_tool(tool: Any, spec: AgentRunSpec) -> None:
                 user_id=spec.sender_id,
             )
         except Exception:
-            logger.debug("调用工具插件 set_context 失败: {}", type(plugin).__name__)
+            logger.debug("调用工具插件 set_context 失败: %s", type(plugin).__name__)
 
 
 @dataclass(slots=True)
@@ -1004,7 +1005,7 @@ class AgentRunner:
         if request_sandbox is not None and isinstance(params, dict):
             try:
                 params = request_sandbox.sanitize_params(tool_call.name, params)
-            except PermissionError as e:
+            except (PermissionError, SandboxViolationError) as e:
                 event = {
                     "name": tool_call.name,
                     "status": "error",
@@ -1021,7 +1022,7 @@ class AgentRunner:
             for hook_fn in spec.plugin_hooks.get("pre_invoke", []):
                 try:
                     params = await hook_fn(tool_call.name, params)
-                except PermissionError as e:
+                except (PermissionError, SandboxViolationError) as e:
                     event = {
                         "name": tool_call.name,
                         "status": "error",

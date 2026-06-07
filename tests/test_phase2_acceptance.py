@@ -17,7 +17,7 @@ import pytest
 
 from nanobee.kernel.context_pipeline import ContextPipeline, _map_plugin_stage
 from nanobee.plugins.base import NanobeePlugin
-from nanobee.kernel.skill_manager import SkillManager
+from nanobee.kernel.skill_manager import SkillsLoader
 
 
 # ---- 测试用插件 ----
@@ -79,7 +79,7 @@ def _make_context_pipeline(tmp_path: Path) -> ContextPipeline:
     core_md.write_text("# Test\n\n## Soul\nTest personality\n\n## Rules\nBe helpful.\n", encoding="utf-8")
     return ContextPipeline(
         core_md_path=str(core_md),
-        skill_manager=SkillManager(tmp_path / "skills"),
+        skill_loader=SkillsLoader(tmp_path / "skills"),
     )
 
 

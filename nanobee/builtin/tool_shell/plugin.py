@@ -274,8 +274,19 @@ class ToolShellPlugin(ToolPlugin):
         Returns:
             _PreparedCommand 或错误字符串
         """
-        # 确定工作目录
-        cwd = working_dir or self._workspace or os.getcwd()
+        # 确定工作目录：优先使用 LLM 指定的 working_dir，
+        # 未指定时使用 ContextVar 沙箱的 context_root（用户上下文），
+        # 最后回退到 _workspace 或 CWD
+        if working_dir:
+            cwd = working_dir
+        else:
+            sandbox = _current_sandbox()
+            if sandbox is not None:
+                cwd = str(sandbox.context_root)
+            elif self._workspace:
+                cwd = self._workspace
+            else:
+                cwd = os.getcwd()
 
         # L2 防线：通过 ContextVar 获取当前任务沙箱校验（线程安全）
         sandbox_error = self._check_sandbox_path(cwd)
@@ -448,7 +459,7 @@ class ToolShellPlugin(ToolPlugin):
                 try:
                     os.waitpid(process.pid, os.WNOHANG)
                 except (ProcessLookupError, ChildProcessError) as e:
-                    logger.debug("进程已回收或未找到: {}", e)
+                    logger.debug("进程已回收或未找到: %s", e)
 
     @staticmethod
     def _resolve_shell(shell: str | None) -> tuple[str | None, str | None]:
@@ -543,7 +554,7 @@ class ToolShellPlugin(ToolPlugin):
                 logger.debug("请求级 sandbox 没有 resolve_safe 或 assert_allowed 方法")
                 return None
         except Exception as e:
-            logger.warning("L2 沙箱拦截: {}", e)
+            logger.warning("L2 沙箱拦截: %s", e)
             return f"错误：沙箱拦截 - {e}" + _WORKSPACE_BOUNDARY_NOTE
 
         return None

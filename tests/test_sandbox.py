@@ -38,7 +38,7 @@ def test_resolve_safe_with_subdir(tmp_path: Path):
     """子目录路径正常"""
     root = tmp_path / "contexts" / "user-a"
     sandbox = ContextSandbox(root)
-    subdir = root / "work" / "sub" / "file.txt"
+    subdir = root / "sub" / "file.txt"
     subdir.parent.mkdir(parents=True, exist_ok=True)
 
     result = sandbox.resolve_safe(str(subdir))
@@ -82,7 +82,7 @@ def test_sanitize_params_path_field(tmp_path: Path):
     """清洗 path 参数"""
     root = tmp_path / "contexts" / "user-a"
     sandbox = ContextSandbox(root)
-    allowed = root / "work" / "test.txt"
+    allowed = root / "test.txt"
     allowed.parent.mkdir(parents=True, exist_ok=True)
 
     result = sandbox.sanitize_params("read_file", {"path": str(allowed)})
@@ -93,7 +93,7 @@ def test_sanitize_params_directory_field(tmp_path: Path):
     """清洗 directory 参数"""
     root = tmp_path / "contexts" / "user-a"
     sandbox = ContextSandbox(root)
-    allowed = root / "work" / "subdir"
+    allowed = root / "subdir"
     allowed.mkdir(parents=True, exist_ok=True)
 
     result = sandbox.sanitize_params("list_dir", {"directory": str(allowed)})
@@ -123,7 +123,7 @@ def test_sanitize_params_mixed(tmp_path: Path):
     """混合参数：路径被清洗，非路径不变"""
     root = tmp_path / "contexts" / "user-a"
     sandbox = ContextSandbox(root)
-    allowed = root / "work" / "f.txt"
+    allowed = root / "f.txt"
     allowed.parent.mkdir(parents=True, exist_ok=True)
 
     params = {
@@ -141,7 +141,7 @@ def test_sanitize_params_working_dir(tmp_path: Path):
     """working_dir 参数被清洗"""
     root = tmp_path / "contexts" / "user-a"
     sandbox = ContextSandbox(root)
-    wd = root / "work"
+    wd = root / "sub_wd"
     wd.mkdir(parents=True, exist_ok=True)
 
     result = sandbox.sanitize_params("exec", {"working_dir": str(wd)})

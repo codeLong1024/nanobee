@@ -6,7 +6,7 @@ author = "nanobee-team"
 type = "tool"
 
 [config]
-enabled = true
+enabled = false
 max_results = 5
 timeout = 30
 max_chars = 50000

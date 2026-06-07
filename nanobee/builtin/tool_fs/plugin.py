@@ -446,11 +446,16 @@ class ToolFileSystemPlugin(ToolPlugin):
 
         p = Path(path)
         if not p.is_absolute():
-            # 相对路径基于当前工作目录解析
-            p = Path.cwd() / p
+            # 相对路径基于沙箱根解析（而非 CWD），确保 skill 中 memory/xxx 类的路径正确
+            sandbox = _current_sandbox()
+            if sandbox is not None:
+                base = Path(sandbox.context_root)
+            else:
+                base = Path.cwd()
+            p = base / p
         p = p.resolve()
 
-        # L2 沙箱校验：通过 ContextVar 获取当前任务沙箱（线程安全）
+        # L2 沙箱校验
         sandbox = _current_sandbox()
         if sandbox is not None:
             sandbox.assert_allowed(p)

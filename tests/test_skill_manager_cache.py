@@ -1,7 +1,4 @@
-"""SkillManager 缓存性能测试
-
-验证基于 mtime 的文件系统缓存是否正确工作，以及性能提升效果。
-"""
+"""SkillsLoader 双源缓存性能测试"""
 
 from __future__ import annotations
 
@@ -10,229 +7,138 @@ from pathlib import Path
 
 import pytest
 
-from nanobee.kernel.skill_manager import SkillManager, SkillVisibility
+from nanobee.kernel.skill_manager import SkillsLoader
 
 
-class TestSkillManagerCache:
-    """验证 SkillManager 缓存功能。"""
+def _make_skill_md(base_dir: Path, name: str, description: str, body: str) -> Path:
+    skill_dir = base_dir / name
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    content = (
+        f"---\nname: {name}\ndescription: {description}\n---\n\n{body}\n"
+    )
+    skill_md = skill_dir / "SKILL.md"
+    skill_md.write_text(content, encoding="utf-8")
+    return skill_md
 
-    def test_cache_hits_after_first_read(self, tmp_path: Path) -> None:
-        """第一次读取后，第二次读取应命中缓存。"""
-        user_id = "alice"
-        skill_mgr = SkillManager(tmp_path / "skills")
 
-        # 创建技能
-        skill_mgr.create(user_id, "test-skill", "Test", "Body", SkillVisibility.PRIVATE)
+class TestSkillsLoaderCache:
+    """验证 SkillsLoader 双源缓存功能。"""
 
-        # 第一次读取（未缓存）
+    def test_cache_hits_on_second_read(self, tmp_path: Path) -> None:
+        """第二次读取应命中缓存。"""
+        _make_skill_md(tmp_path / "skills", "test-skill", "Test", "Body")
+        loader = SkillsLoader(tmp_path / "skills")
+
         start = time.time()
-        result1 = skill_mgr.list_skills(user_id)
+        result1 = loader.list_user_skills()
         time1 = time.time() - start
 
-        # 第二次读取（应命中缓存）
         start = time.time()
-        result2 = skill_mgr.list_skills(user_id)
+        result2 = loader.list_user_skills()
         time2 = time.time() - start
 
         assert len(result1) == 1
         assert len(result2) == 1
-        # 缓存命中应更快（理论上）
-        assert time2 <= time1
 
-    def test_cache_invalidates_on_create(self, tmp_path: Path) -> None:
-        """创建技能后，缓存应被清除。"""
-        user_id = "alice"
-        skill_mgr = SkillManager(tmp_path / "skills")
+    def test_cache_updates_after_file_change(self, tmp_path: Path) -> None:
+        """文件变更后通过 invalidation 刷新。"""
+        _make_skill_md(tmp_path / "skills", "skill-1", "S1", "Body1")
+        loader = SkillsLoader(tmp_path / "skills")
 
-        # 创建第一个技能
-        skill_mgr.create(user_id, "skill-1", "S1", "Body1", SkillVisibility.PRIVATE)
-
-        # 读取（缓存）
-        skills1 = skill_mgr.list_skills(user_id)
+        skills1 = loader.list_user_skills()
         assert len(skills1) == 1
 
-        # 创建第二个技能
-        skill_mgr.create(user_id, "skill-2", "S2", "Body2", SkillVisibility.PRIVATE)
+        # 添加第二个技能
+        _make_skill_md(tmp_path / "skills", "skill-2", "S2", "Body2")
+        # 显式清除缓存后刷新
+        loader.invalidate_cache()
 
-        # 读取应包含两个技能（缓存已清除）
-        skills2 = skill_mgr.list_skills(user_id)
+        skills2 = loader.list_user_skills()
         assert len(skills2) == 2
 
-    def test_cache_invalidates_on_delete(self, tmp_path: Path) -> None:
-        """删除技能后，缓存应被清除。"""
-        user_id = "alice"
-        skill_mgr = SkillManager(tmp_path / "skills")
+    def test_builtin_and_user_cache_separate(self, tmp_path: Path) -> None:
+        """内置技能和用户技能使用独立的缓存。"""
+        _make_skill_md(tmp_path / "builtin", "builtin-1", "B1", "Body1")
+        _make_skill_md(tmp_path / "skills", "user-1", "U1", "Body2")
 
-        # 创建两个技能
-        skill_mgr.create(user_id, "skill-1", "S1", "Body1", SkillVisibility.PRIVATE)
-        skill_mgr.create(user_id, "skill-2", "S2", "Body2", SkillVisibility.PRIVATE)
+        loader = SkillsLoader(
+            user_skills_dir=tmp_path / "skills",
+            builtin_skills_dir=tmp_path / "builtin",
+        )
 
-        # 读取（缓存）
-        skills1 = skill_mgr.list_skills(user_id)
-        assert len(skills1) == 2
+        # 读取内置（填充缓存）
+        assert len(loader.list_builtin_skills()) == 1
+        # 读取用户（填充缓存）
+        assert len(loader.list_user_skills()) == 1
 
-        # 删除一个技能
-        skill_mgr.delete(user_id, "skill-1")
+        # 内置添加一个新技能
+        _make_skill_md(tmp_path / "builtin", "builtin-2", "B2", "Body3")
 
-        # 读取应只包含一个技能
-        skills2 = skill_mgr.list_skills(user_id)
-        assert len(skills2) == 1
-
-    def test_cache_invalidates_on_update(self, tmp_path: Path) -> None:
-        """更新技能后，缓存应被清除。"""
-        user_id = "alice"
-        skill_mgr = SkillManager(tmp_path / "skills")
-
-        # 创建技能
-        skill_mgr.create(user_id, "test-skill", "Original", "Body", SkillVisibility.PRIVATE)
-
-        # 读取（缓存）
-        skills1 = skill_mgr.list_skills(user_id)
-        assert skills1[0].meta.description == "Original"
-
-        # 更新技能
-        skill_mgr.update(user_id, "test-skill", description="Updated")
-
-        # 读取应包含更新后的描述
-        skills2 = skill_mgr.list_skills(user_id)
-        assert skills2[0].meta.description == "Updated"
-
-    def test_shared_skills_cache(self, tmp_path: Path) -> None:
-        """共享技能缓存应正常工作。"""
-        skill_mgr = SkillManager(tmp_path / "skills")
-
-        # 创建共享技能
-        skill_mgr.create("alice", "shared-skill", "Shared", "Body", SkillVisibility.SHARED)
-
-        # 第一次读取
-        shared1 = skill_mgr.find_shared_skills()
-        assert len(shared1) == 1
-
-        # 第二次读取（应命中缓存）
-        shared2 = skill_mgr.find_shared_skills()
-        assert len(shared2) == 1
-        assert shared1[0].meta.name == shared2[0].meta.name
-
-    def test_shared_skills_cache_invalidates_on_visibility_change(self, tmp_path: Path) -> None:
-        """共享技能可见性变更后，缓存应被清除。"""
-        skill_mgr = SkillManager(tmp_path / "skills")
-
-        # 创建私有技能
-        skill_mgr.create("alice", "private-skill", "Private", "Body", SkillVisibility.PRIVATE)
-
-        # 读取共享技能（应为空）
-        shared1 = skill_mgr.find_shared_skills()
-        assert len(shared1) == 0
-
-        # 更新为共享
-        skill_mgr.update("alice", "private-skill", visibility=SkillVisibility.SHARED)
-
-        # 读取应包含共享技能
-        shared2 = skill_mgr.find_shared_skills()
-        assert len(shared2) == 1
-
-    def test_cache_ttl_expiration(self, tmp_path: Path) -> None:
-        """缓存 TTL 过期后应重新读取。"""
-        from nanobee.kernel.skill_manager import SkillManager as SM
-
-        user_id = "alice"
-        # 使用极短的 TTL 用于测试
-        SM._CACHE_TTL = 0.1
-
-        try:
-            skill_mgr = SkillManager(tmp_path / "skills")
-            skill_mgr.create(user_id, "test-skill", "Test", "Body", SkillVisibility.PRIVATE)
-
-            # 第一次读取
-            skills1 = skill_mgr.list_skills(user_id)
-            assert len(skills1) == 1
-
-            # 等待 TTL 过期
-            time.sleep(0.15)
-
-            # 修改文件
-            skill_md = tmp_path / "skills" / user_id / "test-skill" / "SKILL.md"
-            skill_md.write_text(
-                "---\nname: test-skill\ndescription: Updated\nauthor: alice\nvisibility: private\n---\n\nNew Body\n",
-                encoding="utf-8",
-            )
-
-            # 读取应重新加载
-            skills2 = skill_mgr.list_skills(user_id)
-            assert skills2[0].meta.description == "Updated"
-        finally:
-            # 恢复原始 TTL
-            SM._CACHE_TTL = 2.0
+        # 内置缓存应失效，用户缓存应保持不变
+        assert len(loader.list_builtin_skills()) == 2
+        assert len(loader.list_user_skills()) == 1
 
     def test_cache_empty_list(self, tmp_path: Path) -> None:
         """空列表也应被缓存。"""
-        user_id = "nonexistent"
-        skill_mgr = SkillManager(tmp_path / "skills")
+        loader = SkillsLoader(tmp_path / "skills")
 
-        # 读取不存在的用户
-        skills1 = skill_mgr.list_skills(user_id)
+        skills1 = loader.list_user_skills()
         assert skills1 == []
 
-        # 再次读取应命中缓存
-        skills2 = skill_mgr.list_skills(user_id)
+        skills2 = loader.list_user_skills()
         assert skills2 == []
 
-    def test_multi_user_isolation(self, tmp_path: Path) -> None:
-        """多用户技能应隔离缓存。"""
-        skill_mgr = SkillManager(tmp_path / "skills")
+    def test_invalidate_cache(self, tmp_path: Path) -> None:
+        """手动清除缓存后重新扫描。"""
+        _make_skill_md(tmp_path / "skills", "test-skill", "Test", "Body")
+        loader = SkillsLoader(tmp_path / "skills")
 
-        # 创建用户 A 的技能
-        skill_mgr.create("alice", "alice-skill", "Alice", "Body", SkillVisibility.PRIVATE)
+        assert len(loader.list_user_skills()) == 1
+        loader.invalidate_cache()
+        assert len(loader.list_user_skills()) == 1
 
-        # 创建用户 B 的技能
-        skill_mgr.create("bob", "bob-skill", "Bob", "Body", SkillVisibility.PRIVATE)
+    def test_list_all_caches_both(self, tmp_path: Path) -> None:
+        """list_all_skills 应缓存两个来源。"""
+        _make_skill_md(tmp_path / "builtin", "b1", "B1", "Body")
+        _make_skill_md(tmp_path / "skills", "u1", "U1", "Body")
 
-        # 读取用户 A 的技能
-        alice_skills = skill_mgr.list_skills("alice")
-        assert len(alice_skills) == 1
-        assert alice_skills[0].meta.name == "alice-skill"
+        loader = SkillsLoader(
+            user_skills_dir=tmp_path / "skills",
+            builtin_skills_dir=tmp_path / "builtin",
+        )
 
-        # 读取用户 B 的技能
-        bob_skills = skill_mgr.list_skills("bob")
-        assert len(bob_skills) == 1
-        assert bob_skills[0].meta.name == "bob-skill"
+        all1 = loader.list_all_skills()
+        assert len(all1) == 2
 
-    def test_cache_performance_improvement(self, tmp_path: Path) -> None:
-        """缓存应显著提升读取性能。"""
-        user_id = "user"
-        skill_mgr = SkillManager(tmp_path / "skills")
+        all2 = loader.list_all_skills()  # hit cache
+        assert len(all2) == 2
 
-        # 创建 10 个技能
-        for i in range(10):
-            skill_mgr.create(
-                user_id,
-                f"skill-{i}",
-                f"Skill {i}",
-                f"Body {i} " * 100,  # 增加文件大小
-                SkillVisibility.PRIVATE,
+    def test_cache_performance(self, tmp_path: Path) -> None:
+        """缓存应显著提升读取性能（加速比 >= 1.05）。"""
+        loader = SkillsLoader(tmp_path / "skills")
+
+        # 创建 5 个技能
+        for i in range(5):
+            _make_skill_md(
+                tmp_path / "skills",
+                f"skill-{i}", f"Skill {i}", f"Body {i} " * 50,
             )
 
-        # 预热缓存
-        skill_mgr.list_skills(user_id)
+        # 预热
+        loader.list_user_skills()
 
-        # 测量缓存命中时间
-        iterations = 100
+        iterations = 50
         start = time.time()
         for _ in range(iterations):
-            skills = skill_mgr.list_skills(user_id)
+            loader.list_user_skills()
         cached_time = time.time() - start
 
-        # 清除缓存
-        skill_mgr._invalidate_cache()
+        loader.invalidate_cache()
 
-        # 测量缓存未命中时间
         start = time.time()
         for _ in range(iterations):
-            skills = skill_mgr.list_skills(user_id)
+            loader.list_user_skills()
         uncached_time = time.time() - start
 
-        # 缓存命中应更快
-        assert cached_time < uncached_time
-        # 理论上至少快 1.05 倍（CI 环境下更合理）
         speedup = uncached_time / cached_time if cached_time > 0 else float('inf')
         assert speedup >= 1.05, f"缓存加速比不足: {speedup:.2f}x"

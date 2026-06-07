@@ -130,7 +130,7 @@ class NanobeePlugin(PluginHookMixin, ABC):
     def tmp(self) -> Path | None:
         """插件临时目录（框架通过 ContextVar 按请求注入）
 
-        路径：<context_root>/../tmp/<plugin_name>/
+        路径：<user_context>/tmp/<plugin_name>/
         框架只创建目录，清理由插件自己决定。
         未绑定 ContextVar 时返回 None（例如 boot 阶段或测试环境）。
         """

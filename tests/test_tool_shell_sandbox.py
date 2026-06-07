@@ -50,7 +50,7 @@ def _with_sandbox(sandbox: ContextSandbox, fn):
 def test_request_level_sandbox_passing(plugin: ToolShellPlugin, user_context_sandbox: ContextSandbox):
     """ContextVar 绑定 sandbox 后，_check_sandbox_path 使用 ContextVar 获取的沙箱"""
     def _test():
-        inside_path = str(user_context_sandbox.context_root / "work" / "test.sh")
+        inside_path = str(user_context_sandbox.context_root / "test.sh")
         result = plugin._check_sandbox_path(inside_path)
         assert result is None
     _with_sandbox(user_context_sandbox, _test)
@@ -59,7 +59,7 @@ def test_request_level_sandbox_passing(plugin: ToolShellPlugin, user_context_san
 def test_check_sandbox_path_allowed(plugin: ToolShellPlugin, user_context_sandbox: ContextSandbox, tmp_path: Path):
     """L2 沙箱校验：路径在沙箱内 → 返回 None（ContextVar 注入）"""
     def _test():
-        inside_path = str(user_context_sandbox.context_root / "work" / "test.sh")
+        inside_path = str(user_context_sandbox.context_root / "test.sh")
         result = plugin._check_sandbox_path(inside_path)
         assert result is None
     _with_sandbox(user_context_sandbox, _test)
@@ -91,8 +91,8 @@ def test_prepare_command_with_working_dir_inside_sandbox(
 ):
     """working_dir 在沙箱内 → 命令准备成功（ContextVar 注入）"""
     def _test():
-        # 创建沙箱内的工作目录
-        inside_wd = str(user_context_sandbox.context_root / "work")
+        # 沙箱根目录即工作目录
+        inside_wd = str(user_context_sandbox.context_root / "test_wd")
         inside_wd_path = Path(inside_wd)
         inside_wd_path.mkdir(parents=True, exist_ok=True)
 
@@ -144,7 +144,7 @@ def test_request_level_sandbox_workflow(
     """完整 ContextVar 注入流程：bind_sandbox → _prepare_command 校验"""
     def _test():
         # 1. 创建沙箱内的工作目录
-        inside_wd = user_context_sandbox.context_root / "work"
+        inside_wd = user_context_sandbox.context_root / "test_wd"
         inside_wd.mkdir(parents=True, exist_ok=True)
 
         # 2. 使用无 restrict_to_workspace 的 plugin 实例
@@ -197,7 +197,7 @@ def test_sanitize_params_working_dir_inside_sandbox(
     root.mkdir(parents=True, exist_ok=True)
     sandbox = ContextSandbox(root)
 
-    inside_wd = root / "work"
+    inside_wd = root / "sub_wd"
     inside_wd.mkdir(parents=True, exist_ok=True)
 
     result = sandbox.sanitize_params("execute_shell", {"working_dir": str(inside_wd)})
@@ -228,7 +228,7 @@ async def test_execute_shell_with_request_level_sandbox(
 ):
     """execute_shell 使用 ContextVar 注入的 sandbox，working_dir 被正确校验"""
     # 创建沙箱内的工作目录
-    inside_wd = user_context_sandbox.context_root / "work"
+    inside_wd = user_context_sandbox.context_root / "test_wd"
     inside_wd.mkdir(parents=True, exist_ok=True)
 
     # 使用无 restrict_to_workspace 的 plugin 实例

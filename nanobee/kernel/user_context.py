@@ -6,8 +6,11 @@
     context.yaml    # 元数据（user_id, display_name, whitelist, blacklist）
     history.jsonl   # 对话历史
     memory/         # 记忆目录
-    work/           # 工作目录
     tmp/            # 插件临时目录（框架创建，插件自管清理）
+
+注意：沙箱根就是 base_dir（contexts/{user_id}/），
+所有相对路径（memory/xxx、skills/xxx）都基于此解析。
+context.yaml 和 history.jsonl 受沙箱写保护，LLM 无法修改。
 """
 
 from __future__ import annotations
@@ -54,8 +57,8 @@ class ConversationContext:
     每个上下文对应一个独立的对话会话，拥有独立的：
     - 消息历史（history.jsonl）
     - 记忆目录（memory/）
-    - 工作目录（work/）
     - 临时目录（tmp/）
+    - 用户文件目录（直接放在 base_dir 下，无 work/ 间接层）
     """
 
     def __init__(self, context_id: str, base_dir: Path):
@@ -67,13 +70,12 @@ class ConversationContext:
         """
         self.context_id = context_id
         self.base_dir = base_dir
-        self.work_dir = base_dir / "work"
         self.memory_dir = base_dir / "memory"
         self.tmp_dir = base_dir / "tmp"
         self.history_file = base_dir / "history.jsonl"
 
-        # 创建目录结构
-        self.work_dir.mkdir(parents=True, exist_ok=True)
+        # 创建目录结构（base_dir 由调用方确保存在）
+        base_dir.mkdir(parents=True, exist_ok=True)
         self.memory_dir.mkdir(parents=True, exist_ok=True)
         self.tmp_dir.mkdir(parents=True, exist_ok=True)
 
@@ -214,8 +216,8 @@ class UserContext:
 
     @property
     def work_dir(self) -> Path:
-        """工作目录"""
-        return self._conversation.work_dir
+        """工作目录（兼容属性，指向 base_dir，无独立 work/ 子目录）"""
+        return self.base_dir
 
     @property
     def memory_dir(self) -> Path:
@@ -262,8 +264,8 @@ class UserContext:
 
     @property
     def context_root(self) -> Path:
-        """上下文根目录（用于沙箱）— 指向 work/ 子目录"""
-        return self.work_dir
+        """上下文根目录（用于沙箱）— 指向 base_dir 自身"""
+        return self.base_dir
 
     def __repr__(self) -> str:
         return f"UserContext(user_id={self.user_id!r}, base_dir={self.base_dir})"
