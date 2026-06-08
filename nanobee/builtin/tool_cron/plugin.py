@@ -417,6 +417,9 @@ class ToolCronPlugin(ToolPlugin):
     async def _on_job_execute(self, job: CronJob) -> str | None:
         """Cron 任务触发时的回调：通过 Agent Loop 执行任务消息。
 
+        如果 job.payload.deliver 为 True 且 Agent 回复非空，
+        通过 event_bus 发布出站消息，让通道插件投递给用户。
+
         Args:
             job: 触发执行的任务
 
@@ -441,8 +444,25 @@ class ToolCronPlugin(ToolPlugin):
                 sender_id="system",
             )
             content_text = result.content if result else ""
+
             if job.payload.deliver and content_text:
-                logger.info("Cron: 任务 {} 执行完成", job.id)
+                logger.info("Cron: 任务 {} 执行完成，准备投递", job.id)
+                # 通过 event_bus 发布出站消息，让通道插件投递给用户
+                # 参考 nanobot/cli/commands.py 的 on_cron_job 回调逻辑
+                from nanobee.agent.loop import OutboundMessage
+
+                channel = job.payload.channel or "cli"
+                chat_id = job.payload.to or "direct"
+
+                # 通过 agent_loop 的 _publish_outbound 发布出站消息
+                if self.kernel.agent_loop.event_bus:
+                    await self.kernel.agent_loop.event_bus.publish("agent.outbound", {
+                        "channel": channel,
+                        "chat_id": chat_id,
+                        "content": content_text,
+                        "metadata": {},
+                    })
+
             return content_text
         except Exception:
             logger.exception("Cron: 任务 {} 执行异常", job.id)
