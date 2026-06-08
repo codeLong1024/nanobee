@@ -2,15 +2,18 @@
 用户上下文 — 多租户隔离的基本单元
 
 每个用户一个目录，目录结构：
-  contexts/{user_id}/
-    context.yaml    # 元数据（user_id, display_name, whitelist, blacklist）
-    history.jsonl   # 对话历史
-    memory/         # 记忆目录
-    tmp/            # 插件临时目录（框架创建，插件自管清理）
+  users/{user_id}/
+    identity.yaml  # 元数据（user_id, display_name, whitelist, blacklist）
+    workspace/     # LLM 工作文件（工具写文件的目标目录）
+    memory/        # 记忆目录
+    skills/        # 技能目录
+    .history/      # 会话历史（框架管理，LLM 不可写）
+      default.jsonl
+    .tmp/          # 插件临时目录（框架创建，插件自管清理）
 
-注意：沙箱根就是 base_dir（contexts/{user_id}/），
+注意：沙箱根就是 base_dir（users/{user_id}/），
 所有相对路径（memory/xxx、skills/xxx）都基于此解析。
-context.yaml 和 history.jsonl 受沙箱写保护，LLM 无法修改。
+identity.yaml、.history/ 和 .tmp/ 受沙箱写保护，LLM 无法修改。
 """
 
 from __future__ import annotations
@@ -24,7 +27,7 @@ import yaml
 from nanobee.utils.logger import logger
 
 
-# context.yaml 默认元数据
+# identity.yaml 默认元数据
 _USER_META_DEFAULTS: dict[str, Any] = {
     "user_id": "",
     "display_name": "",
@@ -55,10 +58,9 @@ class ConversationContext:
     """对话上下文（UserContext 内部实现）
 
     每个上下文对应一个独立的对话会话，拥有独立的：
-    - 消息历史（history.jsonl）
-    - 记忆目录（memory/）
-    - 临时目录（tmp/）
-    - 用户文件目录（直接放在 base_dir 下，无 work/ 间接层）
+    - 消息历史（.history/default.jsonl）— 框架管理
+    - 记忆目录（memory/）— LLM 自主管理
+    - 临时目录（.tmp/）— 框架管理，按请求清理
     """
 
     def __init__(self, context_id: str, base_dir: Path):
@@ -66,18 +68,20 @@ class ConversationContext:
 
         Args:
             context_id: 上下文唯一 ID
-            base_dir: 上下文基础目录
+            base_dir: 用户根目录（users/<user_id>/）
         """
         self.context_id = context_id
         self.base_dir = base_dir
         self.memory_dir = base_dir / "memory"
-        self.tmp_dir = base_dir / "tmp"
-        self.history_file = base_dir / "history.jsonl"
+        self.tmp_dir = base_dir / ".tmp"
+        self.history_file = base_dir / ".history" / "default.jsonl"
 
         # 创建目录结构（base_dir 由调用方确保存在）
         base_dir.mkdir(parents=True, exist_ok=True)
         self.memory_dir.mkdir(parents=True, exist_ok=True)
         self.tmp_dir.mkdir(parents=True, exist_ok=True)
+        # 创建 .history/ 目录
+        self.history_file.parent.mkdir(parents=True, exist_ok=True)
 
         self._messages: list[dict[str, Any]] = []
         self._load_history()
@@ -144,8 +148,9 @@ class UserContext:
     """用户上下文 — 多租户隔离的基本单元
 
     每个 User 一个目录，封装了：
-    - context.yaml：元数据（仅加载元数据，不加载历史）
-    - ConversationContext：历史消息、记忆、工作目录
+    - identity.yaml：元数据（仅加载元数据，不加载历史）
+    - ConversationContext：历史消息、记忆、临时目录
+    - workspace/：LLM 工作文件目录
     """
 
     def __init__(self, user_id: str, base_dir: Path) -> None:
@@ -153,15 +158,15 @@ class UserContext:
 
         Args:
             user_id: 用户唯一标识
-            base_dir: 用户上下文根目录
+            base_dir: 用户上下文根目录（users/<user_id>/）
         """
         self.user_id = user_id
         self.base_dir = base_dir.resolve()
 
-        # context.yaml 路径
-        self.meta_file = self.base_dir / "context.yaml"
+        # identity.yaml 路径
+        self.meta_file = self.base_dir / "identity.yaml"
 
-        # 内部 ConversationContext（历史消息、记忆、工作目录）
+        # 内部 ConversationContext（历史消息、记忆、临时目录）
         self._conversation = ConversationContext(user_id, base_dir)
 
         # 元数据
@@ -189,7 +194,7 @@ class UserContext:
         return self._metadata
 
     def _load_metadata(self) -> UserMetadata:
-        """从 context.yaml 加载元数据"""
+        """从 identity.yaml 加载元数据"""
         if not self.meta_file.exists():
             logger.warning("元数据文件不存在，使用默认值: {}", self.meta_file)
             return UserMetadata({"user_id": self.user_id})
@@ -201,11 +206,14 @@ class UserContext:
             logger.exception("加载元数据失败: {}", self.meta_file)
             return UserMetadata({"user_id": self.user_id})
 
-    def _ensure_meta_file(self) -> None:
-        """确保 context.yaml 存在，不存在则创建默认"""
+    def _ensure_identity_file(self) -> None:
+        """确保 identity.yaml 存在，不存在则创建默认"""
         if self.meta_file.exists():
             return
         self.base_dir.mkdir(parents=True, exist_ok=True)
+        # 同时创建 workspace/ 目录
+        workspace_dir = self.base_dir / "workspace"
+        workspace_dir.mkdir(parents=True, exist_ok=True)
         default = dict(_USER_META_DEFAULTS)
         default["user_id"] = self.user_id
         with open(self.meta_file, "w", encoding="utf-8") as f:
@@ -216,8 +224,10 @@ class UserContext:
 
     @property
     def work_dir(self) -> Path:
-        """工作目录（兼容属性，指向 base_dir，无独立 work/ 子目录）"""
-        return self.base_dir
+        """LLM 工作目录 — 指向 workspace/ 子目录"""
+        workspace_dir = self.base_dir / "workspace"
+        workspace_dir.mkdir(parents=True, exist_ok=True)
+        return workspace_dir
 
     @property
     def memory_dir(self) -> Path:

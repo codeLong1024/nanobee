@@ -5,8 +5,12 @@
 只做轻量根目录持有 + 参数清洗整合 + 元数据文件写保护。
 
 受保护的元数据文件（_META_BLOCKED_FILES）：
-- context.yaml：用户配置，LLM 不可修改
-- history.jsonl：对话历史，LLM 不可修改
+- identity.yaml：用户身份配置，LLM 不可修改
+- default.jsonl：会话历史（在 .history/ 下），LLM 不可修改
+
+受保护的隐藏目录（_META_BLOCKED_DIRS）：
+- .history/：所有会话历史文件
+- .tmp/：插件临时文件
 """
 
 from __future__ import annotations
@@ -31,8 +35,14 @@ _WORKING_DIR_KEYS: frozenset[str] = frozenset({"working_dir"})
 
 # 元数据文件写保护 — LLM 不可读/写/删这些文件
 _META_BLOCKED_FILES: frozenset[str] = frozenset({
-    "context.yaml",
-    "history.jsonl",
+    "identity.yaml",
+    "default.jsonl",
+})
+
+# 隐藏目录写保护 — 整个目录不可访问
+_META_BLOCKED_DIRS: frozenset[str] = frozenset({
+    ".history",
+    ".tmp",
 })
 
 # 向后兼容别名
@@ -47,7 +57,9 @@ class ContextSandbox:
     - resolve_path: 路径解析
 
     同时包含元数据文件写保护：
-    - context.yaml / history.jsonl 被 LLM 访问时抛出 SandboxError
+    - identity.yaml：用户配置，LLM 不可修改
+    - .history/ 下的所有文件：会话历史，LLM 不可修改
+    - .tmp/ 下的所有文件：插件临时文件，LLM 不可修改
 
     单用户模式下可设为 None（不启用沙箱）。
     """
@@ -145,21 +157,31 @@ class ContextSandbox:
 
     @staticmethod
     def _check_blocked(path: Path | str) -> None:
-        """检查路径是否指向受保护的元数据文件
+        """检查路径是否指向受保护的元数据文件或隐藏目录
 
         Args:
             path: 待检查的路径
 
         Raises:
-            SandboxError: 路径指向受保护的元数据文件
+            SandboxError: 路径指向受保护的元数据文件或隐藏目录
         """
         p = Path(path)
+        # 检查文件名黑名单
         if p.name in _META_BLOCKED_FILES:
             raise SandboxViolationError(
                 path=str(p.resolve()),
                 context_root="",
                 detail=f"元数据文件受保护，禁止访问: {p.name}",
             )
+        # 检查路径中是否包含受保护的隐藏目录
+        resolved_parts = p.resolve().parts
+        for part in resolved_parts:
+            if part in _META_BLOCKED_DIRS:
+                raise SandboxViolationError(
+                    path=str(p.resolve()),
+                    context_root="",
+                    detail=f"隐藏目录受保护，禁止访问: {part}",
+                )
 
     def __repr__(self) -> str:
         return f"ContextSandbox(root={self._context_root})"

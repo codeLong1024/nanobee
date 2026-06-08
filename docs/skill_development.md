@@ -234,9 +234,12 @@ SkillsLoader 从两个来源发现技能（2 秒 TTL 文件系统缓存）：
       └── skill-creator/SKILL.md
 
 来源 2: user skills/      ← 用户添加，可写
-    <work_dir>/skills/
+    <user_context>/skills/
       ├── my-skill/SKILL.md
       └── weekly-report/SKILL.md
+
+    注意：用户技能存放在每个用户的上下文目录下（users/<user_id>/skills/），
+    非全局 <work_dir>/skills/（旧路径已废弃）。
 ```
 
 ### 同名冲突处理

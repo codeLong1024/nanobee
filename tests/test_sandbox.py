@@ -13,8 +13,8 @@ from nanobee.kernel.sandbox import ContextSandbox, SandboxError
 
 @pytest.fixture
 def sandbox(tmp_path: Path) -> ContextSandbox:
-    """创建沙箱，root 为 tmp_path/contexts/user-a"""
-    root = tmp_path / "contexts" / "user-a"
+    """创建沙箱，root 为 tmp_path/users/user-a"""
+    root = tmp_path / "users" / "user-a"
     root.mkdir(parents=True, exist_ok=True)
     return ContextSandbox(root)
 
@@ -24,7 +24,7 @@ def sandbox(tmp_path: Path) -> ContextSandbox:
 
 def test_resolve_safe_allowed(tmp_path: Path):
     """沙箱内路径正常返回"""
-    root = tmp_path / "contexts" / "user-a"
+    root = tmp_path / "users" / "user-a"
     sandbox = ContextSandbox(root)
     file_path = root / "memory" / "test.txt"
     file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -36,7 +36,7 @@ def test_resolve_safe_allowed(tmp_path: Path):
 
 def test_resolve_safe_with_subdir(tmp_path: Path):
     """子目录路径正常"""
-    root = tmp_path / "contexts" / "user-a"
+    root = tmp_path / "users" / "user-a"
     sandbox = ContextSandbox(root)
     subdir = root / "sub" / "file.txt"
     subdir.parent.mkdir(parents=True, exist_ok=True)
@@ -47,7 +47,7 @@ def test_resolve_safe_with_subdir(tmp_path: Path):
 
 def test_resolve_safe_escape_dotdot(tmp_path: Path):
     """.. 路径逃逸被拦截"""
-    root = tmp_path / "contexts" / "user-a"
+    root = tmp_path / "users" / "user-a"
     sandbox = ContextSandbox(root)
     escape_path = str(root / "../../user-b/secret.txt")
 
@@ -59,7 +59,7 @@ def test_resolve_safe_escape_dotdot(tmp_path: Path):
 
 def test_resolve_safe_unrelated_path(tmp_path: Path):
     """不相关的路径被拦截"""
-    root = tmp_path / "contexts" / "user-a"
+    root = tmp_path / "users" / "user-a"
     sandbox = ContextSandbox(root)
     other = tmp_path / "other" / "file.txt"
 
@@ -69,7 +69,7 @@ def test_resolve_safe_unrelated_path(tmp_path: Path):
 
 def test_resolve_safe_root_itself(tmp_path: Path):
     """context_root 本身也是允许的"""
-    root = tmp_path / "contexts" / "user-a"
+    root = tmp_path / "users" / "user-a"
     sandbox = ContextSandbox(root)
     result = sandbox.resolve_safe(str(root))
     assert result == root.resolve()
@@ -80,7 +80,7 @@ def test_resolve_safe_root_itself(tmp_path: Path):
 
 def test_sanitize_params_path_field(tmp_path: Path):
     """清洗 path 参数"""
-    root = tmp_path / "contexts" / "user-a"
+    root = tmp_path / "users" / "user-a"
     sandbox = ContextSandbox(root)
     allowed = root / "test.txt"
     allowed.parent.mkdir(parents=True, exist_ok=True)
@@ -91,7 +91,7 @@ def test_sanitize_params_path_field(tmp_path: Path):
 
 def test_sanitize_params_directory_field(tmp_path: Path):
     """清洗 directory 参数"""
-    root = tmp_path / "contexts" / "user-a"
+    root = tmp_path / "users" / "user-a"
     sandbox = ContextSandbox(root)
     allowed = root / "subdir"
     allowed.mkdir(parents=True, exist_ok=True)
@@ -102,7 +102,7 @@ def test_sanitize_params_directory_field(tmp_path: Path):
 
 def test_sanitize_params_escape_raises(tmp_path: Path):
     """越界路径在清洗时抛出异常"""
-    root = tmp_path / "contexts" / "user-a"
+    root = tmp_path / "users" / "user-a"
     sandbox = ContextSandbox(root)
     bad_path = str(root / "../../../etc/passwd")
 
@@ -112,7 +112,7 @@ def test_sanitize_params_escape_raises(tmp_path: Path):
 
 def test_sanitize_params_non_path_untouched(tmp_path: Path):
     """非路径参数不会被修改"""
-    root = tmp_path / "contexts" / "user-a"
+    root = tmp_path / "users" / "user-a"
     sandbox = ContextSandbox(root)
     params = {"name": "hello", "count": 42, "flag": True}
     result = sandbox.sanitize_params("echo", params)
@@ -121,7 +121,7 @@ def test_sanitize_params_non_path_untouched(tmp_path: Path):
 
 def test_sanitize_params_mixed(tmp_path: Path):
     """混合参数：路径被清洗，非路径不变"""
-    root = tmp_path / "contexts" / "user-a"
+    root = tmp_path / "users" / "user-a"
     sandbox = ContextSandbox(root)
     allowed = root / "f.txt"
     allowed.parent.mkdir(parents=True, exist_ok=True)
@@ -139,7 +139,7 @@ def test_sanitize_params_mixed(tmp_path: Path):
 
 def test_sanitize_params_working_dir(tmp_path: Path):
     """working_dir 参数被清洗"""
-    root = tmp_path / "contexts" / "user-a"
+    root = tmp_path / "users" / "user-a"
     sandbox = ContextSandbox(root)
     wd = root / "sub_wd"
     wd.mkdir(parents=True, exist_ok=True)
@@ -153,14 +153,14 @@ def test_sanitize_params_working_dir(tmp_path: Path):
 
 def test_assert_allowed_pass(tmp_path: Path):
     """断言通过"""
-    root = tmp_path / "contexts" / "user-a"
+    root = tmp_path / "users" / "user-a"
     sandbox = ContextSandbox(root)
     sandbox.assert_allowed(root / "memory")  # 不应抛出
 
 
 def test_assert_allowed_fail(tmp_path: Path):
     """断言失败抛出 SandboxError"""
-    root = tmp_path / "contexts" / "user-a"
+    root = tmp_path / "users" / "user-a"
     sandbox = ContextSandbox(root)
     with pytest.raises(SandboxError):
         sandbox.assert_allowed("/etc")
@@ -171,7 +171,7 @@ def test_assert_allowed_fail(tmp_path: Path):
 
 def test_context_root_property(tmp_path: Path):
     """context_root 属性正确"""
-    root = tmp_path / "contexts" / "user-a"
+    root = tmp_path / "users" / "user-a"
     sandbox = ContextSandbox(root)
     assert sandbox.context_root == root.resolve()
 
@@ -193,7 +193,7 @@ def test_resolve_safe_with_internal_symlink_to_external(tmp_path: Path):
     模拟攻击场景：攻击者在沙箱内创建指向 /etc/passwd 的符号链接，
     期望沙箱能通过 resolve() 解析到外部路径并拦截。
     """
-    root = tmp_path / "contexts" / "user-a"
+    root = tmp_path / "users" / "user-a"
     (root / "subdir").mkdir(parents=True)
 
     # 沙箱外建一个文件，再在沙箱内创建指向它的符号链接
@@ -212,7 +212,7 @@ def test_resolve_safe_with_external_symlink_to_internal(tmp_path: Path):
 
     这不是攻击，而是验证 symlink 解析到沙箱内路径时能正常通过。
     """
-    root = tmp_path / "contexts" / "user-a"
+    root = tmp_path / "users" / "user-a"
     root.mkdir(parents=True)
 
     inside_file = root / "safe.txt"
@@ -230,7 +230,7 @@ def test_resolve_safe_with_external_symlink_to_internal(tmp_path: Path):
 
 def test_resolve_safe_with_tricky_symlink(tmp_path: Path):
     """穿越多次 relative_to 仍是同级路径的 symlink"""
-    root = tmp_path / "contexts" / "user-a"
+    root = tmp_path / "users" / "user-a"
     (root / "sub").mkdir(parents=True)
 
     # 沙箱外创建文件，沙箱内 symlink 指向它
@@ -265,7 +265,7 @@ def test_context_root_is_symlink(tmp_path: Path):
 
 def test_assert_allowed_with_symlink(tmp_path: Path):
     """assert_allowed 同样能拦截指向外部的符号链接"""
-    root = tmp_path / "contexts" / "user-a"
+    root = tmp_path / "users" / "user-a"
     root.mkdir(parents=True)
 
     outside = tmp_path / "secret.txt"

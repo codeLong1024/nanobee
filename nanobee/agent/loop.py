@@ -72,8 +72,8 @@ class InboundMessage:
         2. sender_id (用户唯一标识,如钉钉 staffId)
         3. channel:chat_id (兜底兼容)
 
-        参考 nanobot_channel_dingtalk 的设计,使用 sender_id 作为唯一标识,
-        避免创建重复的 contexts 目录。
+    参考 nanobot_channel_dingtalk 的设计,使用 sender_id 作为唯一标识,
+    避免创建重复的用户目录。
         """
         if self.context_id_override:
             return self.context_id_override

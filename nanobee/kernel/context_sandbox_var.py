@@ -34,7 +34,7 @@ _CURRENT_SANDBOX: ContextVar["ContextSandbox | None"] = ContextVar(
     default=None,
 )
 
-# 当前请求的 tmp 根目录（per-user: ~/.nanobee/contexts/<user>/tmp/）
+# 当前请求的 tmp 根目录（per-user: ~/.nanobee/users/<user>/.tmp/）
 # 插件访问 self.tmp 时会自动加上插件名作为子目录
 _CURRENT_TMP: ContextVar[Path | None] = ContextVar(
     "nanobee_tmp",

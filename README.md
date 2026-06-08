@@ -38,10 +38,10 @@ CLI 命令        ████████████████████�
 - **Plugin Hook 机制** — 5 个核心契约接口（contribute_to_prompt/contribute_to_tools/on_pre_invoke/on_post_invoke/on_message_completed），插件可在关键切面注入逻辑
 
 - **Run-level Hook 机制** — AgentRunner 外层生命周期：before_run / after_run / on_error / on_finally，包裹整个 LLM 迭代循环，支持启动初始化、完成汇总、错误记录、资源释放
-- **技能管理** — SkillsLoader 双源发现（内置技能 `nanobee/builtin/skills/` + 用户技能 `work_dir/skills/`），SKILL.md frontmatter 驱动渐进/全量注入策略。内置 `_memory`（记忆策略，`full_inject: true`声明全量注入）、`skill-creator`（技能创建教程）
+- **技能管理** — SkillsLoader 双源发现（内置技能 `nanobee/builtin/skills/` + per-user 技能 `users/<user_id>/skills/`），SKILL.md frontmatter 驱动渐进/全量注入策略。内置 `_memory`（记忆策略，`full_inject: true`声明全量注入）、`skill-creator`（技能创建教程）
 - **内置 Skill** — 框架打包 `nanobee/builtin/skills/`，只读不可覆盖。标记 `full_inject: true` 的技能全量注入 system prompt，普通技能仅注入元数据由 LLM 按需读取
 - **Sandbox 相对路径统一** — L1（sandbox.py）/ L2（tool_fs）相对路径均基于 sandbox root 解析，skill 中 `memory/xxx` 类相对路径始终落在沙箱内
-- **上下文管理** — 按用户物理隔离的目录结构（context.yaml / history.jsonl / work / memory / tmp），框架通过 ContextVar 按请求向插件注入 `self.tmp`，插件自管清理
+- **上下文管理** — 按用户物理隔离的目录结构（identity.yaml / .history/ / workspace/ / memory/ / .tmp/），框架通过 ContextVar 按请求向插件注入 `self.tmp`，插件自管清理
 - **灵魂守卫** — 三层保护（chmod 444 + 写入拦截 Hook + SHA-256 哈希校验）
 - **插件管理器** — 扫描、加载（含依赖拓扑排序）、启用/禁用/卸载生命周期
 - **LLM Provider** — Anthropic、OpenAI、Azure、Bedrock、GitHub Copilot、OpenAI 兼容接口、30+ 模型规格注册
@@ -183,7 +183,7 @@ ChannelPlugin ──▶ EventBus ──▶ NanobeeKernel
 ```
 [P10] Soul 段         ← core.md Soul 节（框架内置）
 [P20] Rules 段         ← core.md Rules 节 + 用户身份（框架内置）
-[P28] 技能段           ← SkillStage：从 builtin/skills/ + skills/ 读取技能文档
+[P28] 技能段           ← SkillStage：从 builtin/skills/ + users/<user_id>/skills/ 读取技能文档
                         · full_inject=true：全量注入 body（如 _memory 记忆策略）
                         · full_inject=false：渐进式注入（仅 name/description 元数据）
                         · 同名技能双方都展示，标注 [builtin] / [user] 来源
@@ -200,12 +200,12 @@ ChannelPlugin ──▶ EventBus ──▶ NanobeeKernel
 
 ### 插件临时目录（self.tmp）
 
-框架在 `contexts/<user>/tmp/` 下为每个用户创建临时目录，通过 ContextVar 按请求注入到插件。插件通过 `self.tmp` 获取自己的专属临时目录（`tmp/<plugin_name>/`）：
+框架在 `users/<user>/.tmp/` 下为每个用户创建临时目录，通过 ContextVar 按请求注入到插件。插件通过 `self.tmp` 获取自己的专属临时目录（`.tmp/<plugin_name>/`）：
 
 ```python
 class MyPlugin(ToolPlugin):
     async def execute_tool(self, tool_name, **kwargs):
-        # self.tmp 按请求自动注入，路径：.../contexts/<user>/tmp/my_plugin/
+        # self.tmp 按请求自动注入，路径：.../users/<user>/.tmp/my_plugin/
         cache_file = self.tmp / "cache.json"
         # 框架只管创建和注入，清理由插件自行决定
 ```
@@ -244,7 +244,7 @@ class MyPlugin(NanobeePlugin):
     stage = "记忆"
 
     def on_load(self) -> None:
-        # self.tmp 在请求上下文中可用，路径: contexts/<user>/tmp/my_plugin/
+        # self.tmp 在请求上下文中可用，路径: users/<user>/.tmp/my_plugin/
         # 框架只管创建目录，清理由插件自己决定
         logger.info("tmp 目录: {}", self.tmp)
 
@@ -395,7 +395,7 @@ nanobee 从 [nanobot](https://github.com/HKUDS/nanobot) 衍生开发，核心差
 | 架构哲学 | 大而全（内置记忆/梦境/人设） | 极简微内核（路由/隔离/拼装） |
 | CLI/Gateway 分离 | `agent` + `gateway` 双模式 | ✅ 已复刻：`run` 轻量 + `gateway` 完整服务栈 |
 | 记忆策略 | 框架内置多种算法 | 内置 `_memory` Skill（LLM 自主管理），用户可覆盖自定义 |
-| 技能管理 | 框架内置 CRUD | 文件驱动 SkillsLoader（buildin/ + work_dir/skills/），用户通过 write_file 自主管理 |
+| 技能管理 | 框架内置 CRUD | 文件驱动 SkillsLoader（builtin/ + users/<user_id>/skills/），用户通过 write_file 自主管理 |
 | 隔离机制 | 逻辑隔离 | 物理隔离 + 沙箱 + 锁 |
 | 插件系统 | 有限扩展点 | 5 个 Hook 契约 + 完整生命周期 |
 | 代码量 | 数万行 | 精简聚焦 |
@@ -411,7 +411,7 @@ nanobee 从 [nanobot](https://github.com/HKUDS/nanobot) 衍生开发，核心差
 - 复杂的 facts.json / episodic.json 格式化
 - WebSocket 服务（由 `channel_ws` 插件实现）
 
-框架的责任是**画地为牢（隔离）**——`tmp/`目录、`ContextSandbox`沙箱、多租户上下文，都是给插件安全可靠的地盘。
+框架的责任是**画地为牢（隔离）**——`.tmp/`目录、`ContextSandbox`沙箱、多租户上下文，都是给插件安全可靠的地盘。
 插件的自由是**破土动工（注入）**——在这个地盘里，怎么写记忆、怎么管临时文件、怎么定义工具，全部由插件决定。
 
 ## 开发

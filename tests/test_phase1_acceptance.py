@@ -81,7 +81,7 @@ def test_known_route_resolved():
 
 def test_sandbox_allows_own_file(tmp_path: Path):
     """tool-fs 读取当前 User 文件 — 沙箱允许"""
-    root = tmp_path / "contexts" / "user-a"
+    root = tmp_path / "users" / "user-a"
     root.mkdir(parents=True, exist_ok=True)
     test_file = root / "memory" / "notes.txt"
     test_file.parent.mkdir(parents=True, exist_ok=True)
@@ -95,8 +95,8 @@ def test_sandbox_allows_own_file(tmp_path: Path):
 
 def test_sandbox_blocks_cross_user_escape(tmp_path: Path):
     """tool-fs 尝试 ../../user-b/memory/ — 沙箱拦截"""
-    root_a = tmp_path / "contexts" / "user-a"
-    root_b = tmp_path / "contexts" / "user-b"
+    root_a = tmp_path / "users" / "user-a"
+    root_b = tmp_path / "users" / "user-b"
     root_a.mkdir(parents=True, exist_ok=True)
     root_b.mkdir(parents=True, exist_ok=True)
     (root_b / "memory").mkdir()

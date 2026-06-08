@@ -410,6 +410,12 @@ class AgentRunner:
                 await hook.emit_reasoning_end()
                 context.streamed_reasoning = True
 
+            # [DEBUG] 打印 LLM 本轮输出摘要
+            _content_preview = (response.content or "")[:120].replace("\n", "\\n")
+            _tool_names = [tc.name for tc in (response.tool_calls or [])]
+            logger.debug("[LLM] iter={} | content={} | tools={} | finish_reason={}",
+                         iteration, _content_preview, _tool_names, response.finish_reason)
+
             if response.should_execute_tools:
                 context.tool_calls = list(response.tool_calls)
                 if hook.wants_streaming():
@@ -932,6 +938,13 @@ class AgentRunner:
             if spec.fail_on_tool_error:
                 return lookup_error + hint, event, RuntimeError(lookup_error)
             return lookup_error + hint, event, None
+
+        # [DEBUG] 打印工具调用关键信息
+        _args_str = str(tool_call.arguments)
+        if len(_args_str) > 500:
+            _args_str = _args_str[:500] + "...(truncated)"
+        logger.debug("[TOOL] 请求: {} | args={}", tool_call.name, _args_str)
+
         prepare_call = getattr(spec.tools, "prepare_call", None)
         tool, params, prep_error = None, tool_call.arguments, None
         if callable(prepare_call):
@@ -1040,6 +1053,13 @@ class AgentRunner:
                     except Exception as e:
                         logger.exception("on_post_invoke hook 执行出错: {}", e)
                         # 不阻止结果返回，仅记录日志
+
+            # [DEBUG] 打印工具结果信息
+            _result_str = str(result)
+            if len(_result_str) > 300:
+                _result_str = _result_str[:300] + "...(truncated)"
+            logger.debug("[TOOL] 结果: {} = {}", tool_call.name, _result_str)
+
         except asyncio.CancelledError:
             raise
         except BaseException as exc:

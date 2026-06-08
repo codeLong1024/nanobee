@@ -5,7 +5,8 @@ from __future__ import annotations
 import os
 import pytest
 
-from nanobee.kernel.context_manager import ContextManager, ConversationContext
+from nanobee.kernel.context_manager import ContextManager
+from nanobee.kernel.user_context import ConversationContext
 from nanobee.kernel.soul_guard import SoulGuard, SoulViolationError
 from nanobee.kernel.core_parser import CoreMDParser
 
@@ -42,8 +43,8 @@ async def test_context_isolation(tmp_path):
 
     # 验证目录隔离
     assert ctx1.base_dir != ctx2.base_dir
-    assert (ctx1.base_dir / "history.jsonl").exists()
-    assert (ctx2.base_dir / "history.jsonl").exists()
+    assert (ctx1.base_dir / ".history" / "default.jsonl").exists()
+    assert (ctx2.base_dir / ".history" / "default.jsonl").exists()
 
 
 @pytest.mark.asyncio

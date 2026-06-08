@@ -59,16 +59,16 @@ def test_metadata_to_dict():
 
 
 def test_create_new_user(tmp_path: Path):
-    """创建新用户时自动生成 context.yaml"""
-    base_dir = tmp_path / "contexts" / "user-alice"
+    """创建新用户时自动生成 identity.yaml"""
+    base_dir = tmp_path / "users" / "user-alice"
     ctx = UserContext("user-alice", base_dir)
-    ctx._ensure_meta_file()
+    ctx._ensure_identity_file()
 
     assert ctx.user_id == "user-alice"
     assert ctx.base_dir == base_dir.resolve()
     assert ctx._metadata is None  # 懒加载，未访问
 
-    # context.yaml 已创建
+    # identity.yaml 已创建
     assert ctx.meta_file.exists()
     with open(ctx.meta_file, "r", encoding="utf-8") as f:
         data = yaml.safe_load(f)
@@ -79,9 +79,9 @@ def test_create_new_user(tmp_path: Path):
 
 def test_metadata_lazy_load(tmp_path: Path):
     """元数据是懒加载的"""
-    base_dir = tmp_path / "contexts" / "user-bob"
+    base_dir = tmp_path / "users" / "user-bob"
     ctx = UserContext("user-bob", base_dir)
-    ctx._ensure_meta_file()
+    ctx._ensure_identity_file()
 
     # 访问前 _metadata 为 None
     assert ctx._metadata is None
@@ -94,9 +94,9 @@ def test_metadata_lazy_load(tmp_path: Path):
 
 def test_load_existing_user(tmp_path: Path):
     """加载已有用户上下文"""
-    base_dir = tmp_path / "contexts" / "user-alice"
+    base_dir = tmp_path / "users" / "user-alice"
     ctx1 = UserContext("user-alice", base_dir)
-    ctx1._ensure_meta_file()
+    ctx1._ensure_identity_file()
     ctx1.add_message("user", "你好")
     ctx1.add_message("assistant", "你好！我是助手")
 
@@ -110,9 +110,9 @@ def test_load_existing_user(tmp_path: Path):
 
 def test_metadata_only_no_history(tmp_path: Path):
     """get_metadata 不触发历史加载"""
-    base_dir = tmp_path / "contexts" / "user-alice"
+    base_dir = tmp_path / "users" / "user-alice"
     ctx = UserContext("user-alice", base_dir)
-    ctx._ensure_meta_file()
+    ctx._ensure_identity_file()
 
     # 添加一条历史
     ctx.add_message("user", "test")
@@ -187,10 +187,10 @@ async def test_context_manager_list(tmp_path: Path):
 
 
 def test_conversation_context_creates_tmp_dir(tmp_path: Path):
-    """ConversationContext 创建 tmp/ 目录"""
+    """ConversationContext 创建 .tmp/ 目录"""
     from nanobee.kernel.user_context import ConversationContext
     ctx = ConversationContext("test", tmp_path)
-    assert ctx.tmp_dir == tmp_path / "tmp"
+    assert ctx.tmp_dir == tmp_path / ".tmp"
     assert ctx.tmp_dir.exists()
     assert ctx.tmp_dir.is_dir()
 
@@ -198,7 +198,7 @@ def test_conversation_context_creates_tmp_dir(tmp_path: Path):
 def test_user_context_exposes_tmp_dir(tmp_path: Path):
     """UserContext 暴露 tmp_dir 属性"""
     user_ctx = UserContext("test-user", tmp_path)
-    assert user_ctx.tmp_dir == tmp_path / "tmp"
+    assert user_ctx.tmp_dir == tmp_path / ".tmp"
     assert user_ctx.tmp_dir.exists()
 
 

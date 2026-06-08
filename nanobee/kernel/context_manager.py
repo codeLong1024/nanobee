@@ -6,7 +6,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from nanobee.kernel.user_context import ConversationContext, UserContext
+from nanobee.kernel.user_context import UserContext
 
 from nanobee.utils.logger import logger
 
@@ -17,6 +17,7 @@ class ContextManager:
 
     负责管理多个用户上下文的创建、切换、销毁。
     每个用户拥有独立的 UserContext（目录隔离 + 元数据 + 历史）。
+    用户数据存储在 work_dir/users/<user_id>/ 下。
     """
 
     def __init__(self, kernel: Any):
@@ -28,15 +29,15 @@ class ContextManager:
         self.kernel = kernel
         self._contexts: dict[str, UserContext] = {}
 
-        # 上下文基础目录（使用 kernel.work_dir，确保默认值一致）
+        # 用户基础目录（使用 kernel.work_dir，确保默认值一致）
         work_dir = Path(kernel.work_dir).expanduser()
-        self.contexts_base_dir = work_dir / "contexts"
-        self.contexts_base_dir.mkdir(parents=True, exist_ok=True)
+        self.users_base_dir = work_dir / "users"
+        self.users_base_dir.mkdir(parents=True, exist_ok=True)
 
     async def get_or_create(self, user_id: str) -> UserContext:
         """获取或创建用户上下文
 
-        创建时自动生成默认的 context.yaml 元数据。
+        创建时自动生成默认的 identity.yaml 元数据。
         不加载历史消息（懒加载），仅加载元数据。
 
         Args:
@@ -46,10 +47,10 @@ class ContextManager:
             用户上下文实例
         """
         if user_id not in self._contexts:
-            base_dir = self.contexts_base_dir / user_id
+            base_dir = self.users_base_dir / user_id
             base_dir.mkdir(parents=True, exist_ok=True)
             ctx = UserContext(user_id, base_dir)
-            ctx._ensure_meta_file()
+            ctx._ensure_identity_file()
             self._contexts[user_id] = ctx
             logger.info("创建用户上下文: {}（目录: {}）", user_id, base_dir)
 
@@ -92,13 +93,13 @@ class ContextManager:
 
         ctx = self._contexts.pop(user_id)
 
-        # 安全检查：只允许删除 contexts_base_dir 下的子目录
+        # 安全检查：只允许删除 users_base_dir 下的子目录
         base_dir = ctx.base_dir.resolve()
-        allowed = self.contexts_base_dir.resolve()
+        allowed = self.users_base_dir.resolve()
         try:
             base_dir.relative_to(allowed)
             if base_dir == allowed:
-                logger.error("安全拦截：不允许删除 contexts 根目录: {}", base_dir)
+                logger.error("安全拦截：不允许删除 users 根目录: {}", base_dir)
                 return False
         except ValueError:
             logger.error(

@@ -30,7 +30,7 @@ def plugin(tmp_path: Path) -> ToolShellPlugin:
 @pytest.fixture
 def user_context_sandbox(tmp_path: Path) -> ContextSandbox:
     """创建用户上下文沙箱"""
-    root = tmp_path / "contexts" / "user-a"
+    root = tmp_path / "users" / "user-a"
     root.mkdir(parents=True, exist_ok=True)
     return ContextSandbox(root)
 
@@ -178,7 +178,7 @@ def test_sanitize_params_working_dir_only_resolves(
     tmp_path: Path,
 ):
     """working_dir 在 sanitize_params 中只解析，不拦截"""
-    root = tmp_path / "contexts" / "user-a"
+    root = tmp_path / "users" / "user-a"
     root.mkdir(parents=True, exist_ok=True)
     sandbox = ContextSandbox(root)
 
@@ -193,7 +193,7 @@ def test_sanitize_params_working_dir_inside_sandbox(
     tmp_path: Path,
 ):
     """working_dir 在沙箱内 → 解析为绝对路径"""
-    root = tmp_path / "contexts" / "user-a"
+    root = tmp_path / "users" / "user-a"
     root.mkdir(parents=True, exist_ok=True)
     sandbox = ContextSandbox(root)
 
@@ -208,7 +208,7 @@ def test_sanitize_params_path_field_still_intercepts(
     tmp_path: Path,
 ):
     """path 字段仍然被严格拦截"""
-    root = tmp_path / "contexts" / "user-a"
+    root = tmp_path / "users" / "user-a"
     root.mkdir(parents=True, exist_ok=True)
     sandbox = ContextSandbox(root)
 

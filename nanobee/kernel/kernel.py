@@ -67,7 +67,6 @@ class NanobeeKernel:
         # 内置技能目录：nanobee/builtin/skills/
         _builtin_skills = Path(__file__).resolve().parent.parent / "builtin" / "skills"
         self.skill_manager = SkillsLoader(
-            user_skills_dir=self.work_dir / "skills",
             builtin_skills_dir=_builtin_skills,
         )
         self.soul_guard = SoulGuard(self)

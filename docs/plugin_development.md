@@ -525,12 +525,12 @@ class MyPlugin(NanobeePlugin):
 
 ## 插件临时目录（tmp 注入）
 
-框架在 `ConversationContext` 中创建 `tmp/` 目录，通过 ContextVar 按请求注入到插件：
+框架在 `ConversationContext` 中创建 `.tmp/` 目录，通过 ContextVar 按请求注入到插件：
 
 ```python
 class MyPlugin(NanobeePlugin):
     async def execute_tool(self, tool_name: str, **kwargs) -> str:
-        # self.tmp 返回 <context_root>/tmp/<plugin_name>/
+        # self.tmp 返回 <context_root>/.tmp/<plugin_name>/
         # 当前请求未绑定 ContextVar 时返回 None
         if self.tmp:
             tmp_file = self.tmp / "temp_data.txt"

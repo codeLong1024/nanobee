@@ -186,6 +186,11 @@ class SkillStage(PipelineStage):
     此 Stage 内置在框架中，不依赖 Plugin 生命周期。
     使用 kernel.skill_manager 统一实例，避免路径分裂。
 
+    技能加载优先级：
+    1. per-context 技能（users/<user_id>/skills/）— 用户自主管理
+    2. 内置技能（nanobee/builtin/skills/）— 框架打包
+    同名时 context 技能覆盖内置版。
+
     Phase 2 增强：加 [SKILL BEGIN/END] 边界标记，
     共享技能 body 每行使用 > 引用包裹。
     """
@@ -216,7 +221,17 @@ class SkillStage(PipelineStage):
         from_dict = isinstance(context, dict)
         ctx = PromptBuildContext._from_compat(context)  # type: ignore[arg-type]
 
-        all_skills = self._loader.list_all_skills()
+        all_skills = list(self._loader.list_all_skills())
+
+        # 如果有 user_context，额外扫描其 skills/ 目录
+        user_ctx = ctx.user_context
+        if user_ctx is not None:
+            context_root = getattr(user_ctx, "context_root", None)
+            if context_root is not None:
+                context_skills = self._loader.scan_context_skills(context_root)
+                # context 技能优先：放在前面，同名时覆盖内置/旧用户版
+                all_skills = context_skills + all_skills
+
         if not all_skills:
             return ctx.to_dict() if from_dict else ctx
 

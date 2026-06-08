@@ -38,7 +38,7 @@ class AuditLoggerPlugin(NanobeePlugin):
     ) -> None:
         """记录本轮交互摘要。
 
-        统计本轮总消息数和工具调用次数。
+        统计本轮总消息数、LLM 迭代次数和工具调用次数。
 
         Args:
             context: UserContext 实例
@@ -47,12 +47,14 @@ class AuditLoggerPlugin(NanobeePlugin):
         self._call_count += 1
         user_id = getattr(context, "user_id", "?")
         tool_calls = sum(1 for m in messages if isinstance(m, dict) and "tool_calls" in m)
+        iterations = sum(1 for m in messages if isinstance(m, dict) and m.get("role") == "assistant")
 
         logger.info(
-            "[audit] user={} | round={} | messages={} | tool_calls={}",
+            "[audit] user={} | round={} | messages={} | iterations={} | tool_calls={}",
             user_id,
             self._call_count,
             len(messages),
+            iterations,
             tool_calls,
         )
 

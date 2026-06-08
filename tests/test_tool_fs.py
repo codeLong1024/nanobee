@@ -353,7 +353,7 @@ class TestToolDefinitions:
 #     # def test_sandbox_contextvar_injection(self, tmp_path):
     #     """ContextVar 注入沙箱后，_resolve_path 能正确使用"""
     #     from nanobee.kernel.context_sandbox_var import bind_sandbox, reset_sandbox
-    #     root = tmp_path / "contexts" / "user-a"
+    #     root = tmp_path / "users" / "user-a"
     #     root.mkdir(parents=True, exist_ok=True)
     #     sandbox = ContextSandbox(root)
     #     plugin = _create_plugin()

@@ -2,13 +2,13 @@
 
 Skill 是用户知识资产，不是代码插件。
 框架只做两件事：
-1. 发现技能（扫描 builtin + user 目录下的 SKILL.md）
+1. 发现技能（扫描 builtin + per-context 目录下的 SKILL.md）
 2. 注入元数据（name + description → system prompt）
 
 与旧版 SkillManager 的关键区别：
 - 去除了 CRUD（用户通过 write_file 自主管理）
-- 去除了用户隔离（skills/ 目录扁平化）
-- 去除了共享/可见性/派生等社交语义
+- 去除了全局用户技能扫描（~/.nanobee/skills/ 废弃）
+- 改用 per-context 技能扫描（context/<user_id>/skills/）
 - 新增内置技能扫描（nanobee/builtin/skills/）
 """
 
@@ -75,7 +75,10 @@ class SkillsLoader:
 
     扫描两个来源并合并呈现：
     1. 内置技能（nanobee/builtin/skills/）—— 框架打包，只读
-    2. 用户技能（<work_dir>/skills/）—— 用户通过 write_file 自主管理
+    2. 用户技能（<context_root>/skills/）—— 通过 scan_context_skills() 按 context 加载
+
+    注意：全局 `~/.nanobee/skills/` 路径已废弃，不再扫描。
+    技能存放在每个用户的上下文目录下（`users/<user_id>/skills/`）。
 
     缓存策略：基于 mtime 的文件系统缓存，TTL 2 秒。
     """
@@ -84,10 +87,10 @@ class SkillsLoader:
 
     def __init__(
         self,
-        user_skills_dir: str | Path,
+        user_skills_dir: str | Path | None = None,
         builtin_skills_dir: str | Path | None = None,
     ) -> None:
-        self._user_dir = Path(user_skills_dir).resolve()
+        self._user_dir = Path(user_skills_dir).resolve() if user_skills_dir else None
         self._builtin_dir = Path(builtin_skills_dir).resolve() if builtin_skills_dir else None
 
         # 缓存：key -> (skills 列表, mtime, 缓存时间)
@@ -147,7 +150,13 @@ class SkillsLoader:
         return skills
 
     def list_user_skills(self) -> list[Skill]:
-        """列出所有用户技能（flat 结构）。"""
+        """列出所有用户技能（废弃的全局路径）。
+
+        .. deprecated::
+            改用 scan_context_skills(context_root) 按 context 加载技能。
+        """
+        if not self._user_dir:
+            return []
         key = "user"
         if self._is_cache_valid(key, self._user_dir):
             return self._cache[key]
@@ -157,6 +166,20 @@ class SkillsLoader:
         self._cache_time[key] = time.time()
         self._dir_mtime[key] = self._scan_dir_mtime(self._user_dir)
         return skills
+
+    def scan_context_skills(self, context_root: Path) -> list[Skill]:
+        """扫描指定 context 目录下的用户技能。
+
+        Args:
+            context_root: 用户上下文根目录（base_dir）
+
+        Returns:
+            技能列表，按技能名排序
+        """
+        skills_dir = context_root / "skills"
+        if not skills_dir.is_dir():
+            return []
+        return self._scan_dir(skills_dir, source="user")
 
     def list_all_skills(self) -> list[Skill]:
         """列出所有技能（内置 + 用户），同名时双方都返回。"""
