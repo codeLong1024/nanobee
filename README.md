@@ -38,10 +38,10 @@ CLI 命令        ████████████████████�
 - **Plugin Hook 机制** — 5 个核心契约接口（contribute_to_prompt/contribute_to_tools/on_pre_invoke/on_post_invoke/on_message_completed），插件可在关键切面注入逻辑
 
 - **Run-level Hook 机制** — AgentRunner 外层生命周期：before_run / after_run / on_error / on_finally，包裹整个 LLM 迭代循环，支持启动初始化、完成汇总、错误记录、资源释放
-- **技能管理** — SkillsLoader 双源发现（内置技能 `nanobee/builtin/skills/` + per-user 技能 `users/<user_id>/skills/`），SKILL.md frontmatter 驱动渐进/全量注入策略。内置 `_memory`（记忆策略，`full_inject: true`声明全量注入）、`skill-creator`（技能创建教程）
-- **内置 Skill** — 框架打包 `nanobee/builtin/skills/`，只读不可覆盖。标记 `full_inject: true` 的技能全量注入 system prompt，普通技能仅注入元数据由 LLM 按需读取
+- **技能管理** — SkillsLoader 双源发现（内置技能 `nanobee/skills/` + per-user 技能 `users/<user_id>/skills/`），SKILL.md frontmatter 驱动渐进/全量注入策略。内置 `_memory`（记忆策略，`full_inject: true`声明全量注入）、`skill_creator`（技能创建教程）
+- **内置 Skill** — 框架打包 `nanobee/skills/`，只读不可覆盖。标记 `full_inject: true` 的技能全量注入 system prompt，普通技能仅注入元数据由 LLM 按需读取
 - **Sandbox 相对路径统一** — L1（sandbox.py）/ L2（tool_fs）相对路径均基于 sandbox root 解析，skill 中 `memory/xxx` 类相对路径始终落在沙箱内
-- **上下文管理** — 按用户物理隔离的目录结构（identity.yaml / .history/ / workspace/ / memory/ / .tmp/），框架通过 ContextVar 按请求向插件注入 `self.tmp`，插件自管清理
+- **上下文管理** — 按用户物理隔离的目录结构（identity.yaml / .history/ / workspace/ / memory/ / .tmp/），框架通过 ContextVar 按请求向插件注入 `self.tmp`（临时目录）和 `self.context_root`（用户根目录），插件自管清理和持久化子目录创建
 - **灵魂守卫** — 三层保护（chmod 444 + 写入拦截 Hook + SHA-256 哈希校验）
 - **插件管理器** — 扫描、加载（含依赖拓扑排序）、启用/禁用/卸载生命周期
 - **LLM Provider** — Anthropic、OpenAI、Azure、Bedrock、GitHub Copilot、OpenAI 兼容接口、30+ 模型规格注册
@@ -175,7 +175,7 @@ ChannelPlugin ──▶ EventBus ──▶ NanobeeKernel
 | `LockManager` | 按用户粒度的 asyncio 并发锁 |
 | `ContextRouter` | 多租户路由（`channel:chat_id` → `user_id`） |
 | `ContextSandbox` | 沙箱拦截路径逃逸（`../` 检测） |
-| `context_sandbox_var` | ContextVar 注入：bind_sandbox/bind_tmp/reset_tmp/current_tmp |
+| `context_sandbox_var` | ContextVar 注入：bind_sandbox/bind_tmp/bind_context_root 及对应 reset/current 函数 |
 | `ToolCollector` | 工具白/黑名单双重过滤 |
 
 ### Pipeline 如何组装 System Prompt
@@ -183,7 +183,7 @@ ChannelPlugin ──▶ EventBus ──▶ NanobeeKernel
 ```
 [P10] Soul 段         ← core.md Soul 节（框架内置）
 [P20] Rules 段         ← core.md Rules 节 + 用户身份（框架内置）
-[P28] 技能段           ← SkillStage：从 builtin/skills/ + users/<user_id>/skills/ 读取技能文档
+[P28] 技能段           ← SkillStage：从 nanobee/skills/ + users/<user_id>/skills/ 读取技能文档
                         · full_inject=true：全量注入 body（如 _memory 记忆策略）
                         · full_inject=false：渐进式注入（仅 name/description 元数据）
                         · 同名技能双方都展示，标注 [builtin] / [user] 来源
@@ -198,21 +198,31 @@ ChannelPlugin ──▶ EventBus ──▶ NanobeeKernel
 
 工具插件可通过 `set_context(channel, chat_id, user_id)` 接收会话上下文。框架在每次工具执行前自动调用此方法（如果工具支持），使工具插件能获取当前会话信息（如钉钉通道的 chat_id、用户 ID）。
 
-### 插件临时目录（self.tmp）
+### 插件临时目录（self.tmp）与用户根目录（self.context_root）
 
-框架在 `users/<user>/.tmp/` 下为每个用户创建临时目录，通过 ContextVar 按请求注入到插件。插件通过 `self.tmp` 获取自己的专属临时目录（`.tmp/<plugin_name>/`）：
+框架通过 ContextVar 按请求向插件注入两个目录：
+
+**`self.tmp`** — 临时目录，`users/<user>/.tmp/<plugin_name>/`：
+- 框架创建目录并按请求注入 ContextVar，清理由插件自行决定
+- 适合缓存文件、中间结果等可丢弃数据
+
+**`self.context_root`** — 用户根目录，`users/<user>/`：
+- 框架只提供 basedir，**插件自己创建子目录**（符合框架无知论）
+- 适合持久化数据，如 cron 任务、memory 存储等
 
 ```python
 class MyPlugin(ToolPlugin):
     async def execute_tool(self, tool_name, **kwargs):
-        # self.tmp 按请求自动注入，路径：.../users/<user>/.tmp/my_plugin/
-        cache_file = self.tmp / "cache.json"
-        # 框架只管创建和注入，清理由插件自行决定
+        # self.tmp — 临时数据
+        cache_file = self.tmp / "cache.json"       # → users/<user>/.tmp/my_plugin/cache.json
+
+        # self.context_root — 持久化数据（插件自己盖房子）
+        store_dir = self.context_root / "my_data"   # → users/<user>/my_data/
+        store_dir.mkdir(parents=True, exist_ok=True)
+        store_file = store_dir / "data.json"
 ```
 
-- **框架做的事情**：创建目录、按请求注入 ContextVar、确保 `tmp/` 在沙箱边界内
-- **框架不做的**：不清理 tmp 目录、不关心里面放什么子目录、不定义回收策略
-- **插件决定**：何时清理、创建什么子目录、怎么用这个空间
+设计哲学：**框架给地，插件盖房子**。框架只管提供 basedir，业务子目录由插件自主创建。如 `tool_cron` 插件使用 `self.context_root / "cron" / "jobs.json"` 存储定时任务，`_memory` 技能使用 `memory/` 存储记忆。
 
 ## 内置插件
 
@@ -337,10 +347,7 @@ nanobee/
 │       ├── mcp.py        # MCP 桥接（stdio/SSE/HTTP）
 │       ├── skill_manager.py  # 技能管理工具（ListSkillsTool + 自主文件管理）
 │       └── message.py    # 消息工具
-├── builtin/              # 内置插件（10 个已实现） + 内置技能（2 个）
-│   ├── skills/           # 内置技能目录（只读，框架打包）
-│   │   ├── _memory/SKILL.md    # 兜底记忆策略（full_inject: true 声明全量注入）
-│   │   └── skill-creator/SKILL.md  # 技能创建教程
+├── builtin/              # 内置插件（10 个已实现）
 │   ├── channel_cli/      # CLI 通道
 │   ├── channel_http/     # OpenAI 兼容 HTTP API
 │   ├── channel_dingtalk/ # 钉钉机器人通道（Stream SDK + 媒体收发）
@@ -351,6 +358,9 @@ nanobee/
 │   ├── tool_web/         # Web 工具
 │   ├── tool_cron/        # Cron 定时任务
 │   └── tool_echo/        # 回显测试
+├── skills/               # 内置技能（只读，框架打包）
+│   ├── _memory/SKILL.md          # 兜底记忆策略（full_inject: true）
+│   └── skill_creator/SKILL.md    # 技能创建教程
 ├── exceptions.py          # 统一异常层次结构（NanobeeError 基类 + 20 个子类）
 ├── cli/                  # 命令行入口
 │   ├── main.py           # Click 入口

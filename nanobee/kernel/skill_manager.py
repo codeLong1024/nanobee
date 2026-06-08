@@ -9,7 +9,7 @@ Skill 是用户知识资产，不是代码插件。
 - 去除了 CRUD（用户通过 write_file 自主管理）
 - 去除了全局用户技能扫描（~/.nanobee/skills/ 废弃）
 - 改用 per-context 技能扫描（context/<user_id>/skills/）
-- 新增内置技能扫描（nanobee/builtin/skills/）
+- 新增内置技能扫描（nanobee/skills/）
 """
 
 from __future__ import annotations
@@ -74,7 +74,7 @@ class SkillsLoader:
     """技能加载器
 
     扫描两个来源并合并呈现：
-    1. 内置技能（nanobee/builtin/skills/）—— 框架打包，只读
+    1. 内置技能（nanobee/skills/）—— 框架打包，只读
     2. 用户技能（<context_root>/skills/）—— 通过 scan_context_skills() 按 context 加载
 
     注意：全局 `~/.nanobee/skills/` 路径已废弃，不再扫描。

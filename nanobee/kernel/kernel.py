@@ -64,8 +64,8 @@ class NanobeeKernel:
         resolved_plugin_dirs = plugin_dirs or self.config.plugin_dirs or ["builtin", "plugins"]
         self.plugin_manager = PluginManager(self, resolved_plugin_dirs)
         self.context_manager = ContextManager(self)
-        # 内置技能目录：nanobee/builtin/skills/
-        _builtin_skills = Path(__file__).resolve().parent.parent / "builtin" / "skills"
+        # 内置技能目录：nanobee/skills/
+        _builtin_skills = Path(__file__).resolve().parent.parent / "skills"
         self.skill_manager = SkillsLoader(
             builtin_skills_dir=_builtin_skills,
         )

@@ -29,7 +29,7 @@ class AuditLoggerPlugin(NanobeePlugin):
 
     def __init__(self, metadata: Any = None) -> None:
         super().__init__(metadata)
-        self._call_count = 0
+        self._call_count: dict[str, int] = {}
 
     async def on_message_completed(
         self,
@@ -39,20 +39,21 @@ class AuditLoggerPlugin(NanobeePlugin):
         """记录本轮交互摘要。
 
         统计本轮总消息数、LLM 迭代次数和工具调用次数。
+        ``round`` 计数器按 ``context.user_id`` 区分。
 
         Args:
             context: UserContext 实例
             messages: 本轮完整的消息列表
         """
-        self._call_count += 1
         user_id = getattr(context, "user_id", "?")
+        self._call_count[user_id] = self._call_count.get(user_id, 0) + 1
         tool_calls = sum(1 for m in messages if isinstance(m, dict) and "tool_calls" in m)
         iterations = sum(1 for m in messages if isinstance(m, dict) and m.get("role") == "assistant")
 
         logger.info(
             "[audit] user={} | round={} | messages={} | iterations={} | tool_calls={}",
             user_id,
-            self._call_count,
+            self._call_count[user_id],
             len(messages),
             iterations,
             tool_calls,
@@ -60,5 +61,5 @@ class AuditLoggerPlugin(NanobeePlugin):
 
     @property
     def call_count(self) -> int:
-        """获取被调用次数，用于测试验证。"""
-        return self._call_count
+        """获取所有用户的累计被调用次数，用于测试验证。"""
+        return sum(self._call_count.values())

@@ -105,7 +105,7 @@ class TestSkillsLoaderDualSource:
 
     def test_builtin_skills_loaded(self, tmp_path: Path):
         _make_skill_md(tmp_path / "builtin", "_memory", "内置记忆", "记忆策略")
-        _make_skill_md(tmp_path / "builtin", "skill-creator", "技能创建", "创建指南")
+        _make_skill_md(tmp_path / "builtin", "skill_creator", "技能创建", "创建指南")
 
         loader = SkillsLoader(
             user_skills_dir=tmp_path / "skills",
@@ -113,7 +113,7 @@ class TestSkillsLoaderDualSource:
         )
         builtin = loader.list_builtin_skills()
         assert len(builtin) == 2
-        assert {s.meta.name for s in builtin} == {"_memory", "skill-creator"}
+        assert {s.meta.name for s in builtin} == {"_memory", "skill_creator"}
 
     def test_list_all_merges_both_sources(self, tmp_path: Path):
         _make_skill_md(tmp_path / "builtin", "builtin-1", "内置", "内置内容")

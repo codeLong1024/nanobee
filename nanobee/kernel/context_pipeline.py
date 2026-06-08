@@ -188,7 +188,7 @@ class SkillStage(PipelineStage):
 
     技能加载优先级：
     1. per-context 技能（users/<user_id>/skills/）— 用户自主管理
-    2. 内置技能（nanobee/builtin/skills/）— 框架打包
+    2. 内置技能（nanobee/skills/）— 框架打包
     同名时 context 技能覆盖内置版。
 
     Phase 2 增强：加 [SKILL BEGIN/END] 边界标记，

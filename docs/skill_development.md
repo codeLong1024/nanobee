@@ -11,7 +11,7 @@ Skill（技能）是 Nanobee 的**用户知识资产**——以 Markdown 文档�
 - [技能 vs 插件](#技能-vs-插件)
 - [SKILL.md 格式](#skillmd-格式)
 - [注入策略（full_inject 声明）](#注入策略full_inject-声明)
-- [内置技能（_memory + skill-creator）](#内置技能_memory--skill-creator)
+- [内置技能（_memory + skill_creator）](#内置技能_memory--skill_creator)
 - [编写技能文档](#编写技能文档)
   - [元数据编写规范](#元数据编写规范)
   - [正文编写规范](#正文编写规范)
@@ -32,7 +32,7 @@ Skill（技能）是 Nanobee 的**用户知识资产**——以 Markdown 文档�
 | 注入方式 | 双源扫描 + YAML frontmatter 标记 | PluginManager 加载 + 生命周期 Hook |
 | 注入策略 | `full_inject` 标记驱动渐进/全量 | 插件控制（contribute_to_prompt） |
 | 更新方式 | 修改 SKILL.md 文件后自动缓存失效 | 需要重新加载插件模块 |
-| 来源 | 内置（builtin/skills/）+ 用户（skills/） | 内置（builtin/）+ 用户（plugins/） |
+| 来源 | 内置（nanobee/skills/）+ 用户（skills/） | 内置（builtin/）+ 用户（plugins/） |
 | 安全性 | 渐进式注入——body 不入 system prompt | 全量注入——代码执行在沙箱内 |
 
 ---
@@ -147,9 +147,9 @@ LLM 看到描述后，自主决定是否通过文件工具读取正文。这有�
 
 ---
 
-## 内置技能（_memory + skill-creator）
+## 内置技能（_memory + skill_creator）
 
-框架打包两个内置技能，位于 `nanobee/builtin/skills/`（只读，不可覆盖）：
+框架打包两个内置技能，位于 `nanobee/skills/`（只读，不可覆盖）：
 
 ### `_memory` — 兜底记忆策略
 
@@ -157,7 +157,7 @@ LLM 看到描述后，自主决定是否通过文件工具读取正文。这有�
 - **注入方式**：`full_inject: true` —— 全量注入 system prompt
 - **说明**：不依赖任何插件，纯 LLM 驱动。当用户添加同名技能到 `skills/` 时，双方都会显示（用户版 autocomplete）
 
-### `skill-creator` — 技能创建教程
+### `skill_creator` — 技能创建教程
 
 - **作用**：教 LLM 如何编写、创建、管理技能
 - **注入方式**：渐进式注入（仅元数据），LLM 看到描述后按需读取 body
@@ -228,10 +228,10 @@ full_inject: false
 SkillsLoader 从两个来源发现技能（2 秒 TTL 文件系统缓存）：
 
 ```
-来源 1: builtin/skills/   ← 框架内置，只读
-    nanobee/builtin/skills/
+来源 1: nanobee/skills/   ← 框架内置，只读
+    nanobee/skills/
       ├── _memory/SKILL.md
-      └── skill-creator/SKILL.md
+      └── skill_creator/SKILL.md
 
 来源 2: user skills/      ← 用户添加，可写
     <user_context>/skills/
@@ -246,7 +246,7 @@ SkillsLoader 从两个来源发现技能（2 秒 TTL 文件系统缓存）：
 
 ```text
 skills/git-helper/SKILL.md          → [user]
-nanobee/builtin/skills/git-helper/  → 不创建（同名时双方都显示，标注来源）
+nanobee/skills/git-helper/  → 不创建（同名时双方都显示，标注来源）
 ```
 
 ### 缓存机制
@@ -421,7 +421,7 @@ ContextPipeline.build()
 │   ├── my-skill/SKILL.md
 │   └── code-reviewer/SKILL.md
 │
-└── .venv/.../nanobee/builtin/skills/  ← 内置技能（只读）
+└── .venv/.../nanobee/skills/  ← 内置技能（只读）
     ├── _memory/SKILL.md
-    └── skill-creator/SKILL.md
+    └── skill_creator/SKILL.md
 ```

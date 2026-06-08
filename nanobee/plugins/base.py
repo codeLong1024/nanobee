@@ -143,6 +143,17 @@ class NanobeePlugin(PluginHookMixin, ABC):
         return plugin_tmp
 
     @property
+    def context_root(self) -> Path | None:
+        """用户上下文根目录（框架通过 ContextVar 按请求注入）
+
+        路径：<user_context>/
+        框架只提供 basedir，插件拿到后自己创建所需的持久化子目录。
+        未绑定 ContextVar 时返回 None（例如 boot 阶段或测试环境）。
+        """
+        from nanobee.kernel.context_sandbox_var import current_context_root
+        return current_context_root()
+
+    @property
     def is_enabled(self) -> bool:
         """插件是否已启用"""
         return self._enabled

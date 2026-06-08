@@ -275,6 +275,36 @@ class ToolFileSystemPlugin(ToolPlugin):
             fp.parent.mkdir(parents=True, exist_ok=True)
             fp.write_text(content, encoding="utf-8")
 
+            # 写入 SKILL.md 后立即校验 frontmatter，错误反馈给 LLM 自行修正
+            if fp.name == "SKILL.md":
+                lines = content.splitlines()
+                if not lines or lines[0].strip() != "---":
+                    return (
+                        "错误：SKILL.md 必须包含 YAML frontmatter。"
+                        " 文件必须以 '---' 开头，包含 name 和 description 字段，"
+                        " 再以 '---' 结束。\n"
+                        "建议：创建技能应使用 skill_creator 提供的 init_skill.py 脚本，"
+                        "它会自动生成正确的 frontmatter 模板。\n"
+                        "手动写入的示例格式：\n"
+                        "---\n"
+                        "name: my_skill\n"
+                        "description: \"技能说明\"\n"
+                        "---\n\n"
+                        "# 技能正文"
+                    )
+                end = -1
+                for i in range(1, len(lines)):
+                    if lines[i].strip() == "---":
+                        end = i
+                        break
+                if end == -1:
+                    return (
+                        "错误：SKILL.md frontmatter 未正确关闭。"
+                        " 请在 YAML 元数据后添加 '---' 结束分隔符。"
+                        "建议：使用 skill_creator 的 init_skill.py 脚本创建技能，"
+                        "避免手动编辑 frontmatter 出错。"
+                    )
+
             return f"成功写入 {len(content)} 个字符到 {fp}"
 
         except SandboxError as e:

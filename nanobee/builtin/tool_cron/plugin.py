@@ -101,10 +101,11 @@ class ToolCronPlugin(ToolPlugin):
         self._session_key = session_key
 
         # 根据 user_id 切换存储路径
+        # cron 数据需要持久化，放在 <context_root>/cron/ 下（与 skills/ 平级）
         if user_id:
-            # 优先使用 per-request tmp（框架在 context_root 下创建）
-            if self.tmp is not None:
-                self._current_store_path = self.tmp / f"jobs_{user_id}.json"
+            if self.context_root is not None:
+                # 框架提供的 basedir，插件自己创建子目录
+                self._current_store_path = self.context_root / "cron" / "jobs.json"
                 self._current_store_path.parent.mkdir(parents=True, exist_ok=True)
             else:
                 # 回退：boot 阶段或非请求上下文
@@ -150,6 +151,8 @@ class ToolCronPlugin(ToolPlugin):
                         " add 需要 message 参数加一种调度方式（every_seconds / cron_expr / at）；"
                         " remove 需要 job_id；list 仅需 action。"
                         f" 省略 tz 时 cron 表达式和裸 ISO 时间默认使用 {self._default_timezone}。"
+                        " 【重要】你必须实际调用此工具来创建/修改/删除/查询任务，"
+                        "不能只说「已创建」或「已更新」，工具不会被自动执行。"
                     ),
                     "parameters": {
                         "type": "object",

@@ -632,11 +632,11 @@ class AgentLoop:
 
         if result.stop_reason == "max_iterations":
             logger.warning("达到最大迭代次数 ({max_iter})", max_iter=self.max_iterations)
-            # 独立调用 on_stream / on_stream_end，避免 on_stream_end 为 None 时跳过整个流式路径
-            if on_stream:
-                await on_stream(result.final_content or "")
-            if on_stream_end:
-                await on_stream_end(resuming=False)
+            # 不通过 on_stream/on_stream_end 推送终止消息到卡片：
+            # 1) 卡片可能处于"工具调用中"暂停状态，推送可能失败
+            # 2) max_iterations 消息是系统通知而非 LLM 流式输出
+            # 让 _assemble_outbound 设置 _streamed=False，
+            # 通道看到后会通过常规 API（markdown）发送，确保用户收到。
         elif result.stop_reason == "error":
             logger.error("LLM 返回错误: {error}", error=(result.final_content or "")[:200])
 
@@ -978,15 +978,17 @@ class AgentLoop:
         """运行 Agent 迭代循环。"""
         sandbox = await self._build_sandbox(ctx.context_id)
 
-        # 使用 ContextVar 绑定沙箱 + tmp，替代方法参数透传
+        # 使用 ContextVar 绑定沙箱 + tmp + context_root，替代方法参数透传
         from nanobee.kernel.context_sandbox_var import (
-            bind_sandbox, bind_tmp, reset_sandbox, reset_tmp,
+            bind_context_root, bind_sandbox, bind_tmp,
+            reset_context_root, reset_sandbox, reset_tmp,
         )
         _sandbox_token = bind_sandbox(sandbox) if sandbox else None
 
-        # 绑定 per-request tmp 路径（在获取 user_ctx 之后）
+        # 绑定 per-request tmp 路径和 context_root（在获取 user_ctx 之后）
         user_ctx = await self.context_manager.get_or_create(ctx.context_id)
         _tmp_token = bind_tmp(user_ctx.tmp_dir)
+        _ctx_root_token = bind_context_root(user_ctx.context_root)
 
         # 让插件修改工具列表（在 ToolCollector 过滤之前）
         plugin_modified_tool_names = self._collect_plugin_tools(
@@ -1027,6 +1029,7 @@ class AgentLoop:
             if _sandbox_token is not None:
                 reset_sandbox(_sandbox_token)
             reset_tmp(_tmp_token)
+            reset_context_root(_ctx_root_token)
         final_content, tools_used, all_msgs, stop_reason, had_injections = result
         ctx.final_content = final_content
         ctx.tools_used = tools_used

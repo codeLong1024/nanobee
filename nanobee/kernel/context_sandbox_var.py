@@ -41,6 +41,13 @@ _CURRENT_TMP: ContextVar[Path | None] = ContextVar(
     default=None,
 )
 
+# 当前请求的用户上下文根目录（per-user: ~/.nanobee/users/<user>/）
+# 框架只提供 basedir，插件自己创建子目录
+_CURRENT_CONTEXT_ROOT: ContextVar[Path | None] = ContextVar(
+    "nanobee_context_root",
+    default=None,
+)
+
 
 def bind_sandbox(sandbox: ContextSandbox) -> Token[ContextSandbox | None]:
     """在当前异步任务中绑定沙箱实例。
@@ -105,6 +112,39 @@ def current_tmp() -> Path | None:
     return _CURRENT_TMP.get()
 
 
+def bind_context_root(ctx_root: Path) -> Token[Path | None]:
+    """在当前异步任务中绑定用户上下文根目录。
+
+    Args:
+        ctx_root: 用户上下文根目录（basedir）
+
+    Returns:
+        Token 用于后续 reset_context_root 恢复
+    """
+    return _CURRENT_CONTEXT_ROOT.set(ctx_root)
+
+
+def reset_context_root(token: Token[Path | None]) -> None:
+    """恢复绑定的上下文根目录到绑定前的状态。
+
+    Args:
+        token: bind_context_root 返回的 Token
+    """
+    _CURRENT_CONTEXT_ROOT.reset(token)
+
+
+def current_context_root() -> Path | None:
+    """获取当前异步任务中绑定的用户上下文根目录。
+
+    插件通过 self.context_root 属性访问，
+    拿到 basedir 后自己创建持久化子目录。
+
+    Returns:
+        用户上下文根目录，未绑定时返回 None
+    """
+    return _CURRENT_CONTEXT_ROOT.get()
+
+
 __all__ = [
     "bind_sandbox",
     "current_sandbox",
@@ -112,4 +152,7 @@ __all__ = [
     "bind_tmp",
     "current_tmp",
     "reset_tmp",
+    "bind_context_root",
+    "current_context_root",
+    "reset_context_root",
 ]
