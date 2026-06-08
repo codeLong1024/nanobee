@@ -65,7 +65,7 @@ class ToolCronPlugin(ToolPlugin):
                 self._cron.start()
                 self._enabled = True
             except RuntimeError as e:
-                logger.error("Cron 服务启动失败: %s", e)
+                logger.error("Cron 服务启动失败: {}", e)
 
     def on_disable(self) -> None:
         """禁用时停止 CronService。"""
@@ -123,7 +123,7 @@ class ToolCronPlugin(ToolPlugin):
                     on_job=self._on_job_execute,
                     max_sleep_ms=300_000,
                 )
-                logger.info("Cron 服务存储路径: %s", self._current_store_path)
+                logger.info("Cron 服务存储路径: {}", self._current_store_path)
         else:
             self._current_store_path = None
             if self._cron is not None:
@@ -253,9 +253,9 @@ class ToolCronPlugin(ToolPlugin):
         if not getattr(self._cron, "_running", False):
             try:
                 self._cron.start()
-                logger.info("Cron 服务已启动（懒加载），存储路径: %s", self._current_store_path)
+                logger.info("Cron 服务已启动（懒加载），存储路径: {}", self._current_store_path)
             except RuntimeError as e:
-                logger.error("Cron 服务启动失败: %s", e)
+                logger.error("Cron 服务启动失败: {}", e)
                 return f"错误：Cron 服务启动失败: {e}"
 
         message = kwargs.get("message", "")
@@ -421,14 +421,14 @@ class ToolCronPlugin(ToolPlugin):
             Agent 的回复文本
         """
         if not self.kernel or not self.kernel.agent_loop:
-            logger.warning("Cron: Agent Loop 不可用，无法执行任务 %s", job.id)
+            logger.warning("Cron: Agent Loop 不可用，无法执行任务 {}", job.id)
             return None
 
         if not job.payload.message:
-            logger.warning("Cron: 任务 %s 消息为空，跳过执行", job.id)
+            logger.warning("Cron: 任务 {} 消息为空，跳过执行", job.id)
             return None
 
-        logger.info("Cron: 触发任务 %s, 消息: %s", job.id, job.payload.message[:100])
+        logger.info("Cron: 触发任务 {}, 消息: {}", job.id, job.payload.message[:100])
         try:
             # 使用创建任务时的用户 ID 作为上下文，避免沙箱路径问题
             context_id = job.payload.user_id or job.payload.to or "cron"
@@ -439,8 +439,8 @@ class ToolCronPlugin(ToolPlugin):
             )
             content_text = result.content if result else ""
             if job.payload.deliver and content_text:
-                logger.info("Cron: 任务 %s 执行完成", job.id)
+                logger.info("Cron: 任务 {} 执行完成", job.id)
             return content_text
         except Exception:
-            logger.exception("Cron: 任务 %s 执行异常", job.id)
+            logger.exception("Cron: 任务 {} 执行异常", job.id)
             return None

@@ -10,6 +10,8 @@
 - [提交 PR 的流程](#提交-pr-的流程)
 - [测试指南](#测试指南)
 - [插件开发指南](#插件开发指南)
+- [技能开发指南](#技能开发指南)
+- [设计哲学](#设计哲学)
 - [文档贡献](#文档贡献)
 - [行为准则](#行为准则)
 
@@ -79,16 +81,14 @@ python -m pytest tests/ -v
 
 ### 推荐工具
 
-- **pre-commit** — 自动代码格式化与检查
 - **pytest** — 运行测试
-- **mypy** — 类型检查
-- **pydocstyle** — docstring 检查
+- **mypy** — 类型检查（可选，未强制纳入 CI）
+- **pydocstyle** — docstring 检查（可选，未强制纳入 CI）
 
 安装开发工具：
 
 ```bash
-pip install pre-commit mypy pydocstyle pytest-cov
-pre-commit install
+pip install pytest pytest-cov
 ```
 
 ## 代码规范
@@ -106,8 +106,7 @@ nanobee 遵循严格的代码规范，确保代码库的一致性和可维护性
 ### 类型注解
 
 - **公开函数**必须提供类型注解
-- **核心模块**使用 `mypy --strict` 强制检查
-- **胶水代码**和**老旧模块**可配置豁免
+- **核心模块**建议使用 `mypy` 检查（当前未强制纳入 CI）
 
 示例：
 
@@ -250,12 +249,7 @@ git commit -m "fix: 修复 XX 问题"
 ```bash
 # 运行测试
 python -m pytest tests/ -v
-
-# 运行类型检查
-mypy --strict nanobee/
-
-# 运行 docstring 检查
-pydocstyle nanobee/
+```
 
 # 查看覆盖率
 python -m pytest tests/ -v --cov=nanobee --cov-report=term-missing
@@ -336,11 +330,17 @@ async def test_kernel_initialization():
 每个插件应包含以下文件：
 
 ```
-my-plugin/
+my_plugin/
 ├── plugin.py      # 插件实现
 ├── plugin.toml    # 插件元数据
 └── README.md      # 插件说明（可选）
 ```
+
+### 插件命名规范
+
+- 使用小写字母、数字、下划线（PEP 8 Python 模块规范）
+- 类型前缀：`tool_` / `channel_` / `memory_` / `skill_`
+- 示例：`tool_my_tool`、`channel_telegram`
 
 ### 插件元数据（plugin.toml）
 
@@ -358,19 +358,112 @@ license = "MIT"
 使用 CLI 命令创建插件骨架：
 
 ```bash
-nanobee plugin create my-plugin
+nanobee plugin create my_plugin
 ```
+
+### 插件 Hook 机制
+
+插件可通过继承 `PluginHookMixin` 覆盖以下生命周期 Hook，在 Agent 关键切面注入逻辑：
+
+| Hook | 时机 | 用途 |
+|------|------|------|
+| `contribute_to_prompt(context)` | System Prompt 构建时 | 向指定段注入文本（如记忆、知识库） |
+| `contribute_to_tools(context, tools)` | 工具列表构建时 | 动态增删工具 |
+| `on_pre_invoke(context, name, args)` | 工具执行前 | 参数修改、鉴权 |
+| `on_post_invoke(context, name, result)` | 工具执行后 | 结果修改、副作用（写入记忆） |
+| `on_message_completed(context, messages)` | 对话轮次结束 | 审计日志、后台整理 |
+
+Run-level Hook（`before_run`/`after_run`/`on_error`/`on_finally`）包裹整个 LLM 迭代循环，与迭代级 Hook 完全分离。
 
 ### 插件类型
 
 | 插件类型 | 接口类 | 用途 |
 |---------|--------|------|
-| ChannelPlugin | `nanobee.plugins.channel.ChannelPlugin` | 通信渠道（CLI、HTTP、Telegram 等） |
+| ChannelPlugin | `NanobeePlugin`（`plugin_type="channel"`） | 通信渠道（CLI、HTTP、Telegram 等） |
 | ToolPlugin | `nanobee.plugins.tool.ToolPlugin` | 工具调用（文件、Shell、Web 等） |
-| MemoryPlugin | `nanobee.plugins.memory.MemoryPlugin` | 记忆存储（文件、数据库、Redis 等） |
-| Skill | `nanobee.plugins.skill.SkillManager` | 用户知识资产（SKILL.md 文档，非插件） |
+| MemoryPlugin | `nanobee.plugins.memory.MemoryPlugin` | 记忆存储底座接口（`store`/`retrieve`），框架无内置实现，由社区插件实现 |
+| Audit | `NanobeePlugin`（`plugin_type="audit"`） | 纯监听型插件（仅 `on_message_completed`），不贡献提示词或工具 |
+
+> **注意**：记忆管理（`_memory`）当前通过内置 Skill 由 LLM 自主管理 `memory/facts.md`。如果您需要更高级的记忆策略（向量检索、语义聚类等），可实现 `MemoryPlugin` 接口接入 Agent 状态机。
 
 详见 [README.md#插件开发](README.md#插件开发) 中的完整示例。
+
+## 技能开发指南
+
+Skill 是用户知识资产（Markdown 文档），非代码插件。框架只做两件事：发现技能（扫描 `skills/` 目录下的 SKILL.md）和注入元数据到 system prompt。
+
+### SKILL.md 格式
+
+每个技能是一个 Markdown 文件，包含 YAML frontmatter 元数据和正文：
+
+```markdown
+---
+name: my-skill
+description: "简短描述技能的用途"
+author: "可选，创建者"
+full_inject: false   # true=全量注入 body, false=仅注入元数据
+---
+
+# 技能正文
+
+这里写 Markdown 格式的指令。
+```
+
+### frontmatter 字段
+
+| 字段 | 必填 | 说明 |
+|------|------|------|
+| `name` | 是 | 技能名称，仅小写字母、数字、连字符（kebab-case） |
+| `description` | 是 | 简短描述用途，最多 1024 字符，禁止 `<` `>` |
+| `author` | 否 | 创建者名称，显示在元数据中（如 `@username`） |
+| `full_inject` | 否 | `true` 时全量注入 body 到 system prompt；`false`（默认）仅注入 name/description 元数据 |
+| `compatibility` | 否 | 兼容性说明 |
+| `license` | 否 | 许可证 |
+
+### 注入策略
+
+遵循 **框架无知论**——框架不关心技能名称，完全由 `full_inject` 标记决定：
+
+- `full_inject: true` → body 全量注入 system prompt（适用于 LLM 每次对话都需要看到的指令，如记忆策略 `_memory`）
+- `full_inject: false`（默认）→ 仅注入元数据（name + description），LLM 通过 `write_file` 按需读取 `skills/<name>/SKILL.md`
+
+### 命名规范
+
+- kebab-case：仅小写字母、数字、连字符
+- 不以连字符起止
+- 不要使用 `_memory` 等特殊前缀（框架不对名称做特殊处理）
+- 示例：`git-log-analyzer`、`weekly-report-generator`
+
+### 查看已安装技能
+
+使用 `list_skills` 工具查看框架发现的所有技能（含来源标注 `[builtin]` / `[user]`）。
+
+## 设计哲学
+
+### 框架无知论（Framework Ignorance Principle）
+
+nanobee 的核心设计原则：**框架应尽可能"无知"，把智能交给 LLM。**
+
+| 框架的责任（能力） | LLM 的决策范围 |
+|------------------|---------------|
+| 文件读写 | 什么值得记、什么时候触发记 |
+| 网络请求 | 怎么检索、怎么压缩记忆 |
+| 沙箱隔离 | 策略选择、优先级判断 |
+| 工具注册 | 技能内容取舍、注入策略 |
+
+**禁止事项**：
+- 禁止框架硬编码技能名称、插件名称或特定业务语义（如 `_memory` 特殊判断）
+- 禁止框架代替 LLM 做策略决策
+
+**如何判断**：当新增功能时，优先问"能否让 LLM 自主完成？"而不是"框架应该做什么？"
+
+### 核心与插件分离
+
+高频核心能力（技能发现与注入）内置于 kernel，业务逻辑（审计、工具过滤）留给插件。
+
+### 隔离绝对论
+
+P0 唯一生死线——物理隔离 + 沙箱拦截。哪怕所有插件崩溃，不同用户也绝无法越权读取对方文件。
 
 ## 文档贡献
 

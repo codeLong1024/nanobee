@@ -18,21 +18,11 @@ if TYPE_CHECKING:
 from nanobee.utils.logger import logger
 
 
-# 插件类型 → 提示词段标题映射
-_PLUGIN_TYPE_STAGE_MAP: dict[str, str] = {
-    "memory": "## 记忆",
-    "skill": "## 技能",
-    "knowledge": "## 知识库",
-}
-
-# 插件段显示顺序（从 _PLUGIN_TYPE_STAGE_MAP 派生）
-_PLUGIN_STAGE_ORDER: list[str] = list(_PLUGIN_TYPE_STAGE_MAP.values())
-
-
 def _map_plugin_stage(plugin: Any) -> str:
     """将插件映射到提示词段标题。
 
     优先级：插件显式声明的 stage > plugin_type > 兜底。
+    框架不做语义理解，plugin_type 直接用作段标题。
     """
     stage = getattr(plugin, "stage", None)
     if stage:
@@ -41,7 +31,7 @@ def _map_plugin_stage(plugin: Any) -> str:
     if plugin_type is None:
         meta = getattr(plugin, "metadata", None)
         plugin_type = getattr(meta, "plugin_type", "unknown") if meta is not None else "unknown"
-    return _PLUGIN_TYPE_STAGE_MAP.get(plugin_type, f"## {plugin_type}")
+    return f"## {plugin_type}"
 
 
 @dataclass
@@ -208,10 +198,14 @@ class SkillStage(PipelineStage):
         self,
         context: PromptBuildContext | dict[str, Any],
     ) -> PromptBuildContext | dict[str, Any]:
-        """注入技能段 —— 渐进式注入策略。
+        """注入技能段 —— 元数据驱动的渐进式/全量注入策略。
 
-        普通技能只注入元数据（name + description），不注入完整 body。
-        _memory 技能始终注入完整 body（记忆管理策略很小且每次对话都需要）。
+        框架不关心技能名称，完全由 SKILL.md frontmatter 中的
+        ``full_inject: true`` 声明决定注入策略：
+          - full_inject=true  → 元数据 + 完整 body（LLM 需要每次访问）
+          - full_inject=false → 仅元数据（LLM 按需读取完整内容）
+
+        同名技能自动去重（用户版优先于内置版），框架不做策略决策。
 
         Args:
             context: PromptBuildContext 实例或兼容 dict
@@ -227,36 +221,38 @@ class SkillStage(PipelineStage):
             return ctx.to_dict() if from_dict else ctx
 
         sections: list[str] = []
+        seen_names: set[str] = set()
 
-        # 1. 注入 _memory 技能（始终全量注入）
-        memory_skill = self._loader.get_skill("_memory")
-        if memory_skill is not None:
-            source_tag = "[builtin]" if memory_skill.source == "builtin" else "[user]"
-            sections.append(
-                f"---\n"
-                f"[SKILL: _memory {source_tag}]\n\n"
-                f"### _memory {source_tag}\n"
-                f"**描述**: {memory_skill.meta.description}\n\n"
-                f"{memory_skill.body}\n"
-            )
-
-        # 2. 普通技能列表（渐进式注入：只注入元数据）
         for skill in all_skills:
-            if skill.meta.name == "_memory":
-                continue  # 已在上面全量注入
+            if skill.meta.name in seen_names:
+                continue  # 同名去重：用户版优先（list_all_skills 先内置后用户）
+            seen_names.add(skill.meta.name)
+
             source_tag = "[builtin]" if skill.source == "builtin" else "[user]"
-            source_prefix = f" (@{skill.meta.author})" if skill.meta.author else ""
-            lines = [
-                "---",
-                f"[SKILL: {skill.meta.name} {source_tag}]",
-                "",
-                f"### {skill.meta.name}{source_prefix} {source_tag}",
-                "",
-                f"**描述**: {skill.meta.description}",
-                f"**文件**: `skills/{skill.meta.name}/SKILL.md`",
-                "",
-            ]
-            sections.append("\n".join(lines))
+
+            if skill.meta.full_inject:
+                # 全量注入：元数据 + 完整 body（由 frontmatter 声明触发）
+                sections.append(
+                    f"---\n"
+                    f"[SKILL: {skill.meta.name} {source_tag}]\n\n"
+                    f"### {skill.meta.name} {source_tag}\n"
+                    f"**描述**: {skill.meta.description}\n\n"
+                    f"{skill.body}\n"
+                )
+            else:
+                # 渐进式注入：只注入元数据，LLM 按需读取
+                source_prefix = f" (@{skill.meta.author})" if skill.meta.author else ""
+                lines = [
+                    "---",
+                    f"[SKILL: {skill.meta.name} {source_tag}]",
+                    "",
+                    f"### {skill.meta.name}{source_prefix} {source_tag}",
+                    "",
+                    f"**描述**: {skill.meta.description}",
+                    f"**文件**: `skills/{skill.meta.name}/SKILL.md`",
+                    "",
+                ]
+                sections.append("\n".join(lines))
 
         if not sections:
             return ctx.to_dict() if from_dict else ctx
@@ -329,7 +325,7 @@ class ContextPipeline:
         组装顺序：
         1. [P0] Soul 段：框架内置（core.md Soul 节）
         2. [P10-P30] 内置 Stage：Rules → Skill
-        3. 插件段：Memory → Skills → Knowledge（按 plugin_type 分组）
+        3. 插件段：由插件 stage/plugin_type 决定段标题，按传入顺序排列
         4. [P90] FinalGuard：不可绕过的优先级规则
 
         每个段有内容时才注入，无内容时跳过。
@@ -363,13 +359,11 @@ class ContextPipeline:
                 stage = _map_plugin_stage(plugin)
                 stages_content.setdefault(stage, []).append(content)
 
-        # 3. 按固定顺序组装插件段
+        # 3. 按插件声明顺序组装（不做固定排序）
         if stages_content:
             plugin_sections: list[str] = []
-            for stage in _PLUGIN_STAGE_ORDER:
-                contents = stages_content.get(stage)
-                if contents:
-                    plugin_sections.append(stage + "\n" + "\n\n".join(contents))
+            for stage, contents in stages_content.items():
+                plugin_sections.append(stage + "\n" + "\n\n".join(contents))
             if plugin_sections:
                 system_prompt += "\n\n" + "\n\n".join(plugin_sections)
 

@@ -72,6 +72,8 @@ class TestSkillsLoaderCache:
         assert len(loader.list_user_skills()) == 1
 
         # 内置添加一个新技能
+        # 等待 1 秒确保 mtime 变化（避免文件系统精度导致的缓存不失效）
+        time.sleep(1.01)
         _make_skill_md(tmp_path / "builtin", "builtin-2", "B2", "Body3")
 
         # 内置缓存应失效，用户缓存应保持不变

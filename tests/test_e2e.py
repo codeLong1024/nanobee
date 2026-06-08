@@ -126,48 +126,6 @@ class EchoToolPlugin(ToolPlugin):
 
 
 @pytest.mark.asyncio
-async def test_e2e_memory_file_plugin(tmp_path):
-    """测试 memory-file 插件的基本读写操作"""
-    import importlib
-    _mod = importlib.import_module("nanobee.builtin.memory_file.plugin")
-    MemoryFilePlugin = _mod.MemoryFilePlugin
-    del importlib, _mod
-
-    meta = tmp_path / "meta"
-    meta.mkdir()
-
-    plugin = MemoryFilePlugin()
-    plugin.initialize({"work_dir": str(tmp_path)})
-
-    # mock user_context 提供 memory_dir
-    class MockUserContext:
-        def __init__(self, base_dir):
-            self.base_dir = base_dir
-            self.memory_dir = base_dir / "memory"
-            self.memory_dir.mkdir(parents=True, exist_ok=True)
-
-    user_ctx = MockUserContext(tmp_path)
-
-    # 构建测试消息
-    messages = [
-        {"role": "user", "content": "test-value", "timestamp": 100},
-        {"role": "assistant", "content": "hello world", "timestamp": 200},
-    ]
-
-    # store 测试：提取事实并存储
-    await plugin.store(messages, user_ctx)
-
-    # retrieve 测试：关键词匹配检索
-    retrieved = await plugin.retrieve("test-value", user_ctx)
-    assert retrieved is not None
-    assert "test-value" in retrieved
-
-    retrieved2 = await plugin.retrieve("world", user_ctx)
-    assert retrieved2 is not None
-    assert "world" in retrieved2
-
-
-@pytest.mark.asyncio
 async def test_e2e_context_lifecycle(tmp_path):
     """测试上下文管理器的完整生命周期"""
     config = {

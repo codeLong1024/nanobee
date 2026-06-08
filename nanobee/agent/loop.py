@@ -204,7 +204,6 @@ class AgentLoop:
         hooks: list[AgentHook] | None = None,
         model_presets: dict[str, ModelPresetConfig] | None = None,
         model_preset: str | None = None,
-        memory_store_threshold: int = 20,
         max_messages: int = 120,
         preset_snapshot_loader: preset_helpers.PresetSnapshotLoader | None = None,
         provider_snapshot_loader: Callable[..., ProviderSnapshot] | None = None,
@@ -235,8 +234,6 @@ class AgentLoop:
             self.set_model_preset(model_preset, publish_update=False)
 
         self.tools = ToolRegistry()
-        # memory_store_threshold 参数保留用于向后兼容
-        self._memory_store_threshold = memory_store_threshold
         self._max_messages = max_messages
         self.runner = AgentRunner(provider)
         self._extra_hooks: list[AgentHook] = hooks or []
@@ -305,9 +302,6 @@ class AgentLoop:
         # 从配置中提取 max_iterations（如果未在 extra 中指定）
         if "max_iterations" not in extra:
             extra["max_iterations"] = defaults.max_iterations
-        # 从配置中提取 memory_store_threshold（如果未在 extra 中指定）
-        if "memory_store_threshold" not in extra:
-            extra["memory_store_threshold"] = defaults.memory_store_threshold
         # 从配置中提取 max_messages（如果未在 extra 中指定）
         if "max_messages" not in extra:
             extra["max_messages"] = defaults.max_messages
@@ -333,8 +327,8 @@ class AgentLoop:
     def _register_plugin_tools(self) -> None:
         """从 PluginManager 注册工具插件到 ToolRegistry。
 
-        注意：此方法需要在插件加载完成后调用（即在 Kernel.boot() 之后）。
-        如果在插件加载前调用，会注册 0 个工具。
+        注意：此方法需要在插件启用完成后调用（即在 Kernel.boot() 之后）。
+        仅注册已启用的工具插件，跳过配置为禁用的插件。
         """
         if self.plugin_manager is None:
             return
@@ -344,6 +338,10 @@ class AgentLoop:
             return
         registered: list[str] = []
         for plugin in tool_plugins:
+            # 检查插件是否已启用
+            if not self.plugin_manager.is_enabled(getattr(plugin, "name", "")):
+                logger.debug("跳过未启用的工具插件: {}", getattr(plugin, "name", "unknown"))
+                continue
             try:
                 tool_defs = plugin.get_tools()
                 for tool_def in tool_defs:
@@ -910,7 +908,7 @@ class AgentLoop:
             msg = ctx.msg
 
         preview = msg.content[:80] + "..." if len(msg.content) > 80 else msg.content
-        logger.info("处理来自 %s:%s 的消息: %s", msg.channel, msg.sender_id, preview)
+        logger.info("处理来自 {}:{} 的消息: {}", msg.channel, msg.sender_id, preview)
 
         # 灵魂校验
         if self.event_bus:
@@ -973,7 +971,7 @@ class AgentLoop:
             user_ctx = await self.context_manager.get_or_create(user_id)
             return ContextSandbox(user_ctx.context_root)
         except Exception:
-            logger.debug("无法构建沙箱（非多租户模式）: %s", user_id)
+            logger.debug("无法构建沙箱（非多租户模式）: {}", user_id)
             return None
 
     async def _state_run(self, ctx: TurnContext) -> str:
@@ -1090,7 +1088,7 @@ class AgentLoop:
         content = final_content or EMPTY_FINAL_RESPONSE_MESSAGE
 
         preview = content[:120] + "..." if len(content) > 120 else content
-        logger.info("回复 %s: %s: %s", msg.channel, msg.sender_id, preview)
+        logger.info("回复 {}: {}: {}", msg.channel, msg.sender_id, preview)
 
         meta = dict(msg.metadata or {})
         # max_iterations 时强制不标记 _streamed，确保通道通过常规 API 发送终止消息
@@ -1186,7 +1184,7 @@ class AgentLoop:
         self.context_window_tokens = snapshot.context_window_tokens
         self.runner.provider = provider
         self._provider_signature = snapshot.signature
-        logger.info("运行时模型切换: %s -> %s", old_model, model)
+        logger.info("运行时模型切换: {} -> {}", old_model, model)
 
     @property
     def model_preset(self) -> str | None:

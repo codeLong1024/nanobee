@@ -95,9 +95,20 @@ class TestInjectionDefense:
 
     @pytest.mark.asyncio
     async def test_memory_skill_always_injected_full(self, tmp_path: Path):
-        """_memory 技能始终全量注入 body。"""
-        _make_skill_md(tmp_path / "skills", "_memory", "记忆策略",
-                       "## 存储\n将重要事实写入 memory/facts.md\n\n## 检索\n读取 memory/facts.md")
+        """声明 full_inject 的技能始终全量注入 body。"""
+        skill_dir = tmp_path / "skills" / "_memory"
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\n"
+            "name: _memory\n"
+            "description: 记忆策略\n"
+            "full_inject: true\n"
+            "---\n"
+            "\n"
+            "## 存储\n将重要事实写入 memory/facts.md\n\n"
+            "## 检索\n读取 memory/facts.md\n",
+            encoding="utf-8",
+        )
 
         loader = SkillsLoader(tmp_path / "skills")
         stage = SkillStage(loader)
@@ -105,7 +116,7 @@ class TestInjectionDefense:
         result = await stage.process(context)
         prompt = result["system_prompt"]
 
-        # _memory body 应全量注入
+        # full_inject 标记的技能 body 应全量注入
         assert "## 存储" in prompt
         assert "memory/facts.md" in prompt
         assert "## 检索" in prompt

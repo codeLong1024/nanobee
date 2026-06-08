@@ -13,13 +13,13 @@
 | 原则 | 含义 |
 |------|------|
 | **核心与插件分离** | 高频核心能力（技能发现与注入）内置于 kernel，业务逻辑（审计、工具过滤）留给插件 |
-| **框架无知论** | 框架不知道"记忆"是什么、不知道"技能"怎么截断，只负责通过 Hook 拿到字符串塞进 System Prompt 对应的坑位 |
+| **框架无知论** | 框架不知道"记忆"是什么、不知道哪些技能该全量注入，只读 SKILL.md 的 `full_inject` 标记，按标记执行注入策略（全量 or 渐进）。策略决策由 LLM 自主完成 |
 | **隔离绝对论** | P0 唯一生死线——物理隔离 + 沙箱拦截。哪怕所有插件崩溃，Alice 也绝无法越权读取 Bob 一字节文件 |
 | **Hook 侵入论** | 在消息流转的所有关键切面留下接口，让插件劫持上下文、动态修改工具列表、监听生命周期 |
 
 ## 项目状态
 
-**版本 v0.1.0** — 核心框架（微内核、Agent 引擎、LLM Provider、插件体系）已通过 **457 个单元测试**验证。
+**版本 v0.1.0** — 核心框架（微内核、Agent 引擎、LLM Provider、插件体系）已通过 **456 个单元测试**验证。
 
 ```
 Kernel 内核     ████████████████████████████████  95%
@@ -38,8 +38,8 @@ CLI 命令        ████████████████████�
 - **Plugin Hook 机制** — 5 个核心契约接口（contribute_to_prompt/contribute_to_tools/on_pre_invoke/on_post_invoke/on_message_completed），插件可在关键切面注入逻辑
 
 - **Run-level Hook 机制** — AgentRunner 外层生命周期：before_run / after_run / on_error / on_finally，包裹整个 LLM 迭代循环，支持启动初始化、完成汇总、错误记录、资源释放
-- **技能管理** — SkillsLoader 双源发现（内置技能 nanobee/builtin/skills/ + 用户技能 work_dir/skills/），渐进式注入 system prompt。内置 `_memory` 兜底记忆策略、`skill-creator` 技能创建教程
-- **内置 Skill** — 框架打包 `nanobee/builtin/skills/`，只读不可覆盖。`_memory` 始终全量注入 system prompt（记忆管理），普通技能仅注入元数据由 LLM 按需读取
+- **技能管理** — SkillsLoader 双源发现（内置技能 `nanobee/builtin/skills/` + 用户技能 `work_dir/skills/`），SKILL.md frontmatter 驱动渐进/全量注入策略。内置 `_memory`（记忆策略，`full_inject: true`声明全量注入）、`skill-creator`（技能创建教程）
+- **内置 Skill** — 框架打包 `nanobee/builtin/skills/`，只读不可覆盖。标记 `full_inject: true` 的技能全量注入 system prompt，普通技能仅注入元数据由 LLM 按需读取
 - **Sandbox 相对路径统一** — L1（sandbox.py）/ L2（tool_fs）相对路径均基于 sandbox root 解析，skill 中 `memory/xxx` 类相对路径始终落在沙箱内
 - **上下文管理** — 按用户物理隔离的目录结构（context.yaml / history.jsonl / work / memory / tmp），框架通过 ContextVar 按请求向插件注入 `self.tmp`，插件自管清理
 - **灵魂守卫** — 三层保护（chmod 444 + 写入拦截 Hook + SHA-256 哈希校验）
@@ -50,7 +50,7 @@ CLI 命令        ████████████████████�
 - **CLI/Gateway 职责分离** — 借鉴 nanobot 设计哲学：`boot()` 只做核心启动，`boot_services()` 启动后台服务。`nanobee run` 轻量无后台，`nanobee gateway` 启动完整服务栈
 - **max_iterations 配置化** — 支持从 `nanobee.yaml` 配置 LLM 最大对话循环次数（默认 10）
 - **OpenAI 兼容 HTTP API** — `POST /v1/chat/completions`（SSE 流式 + JSON 非流式）、`GET /v1/models`、API Key 认证，支持 LobeChat 等第三方客户端连接
-- **Pipeline 三明治防御** — SkillStage 渐进式注入（仅元数据），_memory 技能全量注入。普通技能 body 不进入 system prompt，从根源杜绝注入攻击
+- **Pipeline 声明式注入** — SkillStage 由 SKILL.md frontmatter 的 `full_inject` 标记驱动：标记为 true 的技能全量注入 body，其余仅注入元数据。从根源杜绝注入攻击（恶意 body 不进入 system prompt）
 - **安全模块** — SSRF 前置拦截（DNS 解析 + 私有 IP 校验 + IPv6-mapped IPv4 标准化）、CIDR 白名单、shell 命令内网 URL 检测（`contains_internal_url`）、路径边界工具函数（多 root 支持）
 
 ### 尚不完整的功能
@@ -184,11 +184,11 @@ ChannelPlugin ──▶ EventBus ──▶ NanobeeKernel
 [P10] Soul 段         ← core.md Soul 节（框架内置）
 [P20] Rules 段         ← core.md Rules 节 + 用户身份（框架内置）
 [P28] 技能段           ← SkillStage：从 builtin/skills/ + skills/ 读取技能文档
-                        · _memory：始终全量注入 body（兜底记忆策略）
-                        · 普通技能：渐进式注入（仅 name + description 元数据）
+                        · full_inject=true：全量注入 body（如 _memory 记忆策略）
+                        · full_inject=false：渐进式注入（仅 name/description 元数据）
                         · 同名技能双方都展示，标注 [builtin] / [user] 来源
-[P??] 插件段           ← 遍历插件 contribute_to_prompt → 按类型分组
-                        · ## 记忆 → ## 技能 → ## 知识库
+[P??] 插件段           ← 遍历插件 contribute_to_prompt → 按 plugin_type 生成段标题
+                        · 由插件 stage/plugin_type 决定，不做固定顺序
 [P90] FinalGuard 段    ← 不可绕过的优先级规则段（始终在最后）
 ```
 
@@ -219,15 +219,15 @@ class MyPlugin(ToolPlugin):
 | 插件 | 类型 | 状态 | 说明 |
 |------|------|------|------|
 | `channel_cli` | Channel | ✅ 完整 | 命令行交互通道 |
+| `channel_http` | Channel | ✅ 完整 | OpenAI 兼容 HTTP API（/v1/chat/completions、/v1/models），支持流式 SSE，API Key 认证 |
+| `channel_dingtalk` | Channel | ✅ 完整 | 钉钉机器人通道（Stream SDK + AI Card 流式输出 + 媒体文件收发与解析） |
 | `tool_echo` | Tool | ✅ 完整 | 回显测试工具 |
 | `tool_fs` | Tool | ✅ 完整 | 文件系统工具（read_file, write_file, edit_file, list_dir），L1/L2 防御纵深 |
 | `tool_shell` | Tool | ✅ 完整 | Shell 命令工具（execute_shell），含 deny 模式拦截危险命令 |
 | `tool_web` | Tool | ✅ 完整 | Web 工具（web_search, web_fetch），含 HTML 清理、SSRF 保护 |
 | `tool_cron` | Tool | ✅ 完整 | Cron 定时任务（add, list, remove） |
-| `tool_dingtalk` | Tool | ✅ 完整 | 钉钉工具（文档操作、多维表操作、数据管道） |
-| `memory_file` | Memory | ⏳ 弃用中 | 记忆管理已迁移到内置 `_memory` Skill（LLM 自主管理 memory/facts.md），memory_file 插件后续移除 |
+| `tool_dingtalk` | Tool | ✅ 完整 | 钉钉工具（文档操作、多维表操作、数据管道 + MCP 客户端） |
 | `audit_logger` | Audit | ✅ 完整 | 参考：on_message_completed 审计日志 |
-| `channel_http` | Channel | ✅ 完整 | OpenAI 兼容 HTTP API（/v1/chat/completions、/v1/models），支持流式 SSE，API Key 认证 |
 
 ## 插件开发
 
@@ -284,7 +284,7 @@ class MyPlugin(NanobeePlugin):
 # 安装开发依赖
 pip install -e ".[dev]"
 
-# 运行全部测试（457 个用例）
+# 运行全部测试（456 个用例）
 python -m pytest tests/ -v --tb=short
 
 # 查看覆盖率
@@ -309,13 +309,17 @@ python -m pytest tests/ --cov=nanobee --cov-report=term-missing
 | `test_channel_http.py` | 29 | HTTP API 通道（消息解析/SSE/认证/端点/错误处理） |
 | `test_skill.py` | 25 | SkillsLoader 双源发现/缓存/序列化/向后兼容 |
 | `test_skill_validator.py` | 14 | 技能校验器（name 格式、meta 完整性、白名单检查） |
-| `test_skill_injection.py` | 7 | 渐进式注入防御 + _memory 全量注入 + 内置 skill 标注 |
+| `test_skill_injection.py` | 7 | 渐进式注入防御 + full_inject 全量注入 + 内置 skill 标注 |
 | `test_skill_manager_cache.py` | 7 | SkillsLoader 双源缓存性能验证 |
 | `test_exceptions.py` | 24 | 统一异常层次结构（NanobeeError 子类、catch-all、模块导出、向后兼容） |
 | `test_security.py` | 61 | SSRF 防护、CIDR 白名单、内网 URL 检测、路径边界工具 |
 | `test_cli_plugin.py` | 23 | 插件发现/列表/创建/启用/禁用 CLI 命令 |
 | `test_tool_dingtalk.py` | 42 | 钉钉插件（文档/多维表/管道 + MCP 客户端 + CSV 解析） |
-| 其他 | 126+ | 流式 Hook、Shell 沙箱、Cron 隔离、钉钉文件、Runtime Context、Run-level Hook 等 |
+| `test_runtime_context.py` | 12 | Runtime Context 时间/通道/会话信息注入 |
+| `test_stream_hook.py` | 8 | 流式输出 Hook 链路 |
+| `test_tool_cron_isolation.py` | 9 | Cron 定时任务用户隔离 |
+| `test_tool_shell_sandbox.py` | 13 | Shell 沙箱路径逃逸拦截 |
+| 其他 | 84+ | Run-level Hook、用户上下文、异常层次、钉钉文件等 |
 
 ## 项目结构
 
@@ -335,13 +339,13 @@ nanobee/
 │       └── message.py    # 消息工具
 ├── builtin/              # 内置插件（10 个已实现） + 内置技能（2 个）
 │   ├── skills/           # 内置技能目录（只读，框架打包）
-│   │   ├── _memory/SKILL.md    # 兜底记忆策略
+│   │   ├── _memory/SKILL.md    # 兜底记忆策略（full_inject: true 声明全量注入）
 │   │   └── skill-creator/SKILL.md  # 技能创建教程
 │   ├── channel_cli/      # CLI 通道
 │   ├── channel_http/     # OpenAI 兼容 HTTP API
-│   ├── memory_file/      # JSONL 记忆存储
+│   ├── channel_dingtalk/ # 钉钉机器人通道（Stream SDK + 媒体收发）
 │   ├── audit_logger/     # 审计日志参考
-│   ├── tool_dingtalk/    # 钉钉工具（文档/多维表/管道）
+│   ├── tool_dingtalk/    # 钉钉工具（文档/多维表/管道 + MCP 客户端）
 │   ├── tool_fs/          # 文件系统工具
 │   ├── tool_shell/       # Shell 命令工具
 │   ├── tool_web/         # Web 工具
@@ -414,7 +418,7 @@ nanobee 从 [nanobot](https://github.com/HKUDS/nanobot) 衍生开发，核心差
 
 ```bash
 pip install -e ".[dev]"
-pip install pre-commit mypy pytest-cov
+pip install pytest-cov
 python -m pytest tests/ -v
 ```
 

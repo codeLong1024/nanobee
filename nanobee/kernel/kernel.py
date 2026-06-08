@@ -120,7 +120,7 @@ class NanobeeKernel:
             else:
                 logger.info("插件 {} 已配置为禁用状态，跳过启用", name)
 
-        # 3.1 注册工具插件到 AgentLoop（必须在插件加载完成后调用）
+        # 3.1 注册工具插件到 AgentLoop（必须在插件启用完成后调用，仅注册已启用的工具）
         if self._agent_loop:
             self._agent_loop._register_plugin_tools()
 

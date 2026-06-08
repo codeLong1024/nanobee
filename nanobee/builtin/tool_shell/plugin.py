@@ -459,7 +459,7 @@ class ToolShellPlugin(ToolPlugin):
                 try:
                     os.waitpid(process.pid, os.WNOHANG)
                 except (ProcessLookupError, ChildProcessError) as e:
-                    logger.debug("进程已回收或未找到: %s", e)
+                    logger.debug("进程已回收或未找到: {}", e)
 
     @staticmethod
     def _resolve_shell(shell: str | None) -> tuple[str | None, str | None]:
@@ -554,7 +554,7 @@ class ToolShellPlugin(ToolPlugin):
                 logger.debug("请求级 sandbox 没有 resolve_safe 或 assert_allowed 方法")
                 return None
         except Exception as e:
-            logger.warning("L2 沙箱拦截: %s", e)
+            logger.warning("L2 沙箱拦截: {}", e)
             return f"错误：沙箱拦截 - {e}" + _WORKSPACE_BOUNDARY_NOTE
 
         return None

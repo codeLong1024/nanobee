@@ -176,12 +176,9 @@ class TestContextPipelineWithPlugins:
         )
         assert "这是 Alice 的记忆内容" in result
         assert "可用技能：web-search, calc" in result
-        # Memory 段应该在 Skill 段之前（搜索段落标题避免子串干扰）
-        memory_pos = result.index("## 记忆") if "## 记忆" in result else -1
-        skill_pos = result.index("## 技能") if "## 技能" in result else -1
-        # 可能子串不存在，不做断言
-        if memory_pos >= 0 and skill_pos >= 0:
-            assert memory_pos < skill_pos
+        # 插件段标题由 plugin_type 直接生成（框架不做语义翻译）
+        assert "## memory" in result
+        assert "## skill" in result
 
 
 class TestPluginToolContribution:
@@ -236,14 +233,14 @@ class TestPluginStageMapping:
     """验证 _map_plugin_stage 工具函数。"""
 
     def test_memory_type_maps_to_memory_section(self):
-        """plugin_type=memory → '## 记忆'"""
+        """plugin_type=memory → '## memory'"""
         plugin = TestMemoryPlugin()
-        assert _map_plugin_stage(plugin) == "## 记忆"
+        assert _map_plugin_stage(plugin) == "## memory"
 
     def test_skill_type_maps_to_skill_section(self):
-        """plugin_type=skill → '## 技能'"""
+        """plugin_type=skill → '## skill'"""
         plugin = TestSkillPlugin()
-        assert _map_plugin_stage(plugin) == "## 技能"
+        assert _map_plugin_stage(plugin) == "## skill"
 
     def test_unknown_type_maps_to_type_name(self):
         """未知类型 → '## {plugin_type}'"""

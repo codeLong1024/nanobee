@@ -81,9 +81,19 @@ class TestSkillStage:
 
     @pytest.mark.asyncio
     async def test_memory_skill_always_injected(self, tmp_path: Path):
-        """_memory 技能始终全量注入 body。"""
-        _make_skill_md(tmp_path / "skills", "_memory", "记忆管理",
-                       "## 存储\n写入 memory/facts.md")
+        """声明 full_inject 的技能始终全量注入 body。"""
+        skill_dir = tmp_path / "skills" / "_memory"
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\n"
+            "name: _memory\n"
+            "description: 记忆管理\n"
+            "full_inject: true\n"
+            "---\n"
+            "\n"
+            "## 存储\n写入 memory/facts.md\n",
+            encoding="utf-8",
+        )
 
         stage = SkillStage(SkillsLoader(tmp_path / "skills"))
         context = {"system_prompt": "## Soul\n"}
@@ -92,7 +102,7 @@ class TestSkillStage:
         prompt = result["system_prompt"]
         assert "## 技能" in prompt
         assert "_memory" in prompt
-        # _memory body 全量注入
+        # full_inject 标记的技能 body 全量注入
         assert "## 存储" in prompt
         assert "memory/facts.md" in prompt
 

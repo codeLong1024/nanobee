@@ -49,7 +49,7 @@ class AuditLoggerPlugin(NanobeePlugin):
         tool_calls = sum(1 for m in messages if isinstance(m, dict) and "tool_calls" in m)
 
         logger.info(
-            "[audit] user=%s | round=%d | messages=%d | tool_calls=%d",
+            "[audit] user={} | round={} | messages={} | tool_calls={}",
             user_id,
             self._call_count,
             len(messages),

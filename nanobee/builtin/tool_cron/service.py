@@ -286,7 +286,7 @@ class CronService:
         self._recompute_next_runs()
         self._save_store()
         self._arm_timer()
-        logger.info("Cron 服务已启动，共 %s 个任务", len(self._store.jobs if self._store else []))
+        logger.info("Cron 服务已启动，共 {} 个任务", len(self._store.jobs if self._store else []))
 
     def stop(self) -> None:
         """停止服务。"""
@@ -373,7 +373,7 @@ class CronService:
     async def _execute_job(self, job: CronJob) -> None:
         """执行单个任务。"""
         start_ms = _now_ms()
-        logger.info("Cron: 执行任务 '%s' (%s)", job.name, job.id)
+        logger.info("Cron: 执行任务 '{}' ({})", job.name, job.id)
 
         try:
             if self.on_job:
@@ -381,7 +381,7 @@ class CronService:
 
             job.state.last_status = "ok"
             job.state.last_error = None
-            logger.info("Cron: 任务 '%s' 完成", job.name)
+            logger.info("Cron: 任务 '{}' 完成", job.name)
         except Exception as e:
             job.state.last_status = "error"
             job.state.last_error = str(e)
@@ -460,7 +460,7 @@ class CronService:
         self._save_store()
         self._arm_timer()
 
-        logger.info("Cron: 已添加任务 '%s' (%s)", name, job.id)
+        logger.info("Cron: 已添加任务 '{}' ({})", name, job.id)
         return job
 
     def register_system_job(self, job: CronJob) -> CronJob:
@@ -474,7 +474,7 @@ class CronService:
         store.jobs.append(job)
         self._save_store()
         self._arm_timer()
-        logger.info("Cron: 已注册系统任务 '%s' (%s)", job.name, job.id)
+        logger.info("Cron: 已注册系统任务 '{}' ({})", job.name, job.id)
         return job
 
     def remove_job(self, job_id: str) -> Literal["removed", "protected", "not_found"]:
@@ -484,7 +484,7 @@ class CronService:
         if job is None:
             return "not_found"
         if job.payload.kind == "system_event":
-            logger.info("Cron: 拒绝删除受保护的系统任务 %s", job_id)
+            logger.info("Cron: 拒绝删除受保护的系统任务 {}", job_id)
             return "protected"
 
         before = len(store.jobs)
@@ -494,7 +494,7 @@ class CronService:
         if removed:
             self._save_store()
             self._arm_timer()
-            logger.info("Cron: 已移除任务 %s", job_id)
+            logger.info("Cron: 已移除任务 {}", job_id)
             return "removed"
 
         return "not_found"
@@ -568,7 +568,7 @@ class CronService:
 
         self._save_store()
         self._arm_timer()
-        logger.info("Cron: 已更新任务 '%s' (%s)", job.name, job.id)
+        logger.info("Cron: 已更新任务 '{}' ({})", job.name, job.id)
         return job
 
     async def run_job(self, job_id: str, force: bool = False) -> bool:

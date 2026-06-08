@@ -66,12 +66,6 @@ _MAX_LENGTH_RECOVERIES = 3
 _MAX_INJECTIONS_PER_TURN = 3
 _MAX_INJECTION_CYCLES = 5
 _SNIP_SAFETY_BUFFER = 1024
-_MICROCOMPACT_KEEP_RECENT = 10
-_MICROCOMPACT_MIN_CHARS = 500
-_COMPACTABLE_TOOLS = frozenset({
-    "read_file", "exec", "grep", "find_files",
-    "web_search", "web_fetch", "list_dir", "list_exec_sessions",
-})
 _BACKFILL_CONTENT = "[Tool result unavailable — call was interrupted or lost]"
 
 # 向后兼容的模块属性，供测试/扩展 monkeypatch 使用
@@ -122,7 +116,7 @@ def _inject_context_to_tool(tool: Any, spec: AgentRunSpec) -> None:
                 user_id=spec.sender_id,
             )
         except Exception:
-            logger.debug("调用工具插件 set_context 失败: %s", type(plugin).__name__)
+            logger.debug("调用工具插件 set_context 失败: {}", type(plugin).__name__)
 
 
 @dataclass(slots=True)
@@ -380,7 +374,6 @@ class AgentRunner:
                 # 但这些合成编辑不得改变调用者保存新轮次时使用的追加边界。
                 messages_for_model = self._drop_orphan_tool_results(messages)
                 messages_for_model = self._backfill_missing_tool_results(messages_for_model)
-                messages_for_model = self._microcompact(messages_for_model)
                 messages_for_model = self._apply_tool_result_budget(spec, messages_for_model)
                 messages_for_model = self._snip_history(spec, messages_for_model)
                 # 裁剪可能产生新的孤立结果，清理它们。
@@ -1070,6 +1063,7 @@ class AgentRunner:
                 event=event,
                 tool_call=tool_call,
                 workspace_violation_counts=workspace_violation_counts,
+                exception=exc,
             )
             if handled is not None:
                 return handled
@@ -1121,44 +1115,8 @@ class AgentRunner:
             detail = detail[:120] + "..."
         return result, {"name": tool_call.name, "status": "ok", "detail": detail}, None
 
-    # SSRF 是工具边界的硬安全拦截，但 agent 轮次应对话式恢复而非中止运行时。
-    _SSRF_MARKERS: tuple[str, ...] = (
-        "internal/private url detected",
-        "private/internal address",
-        "private address",
-        "解析为私有/内网地址",
-        "私有/内网地址",
-        "内网 URL",
-    )
     # 从 security 模块导入的 SSRF 边界提示
     _SSRF_BOUNDARY_NOTE: str = SSRF_BOUNDARY_NOTE
-
-    # 非 SSRF 边界标记，作为可恢复的工具错误返回给 LLM。
-    _WORKSPACE_VIOLATION_MARKERS: tuple[str, ...] = (
-        "outside the configured workspace",
-        "outside allowed directory",
-        "working_dir is outside",
-        "working_dir could not be resolved",
-        "path outside working dir",
-        "path traversal detected",
-    )
-
-    @classmethod
-    def _is_ssrf_violation(cls, text: str) -> bool:
-        if not text:
-            return False
-        lowered = text.lower()
-        return any(marker in lowered for marker in cls._SSRF_MARKERS)
-
-    @classmethod
-    def _is_workspace_violation(cls, text: str) -> bool:
-        """当文本看起来像任何策略边界拒绝时返回 True。"""
-        if not text:
-            return False
-        lowered = text.lower()
-        if cls._is_ssrf_violation(lowered):
-            return True
-        return any(marker in lowered for marker in cls._WORKSPACE_VIOLATION_MARKERS)
 
     def _classify_violation(
         self,
@@ -1168,37 +1126,78 @@ class AgentRunner:
         event: dict[str, str],
         tool_call: ToolCallRequest,
         workspace_violation_counts: dict[str, int],
+        exception: BaseException | None = None,
     ) -> tuple[Any, dict[str, str], BaseException | None] | None:
-        """分类安全边界失败，或返回 None 以透传。"""
-        if self._is_ssrf_violation(raw_text):
-            logger.warning(
-                "Tool {} blocked by SSRF guard; returning non-retryable tool error: {}",
-                tool_call.name,
-                raw_text.replace("\n", " ").strip()[:200],
-            )
-            event["detail"] = self._event_detail("ssrf_violation: ", raw_text)
-            return self._ssrf_soft_payload(raw_text), event, None
+        """分类安全边界失败，或返回 None 以透传。
 
-        if self._is_workspace_violation(raw_text):
-            escalation = repeated_workspace_violation_error(
-                tool_call.name,
-                tool_call.arguments,
-                workspace_violation_counts,
+        不做工具特定的文本模式匹配，优先使用异常类型检测：
+        - ``SandboxViolationError`` → 工作区越界
+        - 文本包含框架模块输出特征 → 安全违规
+        """
+        # 异常类型检测（优先级最高）
+        if isinstance(exception, SandboxViolationError):
+            return self._handle_workspace_violation(
+                raw_text, soft_payload, event, tool_call, workspace_violation_counts,
             )
-            event["detail"] = self._event_detail("workspace_violation: ", raw_text)
-            if escalation is not None:
-                logger.warning(
-                    "Tool {} hit workspace boundary repeatedly; escalating hint",
-                    tool_call.name,
-                )
-                event["detail"] = self._event_detail(
-                    "workspace_violation_escalated: ",
-                    raw_text,
-                )
-                return escalation, event, None
-            return soft_payload, event, None
+
+        # 文本特征检测——只检查框架内部模块的结构化输出格式
+        # SandboxViolationError.__str__() 始终输出 "沙箱拦截"
+        # security/network.py 的 SSRF 错误始终包含 "私有/内网" 或 "private"
+        if not raw_text:
+            return None
+        lowered = raw_text.lower()
+        is_ssrf = "私有" in raw_text or "private" in lowered
+        is_sandbox = "沙箱拦截" in raw_text
+
+        if is_ssrf:
+            return self._handle_ssrf_violation(raw_text, event)
+
+        if is_sandbox:
+            return self._handle_workspace_violation(
+                raw_text, soft_payload, event, tool_call, workspace_violation_counts,
+            )
 
         return None
+
+    def _handle_ssrf_violation(
+        self,
+        raw_text: str,
+        event: dict[str, str],
+    ) -> tuple[Any, dict[str, str], None]:
+        """处理 SSRF 违规：非可恢复，附 SSRF 边界提示。"""
+        logger.warning(
+            "Tool blocked by SSRF guard; returning non-retryable tool error: {}",
+            raw_text.replace("\n", " ").strip()[:200],
+        )
+        event["detail"] = self._event_detail("ssrf_violation: ", raw_text)
+        return self._ssrf_soft_payload(raw_text), event, None
+
+    def _handle_workspace_violation(
+        self,
+        raw_text: str,
+        soft_payload: str,
+        event: dict[str, str],
+        tool_call: ToolCallRequest,
+        workspace_violation_counts: dict[str, int],
+    ) -> tuple[Any, dict[str, str], BaseException | None] | None:
+        """处理工作区越界：可恢复，重复时升级提示。"""
+        escalation = repeated_workspace_violation_error(
+            tool_call.name,
+            tool_call.arguments,
+            workspace_violation_counts,
+        )
+        event["detail"] = self._event_detail("workspace_violation: ", raw_text)
+        if escalation is not None:
+            logger.warning(
+                "Tool {} hit workspace boundary repeatedly; escalating hint",
+                tool_call.name,
+            )
+            event["detail"] = self._event_detail(
+                "workspace_violation_escalated: ",
+                raw_text,
+            )
+            return escalation, event, None
+        return soft_payload, event, None
 
     @classmethod
     def _ssrf_soft_payload(cls, raw_text: str) -> str:
@@ -1340,32 +1339,6 @@ class AgentRunner:
             })
             offset += 1
         return updated
-
-    @staticmethod
-    def _microcompact(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """将旧的可压缩工具结果替换为一行摘要。"""
-        compactable_indices: list[int] = []
-        for idx, msg in enumerate(messages):
-            if msg.get("role") == "tool" and msg.get("name") in _COMPACTABLE_TOOLS:
-                compactable_indices.append(idx)
-
-        if len(compactable_indices) <= _MICROCOMPACT_KEEP_RECENT:
-            return messages
-
-        stale = compactable_indices[: len(compactable_indices) - _MICROCOMPACT_KEEP_RECENT]
-        updated: list[dict[str, Any]] | None = None
-        for idx in stale:
-            msg = messages[idx]
-            content = msg.get("content")
-            if not isinstance(content, str) or len(content) < _MICROCOMPACT_MIN_CHARS:
-                continue
-            name = msg.get("name", "tool")
-            summary = f"[{name} result omitted from context]"
-            if updated is None:
-                updated = [dict(m) for m in messages]
-            updated[idx]["content"] = summary
-
-        return updated if updated is not None else messages
 
     def _apply_tool_result_budget(
         self,

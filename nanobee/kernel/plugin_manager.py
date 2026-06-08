@@ -12,24 +12,8 @@ from typing import Any, Type
 import toml
 
 from nanobee.plugins.base import NanobeePlugin, PluginMetadata
-from nanobee.plugins.memory import MemoryPlugin
-from nanobee.plugins.tool import ToolPlugin
 
 from nanobee.utils.logger import logger
-
-
-
-def _resolve_plugin_base(plugin_type: str) -> type[NanobeePlugin]:
-    """惰性加载插件基类，避免 module-level 循环导入。"""
-    _MAP: dict[str, type[NanobeePlugin]] = {
-        "tool": ToolPlugin,
-        "memory": MemoryPlugin,
-    }
-    if plugin_type in _MAP:
-        return _MAP[plugin_type]
-    # 延迟加载 ChannelPlugin 以避免 channel.base → kernel → agent.loop → plugin_manager 环路
-    from nanobee.channel.base import ChannelPlugin  # type: ignore[import-untyped]
-    return ChannelPlugin
 
 
 class PluginDescriptor:
@@ -191,17 +175,38 @@ class PluginManager:
             return None
 
     def _find_plugin_class(self, module: Any, plugin_type: str) -> Type[NanobeePlugin] | None:
-        """在模块中查找插件类"""
-        expected_base = _resolve_plugin_base(plugin_type)
+        """在模块中查找具体的插件类，排除导入的抽象基类。
+
+        策略：跳过有空 __abstractmethods__ 的类（抽象基类），
+        因为 Python 的 ABCMeta 会在基类上设置 __abstractmethods__，
+        而具体子类实现所有抽象方法后该集合为空。
+
+        Args:
+            module: 动态加载的插件模块
+            plugin_type: 插件类型（用于日志，暂未使用）
+
+        Returns:
+            插件类，未找到返回 None
+        """
+        candidates: list[type[NanobeePlugin]] = []
         for attr_name in dir(module):
             attr = getattr(module, attr_name)
             if (
                 isinstance(attr, type)
-                and issubclass(attr, expected_base)
-                and attr is not expected_base
+                and issubclass(attr, NanobeePlugin)
+                and attr is not NanobeePlugin
+                # 跳过抽象基类（有未实现的抽象方法）
+                and not getattr(attr, "__abstractmethods__", None)
             ):
-                return attr
-        return None
+                candidates.append(attr)
+
+        if not candidates:
+            return None
+        if len(candidates) == 1:
+            return candidates[0]
+        # 多个候选时取最深继承层级（最具体子类）
+        candidates.sort(key=lambda cls: len(cls.__mro__), reverse=True)
+        return candidates[0]
 
     def load_all(self) -> None:
         """扫描并加载所有插件"""
@@ -230,9 +235,12 @@ class PluginManager:
         return self._plugins.get(name)
 
     def get_by_type(self, plugin_type: str) -> list[NanobeePlugin]:
-        """按类型获取插件列表"""
-        expected_base = _resolve_plugin_base(plugin_type)
-        return [p for p in self._plugins.values() if isinstance(p, expected_base)]
+        """按类型获取已成功加载的插件列表，基于插件实例本身的元数据过滤。"""
+        return [
+            plugin
+            for plugin in self._plugins.values()
+            if plugin.metadata.plugin_type == plugin_type
+        ]
 
     def get_descriptor(self, name: str) -> PluginDescriptor | None:
         """获取插件描述符。
@@ -248,6 +256,20 @@ class PluginManager:
     def list_plugins(self) -> list[str]:
         """列出所有已加载的插件名称"""
         return list(self._plugins.keys())
+
+    def is_enabled(self, name: str) -> bool:
+        """检查插件是否已启用。
+
+        Args:
+            name: 插件名称
+
+        Returns:
+            bool: 插件是否已启用
+        """
+        plugin = self._plugins.get(name)
+        if plugin is None:
+            return False
+        return plugin.is_enabled
 
     def get_enabled_plugins(self) -> list[NanobeePlugin]:
         """获取所有已启用的插件。"""

@@ -35,6 +35,7 @@ class SkillMeta:
         self.description: str = str(data.get("description", ""))
         self.author: str = str(data.get("author", ""))
         self.compatibility: str | None = data.get("compatibility")
+        self.full_inject: bool = bool(data.get("full_inject", False))
         self._validate_description()
 
     def _validate_description(self) -> None:
@@ -54,6 +55,8 @@ class SkillMeta:
         }
         if self.compatibility:
             d["compatibility"] = self.compatibility
+        if self.full_inject:
+            d["full_inject"] = True
         return d
 
 
