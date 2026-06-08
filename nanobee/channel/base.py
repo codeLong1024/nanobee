@@ -61,6 +61,44 @@ class ChannelPlugin(NanobeePlugin, ABC):
             self.display_name = self.metadata.name
         logger.info("通道 {} ({}) 已加载", self.display_name, self.metadata.plugin_type)
 
+    def on_enable(self) -> None:
+        """通道插件启用时，订阅 agent.outbound 事件以接收出站消息。
+
+        出站消息来源包括：
+        - AgentLoop 正常回复（通过 _dispatch 发布）
+        - Cron 插件定时任务触发（通过 _on_job_execute 发布）
+
+        订阅处理器根据事件中的 channel 字段匹配当前通道，
+        匹配成功则调用 send() 投递给用户。
+        """
+        super().on_enable()
+        if self.kernel and self.kernel.event_bus:
+            self.kernel.event_bus.subscribe("agent.outbound", self._on_agent_outbound)
+            logger.debug("通道 {} 已订阅 agent.outbound 事件", self.display_name)
+
+    async def _on_agent_outbound(self, data: dict) -> None:
+        """处理 agent.outbound 事件：匹配通道后投递消息。
+
+        Args:
+            data: 事件数据，包含 channel、chat_id、content、metadata
+        """
+        if not isinstance(data, dict):
+            return
+        channel_name = data.get("channel", "")
+        if channel_name != self.metadata.name:
+            return
+        chat_id = data.get("chat_id", "direct")
+        content = data.get("content", "")
+        if not content:
+            return
+        msg = OutboundMessage(
+            channel=channel_name,
+            chat_id=chat_id,
+            content=content,
+            metadata=data.get("metadata", {}),
+        )
+        await self.send(msg, context_id=chat_id)
+
     # ====== 抽象方法 ======
     @abstractmethod
     async def send(

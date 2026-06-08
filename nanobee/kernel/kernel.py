@@ -161,6 +161,7 @@ class NanobeeKernel:
         message: str,
         context_id: str = "default",
         *,
+        channel: str = "direct",
         media: list[str] | None = None,
         on_stream: Any = None,
         on_stream_end: Any = None,
@@ -175,6 +176,7 @@ class NanobeeKernel:
         Args:
             message: 用户消息文本
             context_id: 上下文 ID
+            channel: 来源通道名（如 channel_dingtalk），默认 "direct"
             media: 媒体附件路径列表（图片、文件等）
             on_stream: 每段文本增量回调，签名 async (delta: str) -> None
             on_stream_end: 流结束回调，签名 async (*, resuming: bool) -> None
@@ -186,7 +188,8 @@ class NanobeeKernel:
         from nanobee.agent.hook import StreamBridgeHook
         hook = StreamBridgeHook(on_stream=on_stream, on_stream_end=on_stream_end) if on_stream else None
         return await self._handle_message_impl(
-            message, context_id, media=media, extra_hook=hook, sender_id=sender_id,
+            message, context_id, channel=channel, media=media,
+            extra_hook=hook, sender_id=sender_id,
         )
 
     async def _handle_message_impl(
@@ -194,6 +197,7 @@ class NanobeeKernel:
         message: str,
         context_id: str,
         *,
+        channel: str = "direct",
         media: list[str] | None = None,
         extra_hook: Any = None,
         sender_id: str = "user",
@@ -208,6 +212,7 @@ class NanobeeKernel:
         Args:
             message: 用户消息
             context_id: 上下文 ID
+            channel: 来源通道名（如 channel_dingtalk），默认 "direct"
             media: 媒体附件路径列表
             extra_hook: 可选的流式 Hook，桥接到 AgentLoop 的流式系统
             sender_id: 发送者 ID，作为 context 目录标识
@@ -230,7 +235,7 @@ class NanobeeKernel:
         await self._agent_loop._connect_mcp()
 
         msg = InboundMessage(
-            channel="direct",
+            channel=channel,
             sender_id=sender_id,
             chat_id=context_id,
             content=message,

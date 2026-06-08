@@ -397,6 +397,7 @@ class HTTPChannelPlugin(ChannelPlugin):
                 await self.kernel.handle_message(
                     text,
                     context_id=conversation_id,
+                    channel=self.metadata.name,
                     media=media_urls or None,
                     on_stream=_on_stream,
                     sender_id=conversation_id,
@@ -433,6 +434,7 @@ class HTTPChannelPlugin(ChannelPlugin):
             result = await self.kernel.handle_message(
                 text,
                 context_id=conversation_id,
+                channel=self.metadata.name,
                 media=media_urls or None,
                 sender_id=conversation_id,
             )

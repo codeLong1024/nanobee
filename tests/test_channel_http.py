@@ -352,7 +352,7 @@ class TestHTTPEndpoints(AioHTTPTestCase):
     async def test_completions_streaming(self) -> None:
         """POST /v1/chat/completions (stream=true) 返回 SSE 流。"""
         # 覆盖 handle_message 以调用 on_stream 回调
-        async def _streaming_handle(message, context_id="default", *, media=None, on_stream=None, on_stream_end=None, sender_id="user"):
+        async def _streaming_handle(message, context_id="default", *, channel="direct", media=None, on_stream=None, on_stream_end=None, sender_id="user"):
             if on_stream:
                 await on_stream("Hello")
                 await on_stream(" world")

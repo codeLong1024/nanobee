@@ -58,14 +58,43 @@ class ToolCronPlugin(ToolPlugin):
         logger.info("Cron 插件初始化完成")
 
     def on_enable(self) -> None:
-        """启用时启动 CronService。"""
+        """启用时启动 CronService。
+
+        首次启动时扫描 users/*/cron/jobs.json 加载已有任务。
+        """
         super().on_enable()
+        # 如果 set_context 尚未被调用（如 gateway 启动后无用户交互），
+        # 主动扫描 work_dir/users/*/cron/jobs.json 加载现有任务
+        if self._cron is None:
+            self._scan_existing_jobs()
         if self._cron is not None:
             try:
                 self._cron.start()
                 self._enabled = True
             except RuntimeError as e:
                 logger.error("Cron 服务启动失败: {}", e)
+
+    def _scan_existing_jobs(self) -> None:
+        """扫描 users 目录下已有的 cron 任务文件。"""
+        if not self.kernel:
+            return
+        work_dir = Path(self.kernel.work_dir).expanduser()
+        users_base = work_dir / "users"
+        if not users_base.is_dir():
+            return
+        for user_dir in sorted(users_base.iterdir()):
+            cron_file = user_dir / "cron" / "jobs.json"
+            if cron_file.is_file():
+                self._current_store_path = cron_file
+                self._cron = CronService(
+                    store_path=cron_file,
+                    on_job=self._on_job_execute,
+                    max_sleep_ms=300_000,
+                )
+                logger.info(
+                    "Cron: 从 {} 加载现有任务", cron_file,
+                )
+                return
 
     def on_disable(self) -> None:
         """禁用时停止 CronService。"""
@@ -147,12 +176,8 @@ class ToolCronPlugin(ToolPlugin):
                 "function": {
                     "name": "cron",
                     "description": (
-                        "调度提醒和重复性任务。操作：add（添加）、list（列出）、remove（移除）。"
-                        " add 需要 message 参数加一种调度方式（every_seconds / cron_expr / at）；"
-                        " remove 需要 job_id；list 仅需 action。"
-                        f" 省略 tz 时 cron 表达式和裸 ISO 时间默认使用 {self._default_timezone}。"
-                        " 【重要】你必须实际调用此工具来创建/修改/删除/查询任务，"
-                        "不能只说「已创建」或「已更新」，工具不会被自动执行。"
+                        "Schedule reminders and recurring tasks. Actions: add, list, remove."
+                        " See cron skill for usage guide."
                     ),
                     "parameters": {
                         "type": "object",
@@ -417,8 +442,8 @@ class ToolCronPlugin(ToolPlugin):
     async def _on_job_execute(self, job: CronJob) -> str | None:
         """Cron 任务触发时的回调：通过 Agent Loop 执行任务消息。
 
-        如果 job.payload.deliver 为 True 且 Agent 回复非空，
-        通过 event_bus 发布出站消息，让通道插件投递给用户。
+        如果 job.payload.deliver 为 True，通过 event_bus 发布出站消息，
+        由通道插件订阅后投递给用户，不经过 LLM 处理，避免递归。
 
         Args:
             job: 触发执行的任务
@@ -436,7 +461,28 @@ class ToolCronPlugin(ToolPlugin):
 
         logger.info("Cron: 触发任务 {}, 消息: {}", job.id, job.payload.message[:100])
         try:
-            # 使用创建任务时的用户 ID 作为上下文，避免沙箱路径问题
+            # deliver=True 的任务：直接投递给用户，不经过 LLM 处理，避免递归
+            if job.payload.deliver:
+                content_text = job.payload.message
+                logger.info("Cron: 任务 {} 交付用户（跳过 LLM）", job.id)
+
+                channel = job.payload.channel or "cli"
+                chat_id = job.payload.to or "direct"
+                # 剥离 chat_id 中的通道前缀（如 "dingtalk:shenqla" → "shenqla"），
+                # 避免 DingTalk API 因 userId 格式不正确而报 staffId.notExisted
+                if ":" in chat_id:
+                    chat_id = chat_id.split(":", 1)[-1]
+
+                if self.kernel.agent_loop.event_bus:
+                    await self.kernel.agent_loop.event_bus.publish("agent.outbound", {
+                        "channel": channel,
+                        "chat_id": chat_id,
+                        "content": content_text,
+                        "metadata": job.payload.channel_meta or {},
+                    })
+                return content_text
+
+            # deliver=False 的任务：交给 LLM 处理（作为 agent 内部指令）
             context_id = job.payload.user_id or job.payload.to or "cron"
             result = await self.kernel.handle_message(
                 message=job.payload.message,
@@ -444,24 +490,6 @@ class ToolCronPlugin(ToolPlugin):
                 sender_id="system",
             )
             content_text = result.content if result else ""
-
-            if job.payload.deliver and content_text:
-                logger.info("Cron: 任务 {} 执行完成，准备投递", job.id)
-                # 通过 event_bus 发布出站消息，让通道插件投递给用户
-                # 参考 nanobot/cli/commands.py 的 on_cron_job 回调逻辑
-                from nanobee.agent.loop import OutboundMessage
-
-                channel = job.payload.channel or "cli"
-                chat_id = job.payload.to or "direct"
-
-                # 通过 agent_loop 的 _publish_outbound 发布出站消息
-                if self.kernel.agent_loop.event_bus:
-                    await self.kernel.agent_loop.event_bus.publish("agent.outbound", {
-                        "channel": channel,
-                        "chat_id": chat_id,
-                        "content": content_text,
-                        "metadata": {},
-                    })
 
             return content_text
         except Exception:

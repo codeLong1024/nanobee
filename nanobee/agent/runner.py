@@ -114,6 +114,7 @@ def _inject_context_to_tool(tool: Any, spec: AgentRunSpec) -> None:
                 channel=spec.channel,
                 chat_id=spec.chat_id,
                 user_id=spec.sender_id,
+                metadata=spec.metadata,
             )
         except Exception:
             logger.debug("调用工具插件 set_context 失败: {}", type(plugin).__name__)
@@ -154,6 +155,7 @@ class AgentRunSpec:
     channel: str = ""
     chat_id: str = ""
     sender_id: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
