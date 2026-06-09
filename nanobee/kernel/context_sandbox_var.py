@@ -145,6 +145,47 @@ def current_context_root() -> Path | None:
     return _CURRENT_CONTEXT_ROOT.get()
 
 
+# 当前请求的子进程工作区边界（per-user: ~/.nanobee/users/<user>/workspace/）
+# 定义子进程可访问的目录边界，与 ContextRoot（路径校验边界）解耦。
+_CURRENT_PROCESS_WORKSPACE: ContextVar[Path | None] = ContextVar(
+    "nanobee_process_workspace",
+    default=None,
+)
+
+
+def bind_process_workspace(workspace: Path) -> Token[Path | None]:
+    """在当前异步任务中绑定子进程工作区边界。
+
+    Args:
+        workspace: 子进程可访问的工作区根目录
+
+    Returns:
+        Token 用于后续 reset_process_workspace 恢复
+    """
+    return _CURRENT_PROCESS_WORKSPACE.set(workspace)
+
+
+def reset_process_workspace(token: Token[Path | None]) -> None:
+    """恢复绑定的子进程工作区到绑定前的状态。
+
+    Args:
+        token: bind_process_workspace 返回的 Token
+    """
+    _CURRENT_PROCESS_WORKSPACE.reset(token)
+
+
+def current_process_workspace() -> Path | None:
+    """获取当前异步任务中绑定的子进程工作区边界。
+
+    tool_shell 插件通过此 ContextVar 获取 bwrap workspace 路径，
+    遵循框架无知论：工具层只读标记、不决策。
+
+    Returns:
+        子进程工作区根目录，未绑定时返回 None
+    """
+    return _CURRENT_PROCESS_WORKSPACE.get()
+
+
 __all__ = [
     "bind_sandbox",
     "current_sandbox",
@@ -155,4 +196,7 @@ __all__ = [
     "bind_context_root",
     "current_context_root",
     "reset_context_root",
+    "bind_process_workspace",
+    "current_process_workspace",
+    "reset_process_workspace",
 ]

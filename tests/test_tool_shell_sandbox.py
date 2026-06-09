@@ -305,3 +305,120 @@ def test_check_sandbox_path_with_symlink_to_inside(
         result = plugin._check_sandbox_path(str(symlink))
         assert result is None
     _with_sandbox(user_context_sandbox, _test)
+
+
+# ==============================================================================
+# 进程级沙箱包裹测试
+# ==============================================================================
+
+
+def test_wrap_sandbox_no_config(plugin: ToolShellPlugin):
+    """未配置 sandbox 后端时，命令原样返回"""
+    result = plugin._wrap_sandbox("echo hello", "/tmp")
+    assert result == "echo hello"
+
+
+def test_wrap_sandbox_empty_config(plugin: ToolShellPlugin):
+    """空字符串配置也返回原命令"""
+    plugin.get_config = lambda k, d="": ""  # type: ignore[method-assign]
+    result = plugin._wrap_sandbox("echo hello", "/tmp")
+    assert result == "echo hello"
+
+
+def test_wrap_sandbox_bwrap_not_installed(plugin: ToolShellPlugin, tmp_path: Path):
+    """bwrap 未安装时优雅降级"""
+    plugin.get_config = lambda k, d="": "bwrap"  # type: ignore[method-assign]
+    result = plugin._wrap_sandbox("echo hello", str(tmp_path))
+    # 应该返回原始命令（不支持跳过不报错）
+    assert result == "echo hello"
+
+
+def test_wrap_sandbox_unknown_backend(plugin: ToolShellPlugin, tmp_path: Path):
+    """未知后端时优雅降级"""
+    plugin.get_config = lambda k, d="": "nonexistent"  # type: ignore[method-assign]
+    result = plugin._wrap_sandbox("echo hello", str(tmp_path))
+    assert result == "echo hello"
+
+
+# ==============================================================================
+# sandbox.py 模块直接测试
+# ==============================================================================
+
+
+from nanobee.builtin.tool_shell.sandbox import wrap_command, _BACKENDS
+
+
+def test_backends_available():
+    """后端的依赖检查返回结果"""
+    for name, (backend_fn, dep_check) in _BACKENDS.items():
+        available, error_msg = dep_check()
+        # 如果 bwrap 未安装，error_msg 应包含提示信息
+        if not available:
+            assert error_msg is not None
+            assert "未安装" in error_msg or "install" in error_msg
+
+
+def test_wrap_command_unknown_backend_raises():
+    """未知后端名抛 ValueError"""
+    import pytest
+    with pytest.raises(ValueError, match="未知的沙箱后端"):
+        wrap_command("ghost", "echo hi", "/tmp", "/tmp")
+
+
+def test_wrap_command_missing_dependency_raises(tmp_path: Path):
+    """bwrap 未安装时抛 RuntimeError"""
+    import shutil
+    import pytest
+    if shutil.which("bwrap") is None:
+        with pytest.raises(RuntimeError, match="bwrap 未安装"):
+            wrap_command("bwrap", "echo hi", str(tmp_path), str(tmp_path))
+
+
+@pytest.mark.skipif(
+    __import__("shutil").which("bwrap") is None,
+    reason="bwrap 未安装",
+)
+def test_bwrap_wraps_command(tmp_path: Path):
+    """bwrap 存在时正确包裹命令"""
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    wrapped = wrap_command("bwrap", "echo hello", str(ws), str(ws))
+    assert wrapped.startswith("bwrap ")
+    assert "--new-session" in wrapped
+    assert "--die-with-parent" in wrapped
+    assert f"--bind {ws}" in wrapped or f"--bind {ws}/" in wrapped
+    assert "echo hello" in wrapped
+    assert "--chdir" in wrapped
+
+
+@pytest.mark.skipif(
+    __import__("shutil").which("bwrap") is None,
+    reason="bwrap 未安装",
+)
+def test_bwrap_actually_isolates(tmp_path: Path):
+    """bwrap 容器内无法访问父目录外的文件（需要 rootless bwrap）"""
+    import asyncio
+
+    ws = tmp_path / "sandbox_ws"
+    ws.mkdir()
+    secret = tmp_path / "secret.txt"
+    secret.write_text("confidential", encoding="utf-8")
+
+    wrapped_cmd = wrap_command(
+        "bwrap",
+        f"cat /proc/self/root{secret} 2>&1 || echo 'BLOCKED'",
+        str(ws), str(ws),
+    )
+
+    async def _run():
+        proc = await asyncio.create_subprocess_shell(
+            wrapped_cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+        return stdout.decode() + stderr.decode()
+
+    output = asyncio.run(_run())
+    # 应该无法读取 secret.txt（被 tmpfs 遮掩）
+    assert "confidential" not in output

@@ -789,10 +789,10 @@ class AgentLoop:
         """运行 Agent 迭代循环。"""
         sandbox = await self._build_sandbox(ctx.context_id)
 
-        # 使用 ContextVar 绑定沙箱 + tmp + context_root，替代方法参数透传
+        # 使用 ContextVar 绑定沙箱 + tmp + context_root + process_workspace，替代方法参数透传
         from nanobee.kernel.context_sandbox_var import (
-            bind_context_root, bind_sandbox, bind_tmp,
-            reset_context_root, reset_sandbox, reset_tmp,
+            bind_context_root, bind_process_workspace, bind_sandbox, bind_tmp,
+            reset_context_root, reset_process_workspace, reset_sandbox, reset_tmp,
         )
         _sandbox_token = bind_sandbox(sandbox) if sandbox else None
 
@@ -800,6 +800,7 @@ class AgentLoop:
         user_ctx = await self.context_manager.get_or_create(ctx.context_id)
         _tmp_token = bind_tmp(user_ctx.tmp_dir)
         _ctx_root_token = bind_context_root(user_ctx.context_root)
+        _process_ws_token = bind_process_workspace(user_ctx.work_dir)
 
         # 让插件修改工具列表（在 ToolCollector 过滤之前）
         plugin_modified_tool_names = self._collect_plugin_tools(
@@ -842,6 +843,7 @@ class AgentLoop:
                 reset_sandbox(_sandbox_token)
             reset_tmp(_tmp_token)
             reset_context_root(_ctx_root_token)
+            reset_process_workspace(_process_ws_token)
         final_content, tools_used, all_msgs, stop_reason, had_injections = result
         ctx.final_content = final_content
         ctx.tools_used = tools_used

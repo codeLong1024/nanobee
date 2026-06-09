@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from nanobee.builtin.tool_shell.sandbox import wrap_command as _wrap_sandbox_command
 from nanobee.kernel.context_sandbox_var import current_sandbox as _current_sandbox
 from nanobee.plugins.tool import ToolPlugin
 from nanobee.security.network import contains_internal_url
@@ -315,6 +316,9 @@ class ToolShellPlugin(ToolPlugin):
         if guard_error:
             return guard_error
 
+        # 进程级沙箱包裹：如果配置了 sandbox 后端，将原始命令嵌入沙箱命令
+        command = self._wrap_sandbox(command, cwd)
+
         effective_timeout = self._resolve_timeout(timeout)
         env = self._build_env()
 
@@ -558,6 +562,50 @@ class ToolShellPlugin(ToolPlugin):
             return f"错误：沙箱拦截 - {e}" + _WORKSPACE_BOUNDARY_NOTE
 
         return None
+
+    def _wrap_sandbox(self, command: str, cwd: str) -> str:
+        """如果配置了进程级沙箱后端，将命令包裹在沙箱中执行。
+
+        沙箱后端通过 plugins.tool_shell.sandbox 配置（nanobee.yaml）。
+        当前支持：
+        - "bwrap"：使用 bubblewrap 的 mount namespace 隔离
+        - ""（空字符串）：不启用（默认）
+
+        注意：沙箱后端的可用性取决于系统是否安装了对应命令。
+        （例如 bwrap 需要 apt install bubblewrap）
+
+        Args:
+            command: 原始命令
+            cwd: 当前工作目录（用作沙箱 workdir）
+
+        Returns:
+            包裹后的命令，或原始命令（未配置或不可用时）
+        """
+        sandbox_backend = self.get_config("sandbox", "")
+        if not sandbox_backend:
+            return command
+
+        if _IS_WINDOWS:
+            logger.warning(
+                "沙箱 '{}' 在 Windows 上不可用；在无沙箱状态下运行",
+                sandbox_backend,
+            )
+            return command
+
+        try:
+            # 使用框架定义的子进程工作区边界（ProcessWorkspace），
+            # 而非沙箱 context_root，确保子进程仅暴露 workspace/ 目录
+            from nanobee.kernel.context_sandbox_var import (
+                current_process_workspace,
+            )
+            process_workspace = current_process_workspace()
+            ws = str(process_workspace) if process_workspace else cwd
+            wrapped = _wrap_sandbox_command(sandbox_backend, command, ws, cwd)
+            logger.info("命令已通过沙箱 '{}' 包裹 (ws={})", sandbox_backend, ws)
+            return wrapped
+        except (ValueError, RuntimeError) as e:
+            logger.warning("沙箱 '{}' 不可用，在无沙箱状态下运行: {}", sandbox_backend, e)
+            return command
 
     @staticmethod
     def _clamp_int(value: int | None, default: int, minimum: int, maximum: int) -> int:

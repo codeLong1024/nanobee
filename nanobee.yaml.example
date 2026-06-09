@@ -74,6 +74,12 @@ providers:
 
 # 插件配置
 # plugins:
+#   tool_shell:
+#     # 进程级沙箱后端（默认 "" = 不启用）
+#     # "bwrap" — 使用 bubblewrap 的 mount namespace 隔离子进程
+#     # 需要系统安装 bwrap（apt install bubblewrap）
+#     # 注意：启用后子进程只能访问 workspace 目录，不能通过 /proc/self/root 绕过
+#     sandbox: "bwrap"
 #   channel_http:
 #     # 监听地址（默认 127.0.0.1，建议保持默认仅本地访问）
 #     host: "127.0.0.1"

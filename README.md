@@ -19,7 +19,7 @@
 
 ## 项目状态
 
-**版本 v0.1.0** — 核心框架（微内核、Agent 引擎、LLM Provider、插件体系）已通过 **503 个单元测试**验证。
+**版本 v0.1.0** — 核心框架（微内核、Agent 引擎、LLM Provider、插件体系）已通过 **510 个单元测试**验证。
 
 ```
 Kernel 内核     ████████████████████████████████  95%
@@ -41,6 +41,7 @@ CLI 命令        ████████████████████�
 - **技能管理** — SkillsLoader 双源发现（内置技能 `nanobee/skills/` + per-user 技能 `users/<user_id>/skills/`），SKILL.md frontmatter 驱动渐进/全量注入策略。内置 `_memory`（记忆策略，`full_inject: true`声明全量注入）、`skill_creator`（技能创建教程，渐进式注入，LLM 按需读取）
 - **内置 Skill** — 框架打包 `nanobee/skills/`，只读不可覆盖，同时加入沙箱只读根白名单，LLM 可通过 `read_file` 读取参考格式。标记 `full_inject: true` 的技能全量注入 system prompt，普通技能仅注入元数据 + 文件绝对路径，由 LLM 按需读取
 - **Sandbox 多根白名单** — ContextSandbox 从单根扩展为可读写根 + 只读根列表。写操作（write_file/edit_file）仅限 context_root 内，读操作（read_file/list_dir）可访问所有白名单根。内置技能目录自动加入只读白名单
+- **ProcessWorkspace 进程级隔离** — 框架层定义"子进程可访问目录边界"(ProcessWorkspace)，与路径校验边界(ContextSandbox)解耦。tool_shell 通过 ContextVar 读取窄 workspace(=workspace/)，bwrap 以 `--tmpfs $HOME` 掩藏整个用户主目录，子进程仅暴露工作区目录
 - **上下文管理** — 按用户物理隔离的目录结构（identity.yaml / .history/ / workspace/ / memory/ / .tmp/），框架通过 ContextVar 按请求向插件注入 `self.tmp`（临时目录）和 `self.context_root`（用户根目录），插件自管清理和持久化子目录创建
 - **灵魂守卫** — 三层保护（chmod 444 + 写入拦截 Hook + SHA-256 哈希校验）
 - **插件管理器** — 扫描、加载（含依赖拓扑排序）、启用/禁用/卸载生命周期
@@ -175,7 +176,8 @@ ChannelPlugin ──▶ EventBus ──▶ NanobeeKernel
 | `LockManager` | 按用户粒度的 asyncio 并发锁 |
 | `ContextRouter` | 多租户路由（`channel:chat_id` → `user_id`） |
 | `ContextSandbox` | 多根沙箱 — 写操作仅限 context_root，读操作用于多根白名单（如内置技能只读目录），防御 `../` 逃逸 |
-| `context_sandbox_var` | ContextVar 注入：bind_sandbox/bind_tmp/bind_context_root 及对应 reset/current 函数 |
+| `ProcessWorkspace` | 子进程执行边界 — 与 ContextSandbox（路径校验边界）解耦，tool_shell 使用此边界做 bwrap mount namespace 隔离 |
+| `context_sandbox_var` | ContextVar 注入：bind_sandbox/bind_tmp/bind_context_root/bind_process_workspace 及对应 reset/current 函数 |
 | `ToolCollector` | 工具白/黑名单双重过滤 |
 
 ### Pipeline 如何组装 System Prompt
@@ -210,6 +212,11 @@ ChannelPlugin ──▶ EventBus ──▶ NanobeeKernel
 - 框架只提供 basedir，**插件自己创建子目录**（符合框架无知论）
 - 适合持久化数据，如 cron 任务、memory 存储等
 
+**`process_workspace`** — 子进程可访问边界，`users/<user>/workspace/`：
+- 框架层定义安全策略，与 ContextSandbox（路径校验边界）解耦
+- tool_shell 据此做 bwrap mount namespace 隔离，以 `--tmpfs $HOME` 掩藏敏感配置
+- 框架无知论：框架定义边界（机制），工具层只读标记执行（不决策）
+
 ```python
 class MyPlugin(ToolPlugin):
     async def execute_tool(self, tool_name, **kwargs):
@@ -233,7 +240,7 @@ class MyPlugin(ToolPlugin):
 | `channel_dingtalk` | Channel | ✅ 完整 | 钉钉机器人通道（Stream SDK + AI Card 流式输出 + 媒体文件收发与解析） |
 | `tool_echo` | Tool | ✅ 完整 | 回显测试工具 |
 | `tool_fs` | Tool | ✅ 完整 | 文件系统工具（read_file, write_file, edit_file, list_dir），L1/L2 防御纵深 |
-| `tool_shell` | Tool | ✅ 完整 | Shell 命令工具（execute_shell），含 deny 模式拦截危险命令 |
+| `tool_shell` | Tool | ✅ 完整 | Shell 命令工具（execute_shell），双层安全守卫：deny 模式拦截危险命令 + bwrap 进程级沙箱（掩藏 $HOME 仅暴露 workspace/） |
 | `tool_web` | Tool | ✅ 完整 | Web 工具（web_search, web_fetch），含 HTML 清理、SSRF 保护 |
 | `tool_cron` | Tool | ✅ 完整 | Cron 定时任务（add, list, remove） |
 | `tool_dingtalk` | Tool | ✅ 完整 | 钉钉工具（文档操作、多维表操作、数据管道 + MCP 客户端） |
@@ -294,7 +301,7 @@ class MyPlugin(NanobeePlugin):
 # 安装开发依赖
 pip install -e ".[dev]"
 
-# 运行全部测试（503 个用例）
+# 运行全部测试（510 个用例）
 python -m pytest tests/ -v --tb=short
 
 # 查看覆盖率
