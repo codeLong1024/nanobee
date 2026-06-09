@@ -98,6 +98,11 @@ class SkillsLoader:
         self._cache_time: dict[str, float] = {}
         self._dir_mtime: dict[str, float] = {}
 
+    @property
+    def builtin_dir(self) -> Path | None:
+        """内置技能目录路径（只读，用于沙箱白名单）"""
+        return self._builtin_dir
+
     # ---- 缓存管理 ----
 
     def _scan_dir_mtime(self, dir_path: Path) -> float:

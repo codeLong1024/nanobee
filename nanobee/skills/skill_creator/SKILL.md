@@ -7,8 +7,8 @@ description: "创建、编辑、管理技能（Skill）。技能是扩展 AI Age
 
 通过读写文件管理技能。技能分两类：
 
-- **内置技能**：`nanobee/skills/<名称>/SKILL.md`，只读
-- **用户技能**：`users/<用户ID>/skills/<名称>/SKILL.md`，通过 `write_file` 创建
+- **内置技能**：参考 system prompt `## 技能` 段中给出的绝对路径，用 `read_file` 读取参考格式
+- **用户技能**：`skills/<名称>/SKILL.md`（相对于你的工作目录），用 `write_file` 创建
 
 ## 核心原则
 

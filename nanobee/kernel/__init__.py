@@ -18,7 +18,7 @@ from nanobee.kernel.lock_manager import LockManager
 from nanobee.kernel.plugin_manager import PluginManager
 from nanobee.kernel.router import ContextRouter
 from nanobee.kernel.runtime_events import RuntimeEventBus
-from nanobee.kernel.sandbox import ContextSandbox, SandboxError
+from nanobee.kernel.sandbox import ContextSandbox
 from nanobee.kernel.soul_guard import SoulGuard
 from nanobee.kernel.tool_collector import ToolCollector
 from nanobee.kernel.user_context import UserContext, UserMetadata
@@ -36,7 +36,6 @@ __all__ = [
     "ContextRouter",
     "UnknownRouteError",
     "ContextSandbox",
-    "SandboxError",
     "ToolCollector",
     "NanobeeError",
     "PluginError",

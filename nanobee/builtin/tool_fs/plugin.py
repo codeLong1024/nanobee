@@ -14,7 +14,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from nanobee.kernel.sandbox import SandboxError
+from nanobee.exceptions import SandboxViolationError
 from nanobee.plugins.tool import ToolPlugin
 
 from nanobee.utils.logger import logger
@@ -239,7 +239,7 @@ class ToolFileSystemPlugin(ToolPlugin):
 
             return result
 
-        except SandboxError as e:
+        except SandboxViolationError as e:
             return f"错误：沙箱拦截 - {e}"
         except PermissionError as e:
             return f"错误：权限不足 - {e}"
@@ -258,6 +258,8 @@ class ToolFileSystemPlugin(ToolPlugin):
     ) -> str:
         """写入文件内容（沙箱通过 ContextVar 注入）
 
+        写操作走 _resolve_write_path，确保只在可写根内操作。
+
         Args:
             path: 文件路径
             content: 写入的内容
@@ -271,7 +273,7 @@ class ToolFileSystemPlugin(ToolPlugin):
             if content is None:
                 raise ValueError("未知内容")
 
-            fp = self._resolve_path(path)
+            fp = self._resolve_write_path(path)
             fp.parent.mkdir(parents=True, exist_ok=True)
             fp.write_text(content, encoding="utf-8")
 
@@ -307,7 +309,7 @@ class ToolFileSystemPlugin(ToolPlugin):
 
             return f"成功写入 {len(content)} 个字符到 {fp}"
 
-        except SandboxError as e:
+        except SandboxViolationError as e:
             return f"错误：沙箱拦截 - {e}"
         except PermissionError as e:
             return f"错误：权限不足 - {e}"
@@ -328,6 +330,8 @@ class ToolFileSystemPlugin(ToolPlugin):
     ) -> str:
         """编辑文件（精确替换文本）（沙箱通过 ContextVar 注入）
 
+        写操作走 _resolve_write_path，确保只在可写根内操作。
+
         Args:
             path: 文件路径
             old_text: 要查找的文本
@@ -345,7 +349,7 @@ class ToolFileSystemPlugin(ToolPlugin):
             if new_text is None:
                 raise ValueError("未知 new_text")
 
-            fp = self._resolve_path(path)
+            fp = self._resolve_write_path(path)
 
             # 创建文件语义：old_text='' 且文件不存在 → 创建
             if not fp.exists():
@@ -384,7 +388,7 @@ class ToolFileSystemPlugin(ToolPlugin):
             fp.write_bytes(new_content.encode("utf-8"))
             return f"成功编辑文件 {fp}"
 
-        except SandboxError as e:
+        except SandboxViolationError as e:
             return f"错误：沙箱拦截 - {e}"
         except PermissionError as e:
             return f"错误：权限不足 - {e}"
@@ -447,7 +451,7 @@ class ToolFileSystemPlugin(ToolPlugin):
 
         except PermissionError as e:
             return f"错误：权限不足 - {e}"
-        except SandboxError as e:
+        except SandboxViolationError as e:
             return f"错误：沙箱拦截 - {e}"
         except Exception as e:
             return f"列出目录失败: {e}"
@@ -461,6 +465,7 @@ class ToolFileSystemPlugin(ToolPlugin):
 
         防御纵深 L2 层：通过 ContextVar 获取当前任务的沙箱实例进行路径边界校验。
         如果当前任务未绑定沙箱，回退到 Path.cwd() 作为默认工作目录。
+        读/列举操作使用此方法，允许访问所有沙箱根（含只读根）。
 
         Args:
             path: 文件路径（可以是相对或绝对路径）
@@ -469,7 +474,7 @@ class ToolFileSystemPlugin(ToolPlugin):
             解析后的安全绝对路径
 
         Raises:
-            SandboxError: 路径逃逸 — 不在 context_root 范围内
+            SandboxViolationError: 路径逃逸 — 不在沙箱范围内
         """
         from nanobee.kernel.context_sandbox_var import current_sandbox as _current_sandbox
         from nanobee.kernel.sandbox import ContextSandbox
@@ -485,7 +490,7 @@ class ToolFileSystemPlugin(ToolPlugin):
             p = base / p
         p = p.resolve()
 
-        # L2 沙箱校验
+        # L2 沙箱校验（读操作允许多根）
         sandbox = _current_sandbox()
         if sandbox is not None:
             sandbox.assert_allowed(p)
@@ -494,6 +499,36 @@ class ToolFileSystemPlugin(ToolPlugin):
             default_sandbox = ContextSandbox(Path.cwd())
             default_sandbox.assert_allowed(p)
 
+        return p
+
+    def _resolve_write_path(self, path: str) -> Path:
+        """解析写操作文件路径，仅允许可写根（写操作专用）
+
+        写操作（write_file, edit_file）只能写入 context_root 内，
+        禁止向只读根（如内置技能目录）写入。
+
+        Args:
+            path: 文件路径（可以是相对或绝对路径）
+
+        Returns:
+            解析后的安全绝对路径
+
+        Raises:
+            SandboxViolationError: 路径逃逸或试图写入只读根
+        """
+        from nanobee.kernel.context_sandbox_var import current_sandbox as _current_sandbox
+        from nanobee.kernel.sandbox import ContextSandbox
+
+        sandbox = _current_sandbox()
+        if sandbox is not None:
+            return sandbox.resolve_safe_writable(path)
+
+        # 无沙箱时回退：普通路径解析
+        p = Path(path)
+        if not p.is_absolute():
+            p = (Path.cwd() / p).resolve()
+        else:
+            p = p.resolve()
         return p
 
     @staticmethod

@@ -12,7 +12,9 @@ import asyncio
 import dataclasses
 import os
 import time
-from contextlib import AsyncExitStack
+from nanobee.agent.mcp_manager import MCPManager
+from nanobee.agent.preset_manager import ModelPresetManager
+from nanobee.agent.messages import InboundMessage, OutboundMessage
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from pathlib import Path
@@ -21,7 +23,6 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable
 from nanobee.utils.logger import logger
 
 
-from nanobee.agent import model_presets as preset_helpers
 from nanobee.exceptions import LoopStateError
 from nanobee.agent.hook import AgentHook, CompositeHook
 from nanobee.agent.runner import _MAX_INJECTIONS_PER_TURN, AgentRunner, AgentRunSpec, PluginHooks
@@ -47,52 +48,6 @@ if TYPE_CHECKING:
     from nanobee.kernel.event_bus import EventBus
     from nanobee.kernel.plugin_manager import PluginManager
     from nanobee.kernel.skill_manager import SkillsLoader
-
-
-# 入站消息数据类
-@dataclass
-class InboundMessage:
-    """来自聊天通道的消息。"""
-
-    channel: str
-    sender_id: str
-    chat_id: str
-    content: str
-    timestamp: Any = field(default_factory=time.time)
-    media: list[str] = field(default_factory=list)
-    metadata: dict[str, Any] = field(default_factory=dict)
-    context_id_override: str | None = None
-
-    @property
-    def context_id(self) -> str:
-        """获取上下文 ID。
-
-        优先级:
-        1. context_id_override 显式指定
-        2. sender_id (用户唯一标识,如钉钉 staffId)
-        3. channel:chat_id (兜底兼容)
-
-    参考 nanobot_channel_dingtalk 的设计,使用 sender_id 作为唯一标识,
-    避免创建重复的用户目录。
-        """
-        if self.context_id_override:
-            return self.context_id_override
-        if self.sender_id:
-            return self.sender_id
-        return f"{self.channel}:{self.chat_id}"
-
-
-# 出站消息数据类
-@dataclass
-class OutboundMessage:
-    """发送到聊天通道的消息。"""
-
-    channel: str
-    chat_id: str
-    content: str
-    reply_to: str | None = None
-    media: list[str] = field(default_factory=list)
-    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 class TurnState(Enum):
@@ -205,7 +160,7 @@ class AgentLoop:
         model_presets: dict[str, ModelPresetConfig] | None = None,
         model_preset: str | None = None,
         max_messages: int = 120,
-        preset_snapshot_loader: preset_helpers.PresetSnapshotLoader | None = None,
+        preset_snapshot_loader: Callable[..., ProviderSnapshot] | None = None,
         provider_snapshot_loader: Callable[..., ProviderSnapshot] | None = None,
     ) -> None:
         self.provider = provider
@@ -217,8 +172,11 @@ class AgentLoop:
         self.skill_manager = skill_manager
         from nanobee.kernel.router import ContextRouter
         self._router = router or ContextRouter()
-        self._provider_snapshot_loader = provider_snapshot_loader
-        self._preset_snapshot_loader = preset_snapshot_loader
+        self.presets = ModelPresetManager(
+            model_presets=model_presets,
+            preset_snapshot_loader=preset_snapshot_loader,
+            provider_snapshot_loader=provider_snapshot_loader,
+        )
 
         self.model = model or provider.get_default_model()
         self.max_iterations = max_iterations
@@ -228,9 +186,8 @@ class AgentLoop:
         self.provider_retry_mode = provider_retry_mode
         self.tool_hint_max_length = tool_hint_max_length
 
-        self.model_presets: dict[str, ModelPresetConfig] = model_presets or {}
-        self._active_preset: str | None = None
         if model_preset:
+            self.presets.set_active(model_preset)
             self.set_model_preset(model_preset, publish_update=False)
 
         self.tools = ToolRegistry()
@@ -238,21 +195,22 @@ class AgentLoop:
         self.runner = AgentRunner(provider)
         self._extra_hooks: list[AgentHook] = hooks or []
 
-        self._running = False
-        self._mcp_servers = mcp_servers or {}
-        self._mcp_stacks: dict[str, AsyncExitStack] = {}
-        self._mcp_connected = False
-        self._mcp_connecting = False
+        self.mcp = MCPManager(mcp_servers)
 
         # 上下文级互斥锁：按用户粒度隔离并发
         # 同一 user_id 串行，不同 user_id 并行
         _max = int(os.environ.get("NANOBEE_MAX_CONCURRENT_REQUESTS", "3"))
         from nanobee.kernel.lock_manager import LockManager
         self._lock_manager = LockManager(max_concurrent=_max)
-        # 每个上下文的活跃任务列表
-        self._active_tasks: dict[str, list[asyncio.Task]] = {}
-        # 每个上下文的待处理消息队列（中轮注入）
-        self._pending_queues: dict[str, asyncio.Queue] = {}
+
+        # 消息分发器（延迟导入避免循环依赖）
+        from nanobee.agent.dispatcher import MessageDispatcher
+        self._dispatcher = MessageDispatcher(
+            lock_manager=self._lock_manager,
+            event_bus=self.event_bus,
+            router=self._router,
+            process_message_cb=self._process_message,
+        )
 
         self._register_message_tool()
         self._register_plugin_tools()
@@ -436,48 +394,13 @@ class AgentLoop:
                 logger.exception("插件 {}.on_message_completed 出错", getattr(plugin, "name", "?"))
 
     async def _connect_mcp(self) -> None:
-        """连接配置的 MCP 服务器（一次性，懒加载）。"""
-        logger.info("MCP: 检查是否需要连接服务器 (connected={connected}, connecting={connecting}, servers={servers})", 
-                   connected=bool(self._mcp_connected), connecting=bool(self._mcp_connecting), servers=bool(self._mcp_servers))
-        if self._mcp_connected or self._mcp_connecting or not self._mcp_servers:
-            return
-        self._mcp_connecting = True
-        from nanobee.agent.tools.mcp import connect_mcp_servers
+        """连接配置的 MCP 服务器（委托给 MCPManager）。"""
+        await self.mcp.connect(self.tools)
 
-        try:
-            logger.info("MCP: 开始连接 {count} 个服务器", count=len(self._mcp_servers))
-            self._mcp_stacks = await connect_mcp_servers(self._mcp_servers, self.tools)
-            if self._mcp_stacks:
-                self._mcp_connected = True
-                logger.info("MCP: 成功连接 {count} 个服务器", count=len(self._mcp_stacks))
-            else:
-                logger.warning("MCP: 没有 MCP 服务器成功连接（下次消息时重试）")
-        except asyncio.CancelledError:
-            logger.warning("MCP 连接被取消（下次消息时重试）")
-            self._mcp_stacks.clear()
-        except BaseException as e:
-            logger.warning("MCP 服务器连接失败（下次消息时重试）: {error}", error=e)
-            self._mcp_stacks.clear()
-        finally:
-            self._mcp_connecting = False
-
-    def _effective_context_id(self, msg: InboundMessage) -> str:
-        """返回用于任务路由和中轮注入的上下文 ID（即 user_id）。
-
-        路由优先级：
-        1. msg.context_id_override 显式指定
-        2. 路由器根据 channel:chat_id 查找
-        3. 未知路由直接抛出异常
-        """
-        from nanobee.kernel.router import UnknownRouteError
-        try:
-            return self._router.resolve(
-                msg.channel, msg.chat_id,
-                override=msg.context_id_override,
-            )
-        except UnknownRouteError:
-            # 保持向后兼容：如果没有路由器配置，降级使用 msg.context_id
-            return msg.context_id
+    @property
+    def _pending_queues(self) -> dict[str, asyncio.Queue]:
+        """待处理消息队列（委托给 MessageDispatcher，供 Kernel 访问）。"""
+        return self._dispatcher.pending_queues
 
     def _replay_token_budget(self) -> int:
         """从上下文窗口大小推算历史重放的 token 预算。"""
@@ -661,148 +584,28 @@ class AgentLoop:
         return result.final_content, result.tools_used, result.messages, result.stop_reason, result.had_injections
 
     async def run(self) -> None:
-        """启动 Agent Loop（持续运行，处理入站消息）。"""
-        self._running = True
-        await self._connect_mcp()
-        logger.info("Agent loop 已启动")
-
-        while self._running:
-            try:
-                msg = await asyncio.wait_for(
-                    self._consume_inbound(), timeout=1.0,
-                )
-            except asyncio.TimeoutError:
-                continue
-            except asyncio.CancelledError:
-                if not self._running:
-                    raise
-                continue
-            except Exception as e:
-                logger.warning("消费入站消息出错: {error}, 继续处理...", error=e)
-                continue
-
-            effective_key = self._effective_context_id(msg)
-            # 如果该上下文已有活跃的待处理队列，路由到那里
-            if effective_key in self._pending_queues:
-                try:
-                    self._pending_queues[effective_key].put_nowait(msg)
-                except asyncio.QueueFull:
-                    logger.warning("上下文 {ctx_id} 待处理队列已满，回退为排队任务", ctx_id=effective_key)
-                else:
-                    logger.info("后续消息已路由到上下文 {ctx_id} 的待处理队列", ctx_id=effective_key)
-                    continue
-
-            task = asyncio.create_task(self._dispatch(msg))
-            self._active_tasks.setdefault(effective_key, []).append(task)
-            task.add_done_callback(
-                lambda t, k=effective_key: self._active_tasks.get(k, [])
-                and self._active_tasks[k].remove(t)
-                if t in self._active_tasks.get(k, [])
-                else None
-            )
+        """启动 Agent Loop（委托给 MessageDispatcher）。"""
+        await self._dispatcher.run(self._consume_inbound, self._connect_mcp)
 
     async def _consume_inbound(self) -> InboundMessage:
         """消费入站消息（由通道插件调用）。"""
         raise NotImplementedError("子类或集成层需要实现此方法")
 
     async def _dispatch(self, msg: InboundMessage) -> None:
-        """处理消息：同用户串行，跨用户并行。
-
-        使用 msg.sender_id 作为 context_id (用户唯一标识),
-        参考 nanobot_channel_dingtalk 的设计,避免创建重复目录。
-        """
-        # 优先使用 sender_id 作为 context_id
-        context_id = msg.sender_id or self._effective_context_id(msg)
-
-        # 注册待处理队列
-        pending = asyncio.Queue(maxsize=20)
-        self._pending_queues[context_id] = pending
-
-        try:
-            async with self._lock_manager.acquire(context_id):
-                try:
-                    on_stream = on_stream_end = None
-                    if msg.metadata.get("_wants_stream"):
-                        stream_base_id = f"{msg.context_id}:{time.time_ns()}"
-                        stream_segment = 0
-
-                        def _current_stream_id() -> str:
-                            return f"{stream_base_id}:{stream_segment}"
-
-                        async def on_stream_fn(delta: str) -> None:
-                            if self.event_bus:
-                                await self.event_bus.publish("agent.stream_delta", {
-                                    "context_id": context_id,
-                                    "stream_id": _current_stream_id(),
-                                    "delta": delta,
-                                })
-
-                        async def on_stream_end_fn(*, resuming: bool = False) -> None:
-                            nonlocal stream_segment
-                            if self.event_bus:
-                                await self.event_bus.publish("agent.stream_end", {
-                                    "context_id": context_id,
-                                    "stream_id": _current_stream_id(),
-                                    "resuming": resuming,
-                                })
-                            stream_segment += 1
-
-                        on_stream = on_stream_fn
-                        on_stream_end = on_stream_end_fn
-
-                    response = await self._process_message(
-                        msg, on_stream=on_stream, on_stream_end=on_stream_end,
-                        pending_queue=pending,
-                    )
-                    if response is not None:
-                        await self._publish_outbound(response)
-                    else:
-                        logger.debug("消息处理返回 None，不发送响应")
-                except asyncio.CancelledError:
-                    logger.info("上下文 {ctx_id} 的任务被取消", ctx_id=context_id)
-                    raise
-                except Exception:
-                    logger.exception("处理上下文 {ctx_id} 的消息出错", ctx_id=context_id)
-                    await self._publish_outbound(OutboundMessage(
-                        channel=msg.channel, chat_id=msg.chat_id,
-                        content="Sorry, I encountered an error.",
-                    ))
-        finally:
-            # 排空待处理队列，重新发布为独立入站消息
-            queue = self._pending_queues.pop(context_id, None)
-            if queue is not None:
-                leftover = 0
-                while True:
-                    try:
-                        item = queue.get_nowait()
-                    except asyncio.QueueEmpty:
-                        break
-                    leftover += 1
-                if leftover:
-                    logger.info("上下文 {ctx_id} 有 {left} 条剩余消息被丢弃", ctx_id=context_id, left=leftover)
+        """分发消息（委托给 MessageDispatcher）。"""
+        await self._dispatcher._dispatch(msg)
 
     async def _publish_outbound(self, msg: OutboundMessage) -> None:
-        """发布出站消息（由通道插件调用）。"""
-        if self.event_bus:
-            await self.event_bus.publish("agent.outbound", {
-                "channel": msg.channel,
-                "chat_id": msg.chat_id,
-                "content": msg.content,
-                "metadata": msg.metadata,
-            })
+        """发布出站消息（委托给 MessageDispatcher）。"""
+        await self._dispatcher._publish_outbound(msg)
 
     async def close_mcp(self) -> None:
-        """关闭 MCP 连接。"""
-        for name, stack in self._mcp_stacks.items():
-            try:
-                await stack.aclose()
-            except (RuntimeError, BaseExceptionGroup):
-                logger.debug("MCP 服务器 '{name}' 清理错误（可忽略）", name=name)
-        self._mcp_stacks.clear()
+        """关闭 MCP 连接（委托给 MCPManager）。"""
+        await self.mcp.close()
 
     def stop(self) -> None:
-        """停止 Agent Loop。"""
-        self._running = False
+        """停止 Agent Loop（委托给 MessageDispatcher）。"""
+        self._dispatcher.stop()
         logger.info("Agent loop 正在停止")
 
     async def process_direct(
@@ -967,11 +770,17 @@ class AgentLoop:
         return "ok"
 
     async def _build_sandbox(self, user_id: str) -> Any | None:
-        """根据用户上下文构建沙箱"""
+        """根据用户上下文构建沙箱（含只读根白名单）"""
         from nanobee.kernel.sandbox import ContextSandbox
         try:
             user_ctx = await self.context_manager.get_or_create(user_id)
-            return ContextSandbox(user_ctx.context_root)
+            # 内置技能目录作为只读根加入沙箱，LLM 可读不可写
+            read_only: list[Path | str] | None = None
+            if self.skill_manager is not None:
+                builtin = self.skill_manager.builtin_dir
+                if builtin is not None:
+                    read_only = [builtin]
+            return ContextSandbox(user_ctx.context_root, read_only_roots=read_only)
         except Exception:
             logger.debug("无法构建沙箱（非多租户模式）: {}", user_id)
             return None
@@ -1162,17 +971,10 @@ class AgentLoop:
     # --- 模型预设管理 ---
 
     def _refresh_provider_snapshot(self) -> None:
-        """刷新 provider 快照。"""
-        if self._provider_snapshot_loader is None:
-            return
-        try:
-            snapshot = self._provider_snapshot_loader()
-        except Exception:
-            logger.exception("刷新 provider 配置失败")
-            return
-        if snapshot.signature == getattr(self, "_provider_signature", None):
-            return
-        self._apply_provider_snapshot(snapshot)
+        """刷新 provider 快照，委托给 ModelPresetManager。"""
+        snapshot = self.presets.check_and_get_snapshot()
+        if snapshot is not None:
+            self._apply_provider_snapshot(snapshot)
 
     def _apply_provider_snapshot(
         self,
@@ -1189,31 +991,23 @@ class AgentLoop:
         self.model = model
         self.context_window_tokens = snapshot.context_window_tokens
         self.runner.provider = provider
-        self._provider_signature = snapshot.signature
+        self.presets.record_applied_snapshot(snapshot)
         logger.info("运行时模型切换: {} -> {}", old_model, model)
 
     @property
     def model_preset(self) -> str | None:
-        return self._active_preset
+        return self.presets.active_preset
 
     @model_preset.setter
     def model_preset(self, name: str | None) -> None:
         self.set_model_preset(name)
 
-    def _build_model_preset_snapshot(self, name: str) -> ProviderSnapshot:
-        return preset_helpers.build_runtime_preset_snapshot(
-            name=name,
-            presets=self.model_presets,
-            provider=self.provider,
-            loader=self._preset_snapshot_loader,
-        )
-
     def set_model_preset(self, name: str | None, *, publish_update: bool = True) -> None:
         """按名称解析预设并应用所有运行时 model 依赖。"""
-        name = preset_helpers.normalize_preset_name(name, self.model_presets)
-        snapshot = self._build_model_preset_snapshot(name)
+        name = self.presets.normalize_name(name)
+        snapshot = self.presets.build_snapshot(name, self.provider)
         self._apply_provider_snapshot(snapshot, publish_update=publish_update, model_preset=name)
-        self._active_preset = name
+        self.presets.set_active(name)
 
     def _sync_subagent_runtime_limits(self) -> None:
         """保持子 Agent 运行时限制与可变的 Loop 设置对齐（MVP 不使用）。"""

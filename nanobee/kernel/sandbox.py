@@ -4,6 +4,8 @@
 核心功能委托给 security.workspace_policy 中的纯函数，ContextSandbox
 只做轻量根目录持有 + 参数清洗整合 + 元数据文件写保护。
 
+支持多根白名单（read only roots），LLM 可读不可写，用于读取内置技能等只读资源。
+
 受保护的元数据文件（_META_BLOCKED_FILES）：
 - identity.yaml：用户身份配置，LLM 不可修改
 - default.jsonl：会话历史（在 .history/ 下），LLM 不可修改
@@ -19,7 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from nanobee.exceptions import SandboxViolationError
-from nanobee.security.workspace_policy import require_path_within
+from nanobee.security.workspace_policy import is_path_allowed, require_path_within
 
 from nanobee.utils.logger import logger
 
@@ -45,8 +47,7 @@ _META_BLOCKED_DIRS: frozenset[str] = frozenset({
     ".tmp",
 })
 
-# 向后兼容别名
-SandboxError = SandboxViolationError
+
 
 
 class ContextSandbox:
@@ -54,7 +55,11 @@ class ContextSandbox:
 
     底层使用 security.workspace_policy 纯函数：
     - require_path_within: 路径边界校验
-    - resolve_path: 路径解析
+    - is_path_allowed: 多根路径允许判断
+
+    支持读写根 + 只读根白名单：
+    - writable_root：用户上下文根，可读写（== context_root）
+    - read_only_roots：只读根列表，可读不可写（如内置技能目录）
 
     同时包含元数据文件写保护：
     - identity.yaml：用户配置，LLM 不可修改
@@ -64,21 +69,65 @@ class ContextSandbox:
     单用户模式下可设为 None（不启用沙箱）。
     """
 
-    def __init__(self, context_root: Path | str) -> None:
+    def __init__(
+        self,
+        context_root: Path | str,
+        read_only_roots: list[Path | str] | None = None,
+    ) -> None:
         """初始化沙箱
 
         Args:
-            context_root: 用户上下文根目录（绝对路径）
+            context_root: 用户上下文根目录（绝对路径），可读写
+            read_only_roots: 只读根目录列表（如内置技能目录），可读不可写
         """
         self._context_root = Path(context_root).resolve()
+        self._read_only_roots = [Path(r).resolve() for r in (read_only_roots or [])]
 
     @property
     def context_root(self) -> Path:
-        """用户上下文根目录"""
+        """用户上下文根目录（可读写）"""
         return self._context_root
 
+    def _all_roots(self) -> list[Path]:
+        """所有可访问根 — 读写根 + 只读根"""
+        return [self._context_root] + self._read_only_roots
+
+    def _resolve(self, path_str: str, *, writable_only: bool = False) -> Path:
+        """将路径解析为绝对路径，检查沙箱边界
+
+        Args:
+            path_str: 路径字符串
+            writable_only: True=只允许在可写根（context_root）内；False=允许在所有根内
+
+        Returns:
+            解析后的安全绝对路径
+
+        Raises:
+            SandboxViolationError: 路径越界或指向受保护的元数据文件
+        """
+        p = Path(path_str)
+        if not p.is_absolute():
+            p = (self._context_root / p).resolve()
+        else:
+            p = p.resolve()
+
+        if writable_only:
+            # 写操作：只允许在可写根（context_root）内
+            require_path_within(str(p), self._context_root, message="写入路径逃逸拦截")
+        else:
+            # 读/列举操作：允许在所有根内
+            if not is_path_allowed(str(p), self._all_roots()):
+                raise SandboxViolationError(
+                    path=str(p),
+                    context_root=str(self._context_root),
+                    detail="路径超出沙箱允许范围",
+                )
+
+        self._check_blocked(p)
+        return p
+
     def resolve_safe(self, path_str: str) -> Path:
-        """将路径解析为绝对路径，若越界或指向受保护的元数据文件则抛出 SandboxError
+        """将路径解析为绝对路径，允许所有 roots（读/列举）
 
         相对路径基于 sandbox root 解析（而非 CWD），
         确保 memory/xxx 这类 skill 中常用的相对路径落在沙箱内。
@@ -90,16 +139,25 @@ class ContextSandbox:
             解析后的安全绝对路径
 
         Raises:
-            SandboxError: 路径越界或指向受保护的元数据文件
+            SandboxViolationError: 路径越界或指向受保护的元数据文件
         """
-        p = Path(path_str)
-        if not p.is_absolute():
-            p = (self._context_root / p).resolve()
-        else:
-            p = p.resolve()
-        safe_path = require_path_within(str(p), self._context_root, message="路径逃逸拦截")
-        self._check_blocked(safe_path)
-        return safe_path
+        return self._resolve(path_str, writable_only=False)
+
+    def resolve_safe_writable(self, path_str: str) -> Path:
+        """将路径解析为绝对路径，仅允许可写根（写操作专用）
+
+        写操作只能在 context_root 内进行，禁止对只读根写入。
+
+        Args:
+            path_str: 路径字符串
+
+        Returns:
+            解析后的安全绝对路径
+
+        Raises:
+            SandboxViolationError: 路径越界或指向受保护的元数据文件
+        """
+        return self._resolve(path_str, writable_only=True)
 
     def sanitize_params(
         self,
@@ -120,7 +178,7 @@ class ContextSandbox:
             清洗后的参数字典（路径被替换为解析后的绝对路径）
 
         Raises:
-            SandboxError: 任意路径越界
+            SandboxViolationError: 任意路径越界
         """
         if not isinstance(params, dict):
             return params
@@ -142,18 +200,37 @@ class ContextSandbox:
         return cleaned
 
     def assert_allowed(self, path: Path | str) -> None:
-        """断言路径在沙箱内且不是受保护的元数据文件
+        """断言路径在任意允许根内且不是受保护的元数据文件
 
-        委托给 require_path_within 纯函数。
+        读/列举操作用此方法检查路径是否在可读写根或只读根内。
 
         Args:
             path: 待检查的路径
 
         Raises:
-            SandboxError: 路径越界或指向受保护的元数据文件
+            SandboxViolationError: 路径越界或指向受保护的元数据文件
         """
-        self._check_blocked(path)
-        require_path_within(path, self._context_root, message="路径越界断言失败")
+        p = Path(path)
+        self._check_blocked(p)
+        if not is_path_allowed(str(p), self._all_roots()):
+            raise SandboxViolationError(
+                path=str(p),
+                context_root=str(self._context_root),
+                detail="路径越界断言失败",
+            )
+
+    def assert_allowed_writable(self, path: Path | str) -> None:
+        """断言路径在可写根内（写入专用检查）
+
+        Args:
+            path: 待检查的路径
+
+        Raises:
+            SandboxViolationError: 路径越界或指向受保护的元数据文件
+        """
+        p = Path(path)
+        self._check_blocked(p)
+        require_path_within(str(p), self._context_root, message="写入路径断言失败")
 
     @staticmethod
     def _check_blocked(path: Path | str) -> None:
@@ -163,7 +240,7 @@ class ContextSandbox:
             path: 待检查的路径
 
         Raises:
-            SandboxError: 路径指向受保护的元数据文件或隐藏目录
+            SandboxViolationError: 路径指向受保护的元数据文件或隐藏目录
         """
         p = Path(path)
         # 检查文件名黑名单
@@ -184,10 +261,11 @@ class ContextSandbox:
                 )
 
     def __repr__(self) -> str:
+        if self._read_only_roots:
+            return f"ContextSandbox(writable={self._context_root}, read_only={self._read_only_roots})"
         return f"ContextSandbox(root={self._context_root})"
 
 
 __all__ = [
     "ContextSandbox",
-    "SandboxError",
 ]

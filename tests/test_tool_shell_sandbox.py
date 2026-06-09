@@ -16,7 +16,8 @@ import pytest
 
 from nanobee.builtin.tool_shell.plugin import ToolShellPlugin
 from nanobee.kernel.context_sandbox_var import bind_sandbox, reset_sandbox
-from nanobee.kernel.sandbox import ContextSandbox, SandboxError
+from nanobee.kernel.sandbox import ContextSandbox
+from nanobee.exceptions import SandboxViolationError
 
 
 @pytest.fixture
@@ -213,7 +214,7 @@ def test_sanitize_params_path_field_still_intercepts(
     sandbox = ContextSandbox(root)
 
     outside_path = str(tmp_path / "outside" / "file.txt")
-    with pytest.raises(SandboxError):
+    with pytest.raises(SandboxViolationError):
         sandbox.sanitize_params("read_file", {"path": outside_path})
 
 

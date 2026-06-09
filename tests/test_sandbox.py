@@ -8,7 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from nanobee.kernel.sandbox import ContextSandbox, SandboxError
+from nanobee.kernel.sandbox import ContextSandbox
+from nanobee.exceptions import SandboxViolationError
 
 
 @pytest.fixture
@@ -51,10 +52,10 @@ def test_resolve_safe_escape_dotdot(tmp_path: Path):
     sandbox = ContextSandbox(root)
     escape_path = str(root / "../../user-b/secret.txt")
 
-    with pytest.raises(SandboxError) as exc_info:
+    with pytest.raises(SandboxViolationError) as exc_info:
         sandbox.resolve_safe(escape_path)
     assert "user-b" in str(exc_info.value)
-    assert "路径逃逸" in str(exc_info.value)
+    assert "路径超出沙箱" in str(exc_info.value)
 
 
 def test_resolve_safe_unrelated_path(tmp_path: Path):
@@ -63,7 +64,7 @@ def test_resolve_safe_unrelated_path(tmp_path: Path):
     sandbox = ContextSandbox(root)
     other = tmp_path / "other" / "file.txt"
 
-    with pytest.raises(SandboxError):
+    with pytest.raises(SandboxViolationError):
         sandbox.resolve_safe(str(other))
 
 
@@ -106,7 +107,7 @@ def test_sanitize_params_escape_raises(tmp_path: Path):
     sandbox = ContextSandbox(root)
     bad_path = str(root / "../../../etc/passwd")
 
-    with pytest.raises(SandboxError):
+    with pytest.raises(SandboxViolationError):
         sandbox.sanitize_params("read_file", {"path": bad_path})
 
 
@@ -159,10 +160,10 @@ def test_assert_allowed_pass(tmp_path: Path):
 
 
 def test_assert_allowed_fail(tmp_path: Path):
-    """断言失败抛出 SandboxError"""
+    """断言失败抛出 SandboxViolationError"""
     root = tmp_path / "users" / "user-a"
     sandbox = ContextSandbox(root)
-    with pytest.raises(SandboxError):
+    with pytest.raises(SandboxViolationError):
         sandbox.assert_allowed("/etc")
 
 
@@ -188,7 +189,7 @@ def test_repr(tmp_path: Path):
 
 
 def test_resolve_safe_with_internal_symlink_to_external(tmp_path: Path):
-    """内部符号链接指向沙箱外部 → 应抛 SandboxError
+    """内部符号链接指向沙箱外部 → 应抛 SandboxViolationError
 
     模拟攻击场景：攻击者在沙箱内创建指向 /etc/passwd 的符号链接，
     期望沙箱能通过 resolve() 解析到外部路径并拦截。
@@ -203,7 +204,7 @@ def test_resolve_safe_with_internal_symlink_to_external(tmp_path: Path):
     symlink.symlink_to(external_file)
 
     sandbox = ContextSandbox(root)
-    with pytest.raises(SandboxError, match="路径逃逸拦截"):
+    with pytest.raises(SandboxViolationError, match="路径超出沙箱允许范围"):
         sandbox.resolve_safe("subdir/link_to_outside")
 
 
@@ -240,7 +241,7 @@ def test_resolve_safe_with_tricky_symlink(tmp_path: Path):
     link.symlink_to(outside)
 
     sandbox = ContextSandbox(root)
-    with pytest.raises(SandboxError, match="路径逃逸拦截"):
+    with pytest.raises(SandboxViolationError, match="路径超出沙箱允许范围"):
         sandbox.resolve_safe("sub/bad_link")
 
 
@@ -274,5 +275,140 @@ def test_assert_allowed_with_symlink(tmp_path: Path):
     link.symlink_to(outside)
 
     sandbox = ContextSandbox(root)
-    with pytest.raises(SandboxError, match="路径越界断言失败"):
+    with pytest.raises(SandboxViolationError, match="路径越界断言失败"):
         sandbox.assert_allowed(link)
+
+
+# ====== 多根白名单测试（read_only_roots） ======
+
+
+def test_resolve_safe_read_only_root_allowed(tmp_path: Path):
+    """绝对路径在只读根内，resolve_safe 应允许通过"""
+    writable = tmp_path / "users" / "user-a"
+    writable.mkdir(parents=True)
+    readonly = tmp_path / "skills"
+    readonly.mkdir(parents=True)
+
+    sandbox = ContextSandbox(writable, read_only_roots=[readonly])
+
+    # 只读根内的文件
+    skill_file = readonly / "test_skill" / "SKILL.md"
+    skill_file.parent.mkdir(parents=True)
+    skill_file.write_text("content", encoding="utf-8")
+
+    result = sandbox.resolve_safe(str(skill_file))
+    assert result == skill_file.resolve()
+
+
+def test_resolve_safe_writable_in_read_only_blocked(tmp_path: Path):
+    """resolve_safe_writable 对只读根内的路径应抛出"""
+    writable = tmp_path / "users" / "user-a"
+    writable.mkdir(parents=True)
+    readonly = tmp_path / "skills"
+    readonly.mkdir(parents=True)
+
+    sandbox = ContextSandbox(writable, read_only_roots=[readonly])
+
+    skill_file = readonly / "test_skill" / "SKILL.md"
+    skill_file.parent.mkdir(parents=True)
+
+    with pytest.raises(SandboxViolationError, match="写入路径逃逸拦截"):
+        sandbox.resolve_safe_writable(str(skill_file))
+
+
+def test_resolve_safe_writable_in_writable_allowed(tmp_path: Path):
+    """resolve_safe_writable 对可写根内的路径应允许"""
+    writable = tmp_path / "users" / "user-a"
+    writable.mkdir(parents=True)
+    readonly = tmp_path / "skills"
+    readonly.mkdir(parents=True)
+
+    sandbox = ContextSandbox(writable, read_only_roots=[readonly])
+
+    target = writable / "memory" / "facts.md"
+    target.parent.mkdir(parents=True)
+
+    result = sandbox.resolve_safe_writable(str(target))
+    assert result == target.resolve()
+
+
+def test_assert_allowed_with_read_only_root(tmp_path: Path):
+    """assert_allowed 对只读根内的路径应通过"""
+    writable = tmp_path / "users" / "user-a"
+    writable.mkdir(parents=True)
+    readonly = tmp_path / "skills"
+    readonly.mkdir(parents=True)
+
+    sandbox = ContextSandbox(writable, read_only_roots=[readonly])
+
+    skill_file = readonly / "some_skill"
+    skill_file.mkdir(parents=True)
+
+    # 不抛出
+    sandbox.assert_allowed(skill_file)
+
+
+def test_assert_allowed_writable_in_read_only_blocked(tmp_path: Path):
+    """assert_allowed_writable 对只读根内路径应抛出"""
+    writable = tmp_path / "users" / "user-a"
+    writable.mkdir(parents=True)
+    readonly = tmp_path / "skills"
+    readonly.mkdir(parents=True)
+
+    sandbox = ContextSandbox(writable, read_only_roots=[readonly])
+
+    skill_file = readonly / "some_skill"
+    skill_file.mkdir(parents=True)
+
+    with pytest.raises(SandboxViolationError, match="写入路径断言失败"):
+        sandbox.assert_allowed_writable(skill_file)
+
+
+def test_assert_allowed_writable_in_writable_allowed(tmp_path: Path):
+    """assert_allowed_writable 对可写根内路径应通过"""
+    writable = tmp_path / "users" / "user-a"
+    writable.mkdir(parents=True)
+    readonly = tmp_path / "skills"
+    readonly.mkdir(parents=True)
+
+    sandbox = ContextSandbox(writable, read_only_roots=[readonly])
+
+    target = writable / "skills" / "my_skill"
+    target.mkdir(parents=True)
+
+    # 不抛出
+    sandbox.assert_allowed_writable(target)
+
+
+def test_sanitize_params_with_read_only_root(tmp_path: Path):
+    """sanitize_params 对只读根内的路径应正常解析"""
+    writable = tmp_path / "users" / "user-a"
+    writable.mkdir(parents=True)
+    readonly = tmp_path / "skills"
+    readonly.mkdir(parents=True)
+
+    sandbox = ContextSandbox(writable, read_only_roots=[readonly])
+
+    skill_file = readonly / "test_skill" / "SKILL.md"
+    skill_file.parent.mkdir(parents=True)
+
+    result = sandbox.sanitize_params("read_file", {"path": str(skill_file)})
+    assert result["path"] == str(skill_file.resolve())
+
+
+def test_repr_with_read_only_roots(tmp_path: Path):
+    """repr 包含只读根信息"""
+    writable = tmp_path / "ctx"
+    readonly = tmp_path / "builtin"
+    sandbox = ContextSandbox(writable, read_only_roots=[readonly])
+    rep = repr(sandbox)
+    assert "writable" in rep
+    assert "read_only" in rep
+
+
+def test_no_read_only_roots_repr_stable(tmp_path: Path):
+    """无只读根时 repr 保持旧格式"""
+    root = tmp_path / "ctx"
+    sandbox = ContextSandbox(root)
+    rep = repr(sandbox)
+    assert rep == f"ContextSandbox(root={root.resolve()})"

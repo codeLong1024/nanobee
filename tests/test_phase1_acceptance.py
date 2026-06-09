@@ -14,7 +14,8 @@ from nanobee.kernel.context_manager import ContextManager
 from nanobee.kernel.core_parser import CoreMDParser
 from nanobee.kernel.lock_manager import LockManager
 from nanobee.kernel.router import ContextRouter
-from nanobee.kernel.sandbox import ContextSandbox, SandboxError
+from nanobee.kernel.sandbox import ContextSandbox
+from nanobee.exceptions import SandboxViolationError
 from nanobee.kernel.tool_collector import ToolCollector
 
 
@@ -104,7 +105,7 @@ def test_sandbox_blocks_cross_user_escape(tmp_path: Path):
     sandbox = ContextSandbox(root_a)
     escape_path = str(root_a / "../../user-b/memory/secret.txt")
 
-    with pytest.raises(SandboxError) as exc_info:
+    with pytest.raises(SandboxViolationError) as exc_info:
         sandbox.resolve_safe(escape_path)
     assert "user-b" in str(exc_info.value) or "路径逃逸" in str(exc_info.value)
 

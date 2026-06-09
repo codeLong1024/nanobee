@@ -264,7 +264,7 @@ class SkillStage(PipelineStage):
                     f"### {skill.meta.name}{source_prefix} {source_tag}",
                     "",
                     f"**描述**: {skill.meta.description}",
-                    f"**文件**: `skills/{skill.meta.name}/SKILL.md`",
+                    f"**文件**: `{skill.file_path}`",
                     "",
                 ]
                 sections.append("\n".join(lines))

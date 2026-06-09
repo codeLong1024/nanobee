@@ -24,7 +24,8 @@ from pathlib import Path
 import pytest
 
 from nanobee.builtin.tool_fs import ToolFileSystemPlugin
-from nanobee.kernel.sandbox import ContextSandbox, SandboxError
+from nanobee.kernel.sandbox import ContextSandbox
+from nanobee.exceptions import SandboxViolationError
 
 
 # ---- 辅助工具 ----

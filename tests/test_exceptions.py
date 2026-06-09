@@ -223,12 +223,3 @@ def test_import_from_utils() -> None:
     assert utils_mod.StorageError is StorageError
     assert utils_mod.ArtifactError is ArtifactError
 
-
-def test_sandbox_backward_compat() -> None:
-    """验证 sandbox.py 中 SandboxError 别名可用"""
-    from nanobee.kernel.sandbox import SandboxError
-
-    assert SandboxError is SandboxViolationError
-    err = SandboxError("/p", "/root")
-    assert isinstance(err, SandboxViolationError)
-    assert isinstance(err, NanobeeError)

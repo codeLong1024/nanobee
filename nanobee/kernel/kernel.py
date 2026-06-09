@@ -8,7 +8,8 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     # OutboundMessage 和 AgentLoop 只在类型注解中使用，运行时通过方法内延迟导入
-    from nanobee.agent.loop import AgentLoop, OutboundMessage
+    from nanobee.agent.loop import AgentLoop
+    from nanobee.agent.messages import OutboundMessage
 
 from nanobee.config.schema import Config
 from nanobee.exceptions import ContextError
@@ -19,7 +20,7 @@ from nanobee.kernel.lock_manager import LockManager
 from nanobee.kernel.plugin_manager import PluginManager
 from nanobee.kernel.router import ContextRouter, UnknownRouteError
 from nanobee.kernel.runtime_events import KernelBooted, RuntimeEventBus
-from nanobee.kernel.sandbox import ContextSandbox, SandboxError
+from nanobee.kernel.sandbox import ContextSandbox
 from nanobee.kernel.soul_guard import SoulGuard
 from nanobee.kernel.tool_collector import ToolCollector
 from nanobee.kernel.user_context import UserContext, UserMetadata
@@ -166,6 +167,7 @@ class NanobeeKernel:
         on_stream: Any = None,
         on_stream_end: Any = None,
         sender_id: str = "user",
+        metadata: dict[str, Any] | None = None,
     ) -> OutboundMessage | None:
         """处理用户消息。
 
@@ -181,6 +183,7 @@ class NanobeeKernel:
             on_stream: 每段文本增量回调，签名 async (delta: str) -> None
             on_stream_end: 流结束回调，签名 async (*, resuming: bool) -> None
             sender_id: 发送者 ID，作为 context 目录标识
+            metadata: 通道特定的元数据（如 sender_staff_id、sender_name 等）
 
         Returns:
             Agent 回复（含可能的媒体附件路径）
@@ -189,7 +192,7 @@ class NanobeeKernel:
         hook = StreamBridgeHook(on_stream=on_stream, on_stream_end=on_stream_end) if on_stream else None
         return await self._handle_message_impl(
             message, context_id, channel=channel, media=media,
-            extra_hook=hook, sender_id=sender_id,
+            extra_hook=hook, sender_id=sender_id, metadata=metadata,
         )
 
     async def _handle_message_impl(
@@ -201,6 +204,7 @@ class NanobeeKernel:
         media: list[str] | None = None,
         extra_hook: Any = None,
         sender_id: str = "user",
+        metadata: dict[str, Any] | None = None,
     ) -> OutboundMessage | None:
         """处理用户消息的公共实现。
 
@@ -216,11 +220,12 @@ class NanobeeKernel:
             media: 媒体附件路径列表
             extra_hook: 可选的流式 Hook，桥接到 AgentLoop 的流式系统
             sender_id: 发送者 ID，作为 context 目录标识
+            metadata: 通道特定的元数据（如 sender_staff_id、sender_name 等）
 
         Returns:
             Agent 回复（OutboundMessage，含 .content 和 .media）
         """
-        from nanobee.agent.loop import InboundMessage, OutboundMessage
+        from nanobee.agent.messages import InboundMessage, OutboundMessage
 
         if not self._booted:
             raise ContextError("内核未启动，请先调用 boot()")
@@ -240,6 +245,7 @@ class NanobeeKernel:
             chat_id=context_id,
             content=message,
             media=media or [],
+            metadata=metadata or {},
         )
 
         if extra_hook is not None:
@@ -402,10 +408,6 @@ class NanobeeKernel:
         channels = self.plugin_manager.get_by_type("channel")
         for channel in channels:
             await channel.stop()
-
-        # 关闭 MCP 连接（AgentLoop 内置能力）
-        if self._agent_loop is not None:
-            await self._agent_loop.close_mcp()
 
         # 卸载所有插件
         self.plugin_manager.unload_all()

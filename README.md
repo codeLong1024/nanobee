@@ -19,7 +19,7 @@
 
 ## 项目状态
 
-**版本 v0.1.0** — 核心框架（微内核、Agent 引擎、LLM Provider、插件体系）已通过 **456 个单元测试**验证。
+**版本 v0.1.0** — 核心框架（微内核、Agent 引擎、LLM Provider、插件体系）已通过 **503 个单元测试**验证。
 
 ```
 Kernel 内核     ████████████████████████████████  95%
@@ -38,9 +38,9 @@ CLI 命令        ████████████████████�
 - **Plugin Hook 机制** — 5 个核心契约接口（contribute_to_prompt/contribute_to_tools/on_pre_invoke/on_post_invoke/on_message_completed），插件可在关键切面注入逻辑
 
 - **Run-level Hook 机制** — AgentRunner 外层生命周期：before_run / after_run / on_error / on_finally，包裹整个 LLM 迭代循环，支持启动初始化、完成汇总、错误记录、资源释放
-- **技能管理** — SkillsLoader 双源发现（内置技能 `nanobee/skills/` + per-user 技能 `users/<user_id>/skills/`），SKILL.md frontmatter 驱动渐进/全量注入策略。内置 `_memory`（记忆策略，`full_inject: true`声明全量注入）、`skill_creator`（技能创建教程）
-- **内置 Skill** — 框架打包 `nanobee/skills/`，只读不可覆盖。标记 `full_inject: true` 的技能全量注入 system prompt，普通技能仅注入元数据由 LLM 按需读取
-- **Sandbox 相对路径统一** — L1（sandbox.py）/ L2（tool_fs）相对路径均基于 sandbox root 解析，skill 中 `memory/xxx` 类相对路径始终落在沙箱内
+- **技能管理** — SkillsLoader 双源发现（内置技能 `nanobee/skills/` + per-user 技能 `users/<user_id>/skills/`），SKILL.md frontmatter 驱动渐进/全量注入策略。内置 `_memory`（记忆策略，`full_inject: true`声明全量注入）、`skill_creator`（技能创建教程，渐进式注入，LLM 按需读取）
+- **内置 Skill** — 框架打包 `nanobee/skills/`，只读不可覆盖，同时加入沙箱只读根白名单，LLM 可通过 `read_file` 读取参考格式。标记 `full_inject: true` 的技能全量注入 system prompt，普通技能仅注入元数据 + 文件绝对路径，由 LLM 按需读取
+- **Sandbox 多根白名单** — ContextSandbox 从单根扩展为可读写根 + 只读根列表。写操作（write_file/edit_file）仅限 context_root 内，读操作（read_file/list_dir）可访问所有白名单根。内置技能目录自动加入只读白名单
 - **上下文管理** — 按用户物理隔离的目录结构（identity.yaml / .history/ / workspace/ / memory/ / .tmp/），框架通过 ContextVar 按请求向插件注入 `self.tmp`（临时目录）和 `self.context_root`（用户根目录），插件自管清理和持久化子目录创建
 - **灵魂守卫** — 三层保护（chmod 444 + 写入拦截 Hook + SHA-256 哈希校验）
 - **插件管理器** — 扫描、加载（含依赖拓扑排序）、启用/禁用/卸载生命周期
@@ -174,7 +174,7 @@ ChannelPlugin ──▶ EventBus ──▶ NanobeeKernel
 | `SoulGuard` | 灵魂文件三层保护 |
 | `LockManager` | 按用户粒度的 asyncio 并发锁 |
 | `ContextRouter` | 多租户路由（`channel:chat_id` → `user_id`） |
-| `ContextSandbox` | 沙箱拦截路径逃逸（`../` 检测） |
+| `ContextSandbox` | 多根沙箱 — 写操作仅限 context_root，读操作用于多根白名单（如内置技能只读目录），防御 `../` 逃逸 |
 | `context_sandbox_var` | ContextVar 注入：bind_sandbox/bind_tmp/bind_context_root 及对应 reset/current 函数 |
 | `ToolCollector` | 工具白/黑名单双重过滤 |
 
@@ -185,7 +185,7 @@ ChannelPlugin ──▶ EventBus ──▶ NanobeeKernel
 [P20] Rules 段         ← core.md Rules 节 + 用户身份（框架内置）
 [P28] 技能段           ← SkillStage：从 nanobee/skills/ + users/<user_id>/skills/ 读取技能文档
                         · full_inject=true：全量注入 body（如 _memory 记忆策略）
-                        · full_inject=false：渐进式注入（仅 name/description 元数据）
+                        · full_inject=false：渐进式注入（仅 name/description 元数据 + 文件**绝对路径**，LLM 直接 read_file 读取正文）
                         · 同名技能双方都展示，标注 [builtin] / [user] 来源
 [P??] 插件段           ← 遍历插件 contribute_to_prompt → 按 plugin_type 生成段标题
                         · 由插件 stage/plugin_type 决定，不做固定顺序
@@ -294,7 +294,7 @@ class MyPlugin(NanobeePlugin):
 # 安装开发依赖
 pip install -e ".[dev]"
 
-# 运行全部测试（456 个用例）
+# 运行全部测试（503 个用例）
 python -m pytest tests/ -v --tb=short
 
 # 查看覆盖率
@@ -310,12 +310,12 @@ python -m pytest tests/ --cov=nanobee --cov-report=term-missing
 | `test_lock_manager.py` | 6 | 按用户并发锁隔离 |
 | `test_user_context.py` | 15 | 用户上下文/元数据/tmp 注入 |
 | `test_router.py` | 12 | 路由解析/降级/自定义 |
-| `test_sandbox.py` | 16 | 路径逃逸拦截/边界 |
+| `test_sandbox.py` | 29 | 路径逃逸拦截/多根白名单/写隔离 |
 | `test_tool_collector.py` | 11 | 白/黑名单过滤 |
 | `test_tool_fs.py` | 21 | 文件系统工具（read/write/edit/list） |
 | `test_phase1_acceptance.py` | 9 | 多租户隔离验收 |
 | `test_phase2_acceptance.py` | 17 | Hook 机制验收 |
-| `test_phase3_acceptance.py` | 9 | 参考插件 + SkillStage 验收（含内置 skill 注入） |
+| `test_phase3_acceptance.py` | 9 | 参考插件 + SkillStage 验收（含内置 skill 注入，绝对路径白名单） |
 | `test_channel_http.py` | 29 | HTTP API 通道（消息解析/SSE/认证/端点/错误处理） |
 | `test_skill.py` | 25 | SkillsLoader 双源发现/缓存/序列化/向后兼容 |
 | `test_skill_validator.py` | 14 | 技能校验器（name 格式、meta 完整性、白名单检查） |
@@ -358,9 +358,9 @@ nanobee/
 │   ├── tool_web/         # Web 工具
 │   ├── tool_cron/        # Cron 定时任务
 │   └── tool_echo/        # 回显测试
-├── skills/               # 内置技能（只读，框架打包）
+├── skills/               # 内置技能（只读，框架打包，沙箱只读根白名单）
 │   ├── _memory/SKILL.md          # 兜底记忆策略（full_inject: true）
-│   └── skill_creator/SKILL.md    # 技能创建教程
+│   └── skill_creator/SKILL.md    # 技能创建教程（渐进式注入，LLM 按需读取）
 ├── exceptions.py          # 统一异常层次结构（NanobeeError 基类 + 20 个子类）
 ├── cli/                  # 命令行入口
 │   ├── main.py           # Click 入口
