@@ -58,13 +58,14 @@ class MCPManager:
             return
 
         self._connecting = True
-        from nanobee.agent.tools.mcp import connect_mcp_servers
+        from nanobee.agent.tools.mcp import connect_mcp_servers, _attach_reconnect_handlers
 
         try:
             logger.info("MCP: 开始连接 {count} 个服务器", count=len(self._servers))
             self._stacks = await connect_mcp_servers(self._servers, tools)
             if self._stacks:
                 self._connected = True
+                _attach_reconnect_handlers(self, tools, self._stacks)
                 logger.info("MCP: 成功连接 {count} 个服务器", count=len(self._stacks))
             else:
                 logger.warning("MCP: 没有 MCP 服务器成功连接（下次消息时重试）")

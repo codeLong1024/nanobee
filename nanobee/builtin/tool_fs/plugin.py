@@ -149,7 +149,7 @@ class ToolFileSystemPlugin(ToolPlugin):
             "读取文件（文本）。文本输出格式：LINE_NUM|CONTENT。"
             "对大文件使用 offset 和 limit 分页读取。"
             "读取前建议使用 list_dir 确认路径。"
-            "读取内容超过 128K 字符会被截断。"
+            "读取内容超过 100K 字符会被截断，可使用 offset 缩小范围。"
         )
 
     async def execute_tool(self, tool_name: str, **kwargs: Any) -> Any:
@@ -231,6 +231,18 @@ class ToolFileSystemPlugin(ToolPlugin):
             end = min(start + (limit or 2000), total)
             numbered = [f"{start + i + 1}| {line}" for i, line in enumerate(all_lines[start:end])]
             result = "\n".join(numbered)
+
+            # 上游风格：按字符截断，防止单行极长时结果过大触发持久化
+            _MAX_READ_CHARS = 100_000
+            if len(result) > _MAX_READ_CHARS:
+                trimmed, chars = [], 0
+                for line in numbered:
+                    chars += len(line) + 1
+                    if chars > _MAX_READ_CHARS:
+                        break
+                    trimmed.append(line)
+                end = start + len(trimmed)
+                result = "\n".join(trimmed)
 
             if end < total:
                 result += f"\n\n（显示第 {offset}-{end} 行，共 {total} 行。使用 offset={end + 1} 继续读取。）"
