@@ -263,6 +263,9 @@ class AgentLoop:
         # 从配置中提取 max_messages（如果未在 extra 中指定）
         if "max_messages" not in extra:
             extra["max_messages"] = defaults.max_messages
+        # 从配置中提取 context_window_tokens（如果未在 extra 中指定）
+        if "context_window_tokens" not in extra:
+            extra["context_window_tokens"] = defaults.context_window_tokens
 
         return cls(
             provider=provider,
@@ -452,11 +455,28 @@ class AgentLoop:
             current_content = new_content
 
         if current_content:
-            # 注入 runtime context（时间、通道、会话信息）
+            # 估算当前上下文 token 用量，让 LLM 了解上下文窗口使用情况
+            ctx_window = self.context_window_tokens or 0
+            stats_str = ""
+            if ctx_window > 0:
+                _tok, _ = estimate_prompt_tokens_chain(
+                    self.provider, self.model,
+                    [{"role": "system", "content": system_prompt or ""}] + history,
+                    self.tools.get_definitions(),
+                )
+                if _tok > 0:
+                    _budget = max(ctx_window - 4096 - 1024, 1)
+                    _pct = min(int((_tok / _budget) * 100), 999)
+                    _tok_k = f"{_tok // 1000}k" if _tok >= 1000 else str(_tok)
+                    _win_k = f"{ctx_window // 1000}k" if ctx_window >= 1000 else str(ctx_window)
+                    stats_str = f"{len(history)} messages, {_tok_k}/{_win_k} tokens ({_pct}%)"
+
+            # 注入 runtime context（时间、通道、会话信息、对话统计）
             runtime_ctx = build_runtime_context(
                 channel=msg.channel,
                 chat_id=msg.chat_id,
                 sender_id=msg.sender_id,
+                conversation_stats=stats_str,
             )
             messages.append({
                 "role": "user",

@@ -51,6 +51,9 @@ htmlcov/
 *.log
 logs/
 
+# 部署脚本（系统级配置，需要修改路径后手动部署）
+deploy/
+
 # OS
 Thumbs.db
 

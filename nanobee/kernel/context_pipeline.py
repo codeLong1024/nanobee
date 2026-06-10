@@ -134,7 +134,10 @@ class SoulStage(PipelineStage):
         parser = CoreMDParser(self.core_md_path)
         soul_content = parser.soul
         if soul_content:
+            logger.debug("SoulStage 注入 Soul 段（{} 字符）", len(soul_content))
             ctx.prepend_system_prompt(soul_content)
+        else:
+            logger.warning("SoulStage: core.md 中未找到 ## Soul 段，人格未注入")
         return ctx.to_dict() if from_dict else ctx
 
 
@@ -175,7 +178,10 @@ class RulesStage(PipelineStage):
                     rules_content = workspace_section
 
         if rules_content:
+            logger.debug("RulesStage 注入行为规则段（{} 字符）", len(rules_content))
             ctx.append_system_prompt("## 行为规则\n\n" + rules_content)
+        else:
+            logger.warning("RulesStage: core.md 中未找到 ## Rules 段，规则未注入")
         return ctx.to_dict() if from_dict else ctx
 
 
@@ -388,6 +394,7 @@ class ContextPipeline:
             if guard_text:
                 system_prompt += "\n\n" + guard_text
 
+        logger.debug("System prompt 构建完成（总共 {} 字符）", len(system_prompt))
         return system_prompt
 
     @staticmethod

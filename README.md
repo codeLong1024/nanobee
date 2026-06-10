@@ -19,7 +19,7 @@
 
 ## 项目状态
 
-**版本 v0.1.0** — 核心框架（微内核、Agent 引擎、LLM Provider、插件体系）已通过 **510 个单元测试**验证。
+**版本 v0.1.0** — 核心框架（微内核、Agent 引擎、LLM Provider、插件体系）已通过 **517 个单元测试**验证。
 
 ```
 Kernel 内核     ████████████████████████████████  95%
@@ -53,6 +53,7 @@ CLI 命令        ████████████████████�
 - **OpenAI 兼容 HTTP API** — `POST /v1/chat/completions`（SSE 流式 + JSON 非流式）、`GET /v1/models`、API Key 认证，支持 LobeChat 等第三方客户端连接
 - **Pipeline 声明式注入** — SkillStage 由 SKILL.md frontmatter 的 `full_inject` 标记驱动：标记为 true 的技能全量注入 body，其余仅注入元数据。从根源杜绝注入攻击（恶意 body 不进入 system prompt）
 - **安全模块** — SSRF 前置拦截（DNS 解析 + 私有 IP 校验 + IPv6-mapped IPv4 标准化）、CIDR 白名单、shell 命令内网 URL 检测（`contains_internal_url`）、路径边界工具函数（多 root 支持）
+- **实例级插件隔离** — 每个 Gateway 实例通过独立 `config.yaml` 的 `plugins.<name>.enabled` 控制加载的插件组合（config.yaml > plugin.toml > 默认 True），不同实例可配置不同的工具集
 
 ### 尚不完整的功能
 
@@ -301,7 +302,7 @@ class MyPlugin(NanobeePlugin):
 # 安装开发依赖
 pip install -e ".[dev]"
 
-# 运行全部测试（510 个用例）
+# 运行全部测试（517 个用例）
 python -m pytest tests/ -v --tb=short
 
 # 查看覆盖率
@@ -336,6 +337,7 @@ python -m pytest tests/ --cov=nanobee --cov-report=term-missing
 | `test_stream_hook.py` | 8 | 流式输出 Hook 链路 |
 | `test_tool_cron_isolation.py` | 9 | Cron 定时任务用户隔离 |
 | `test_tool_shell_sandbox.py` | 13 | Shell 沙箱路径逃逸拦截 |
+| `test_plugin_enabled_override.py` | 6 | config.yaml enabled 覆盖 plugin.toml 的实例隔离 |
 | 其他 | 84+ | Run-level Hook、用户上下文、异常层次、钉钉文件等 |
 
 ## 项目结构

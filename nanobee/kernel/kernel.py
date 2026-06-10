@@ -112,11 +112,17 @@ class NanobeeKernel:
         # 2. 扫描并加载插件
         self.plugin_manager.load_all()
 
-        # 3. 启用插件（尊重 plugin.toml 中的 enabled 配置）
+        # 3. 启用插件
+        # 优先级：config.yaml plugins.<name>.enabled > plugin.toml [config].enabled > 默认 True
         for name in self.plugin_manager.list_plugins():
             descriptor = self.plugin_manager.get_descriptor(name)
-            enabled_config = (descriptor.config or {}).get("enabled", True) if descriptor else True
-            if enabled_config:
+            # 从 config.yaml 的 plugins.<name>.enabled 读取（优先）
+            cfg_plugins = self.config.plugins or {}
+            cfg_enabled = cfg_plugins.get(name, {}).get("enabled") if isinstance(cfg_plugins, dict) else None
+            # 从 plugin.toml 的 [config].enabled 读取（备选）
+            toml_enabled = (descriptor.config or {}).get("enabled", True) if descriptor else True
+            enabled = cfg_enabled if cfg_enabled is not None else toml_enabled
+            if enabled:
                 self.plugin_manager.enable(name)
             else:
                 logger.info("插件 {} 已配置为禁用状态，跳过启用", name)

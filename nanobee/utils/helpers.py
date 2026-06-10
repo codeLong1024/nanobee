@@ -223,10 +223,11 @@ def build_runtime_context(
     chat_id: str | None = None,
     sender_id: str | None = None,
     timezone: str | None = None,
+    conversation_stats: str | None = None,
 ) -> str:
     """构建运行时上下文元数据块，追加到 user 消息末尾。
 
-    只注入每次轮次变化的信息（时间、通道），
+    只注入每次轮次变化的信息（时间、通道、对话统计），
     不注入工作目录等持久信息——这些在 system prompt 中已有。
 
     Args:
@@ -234,6 +235,7 @@ def build_runtime_context(
         chat_id: 会话 ID
         sender_id: 发送者 ID
         timezone: 时区（如 Asia/Shanghai）
+        conversation_stats: 格式化后的对话统计字符串（消息数/token 占比）
 
     Returns:
         格式化的 runtime context 字符串
@@ -243,6 +245,8 @@ def build_runtime_context(
         lines += [f"Channel: {channel}", f"Chat ID: {chat_id}"]
     if sender_id:
         lines += [f"Sender ID: {sender_id}"]
+    if conversation_stats:
+        lines += [f"Conversation: {conversation_stats}"]
     return _RUNTIME_CONTEXT_TAG + "\n" + "\n".join(lines) + "\n" + _RUNTIME_CONTEXT_END
 
 

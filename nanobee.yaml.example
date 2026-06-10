@@ -73,8 +73,23 @@ providers:
 #   #     X-API-Key: "your-api-key"
 
 # 插件配置
+# （实例级 enabled 控制：每个 Gateway 实例通过独立配置文件的
+#  plugins.<name>.enabled 控制加载的插件组合，实现实例隔离）
+#
+# 示例：基础版实例（仅文件操作 + 消息通道）
+#   plugins:
+#     tool_shell: { enabled: false }
+#     tool_web:   { enabled: false }
+#     tool_cron:  { enabled: false }
+#
+# 示例：完整版实例（全功能）
+#   plugins:
+#     tool_shell: { sandbox: "bwrap" }
+#
 # plugins:
 #   tool_shell:
+#     # 启用/禁用插件（默认 true）
+#     # enabled: false
 #     # 进程级沙箱后端（默认 "" = 不启用）
 #     # "bwrap" — 使用 bubblewrap 的 mount namespace 隔离子进程
 #     # 需要系统安装 bwrap（apt install bubblewrap）
