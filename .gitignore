@@ -69,3 +69,5 @@ nanobee/builtin/skills/web-tools-guide-1.0.2
 # 钉钉测试文件（包含敏感配置）
 tests/test_tool_dingtalk.py
 tests/test_channel_dingtalk_file.py
+
+package.sh

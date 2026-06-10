@@ -251,9 +251,9 @@ class HTTPChannelPlugin(ChannelPlugin):
         await self._site.start()
 
         logger.info(
-            "HTTP 通道已启动: http://%s:%s (model=%s, auth=%s)",
-            host, port, self._model,
-            "enabled" if self.get_config("api_key") else "disabled",
+            "HTTP 通道已启动: http://{host}:{port} (model={model}, auth={auth})",
+            host=host, port=port, model=self._model,
+            auth="enabled" if self.get_config("api_key") else "disabled",
         )
 
     async def stop(self) -> None:

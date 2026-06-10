@@ -23,20 +23,25 @@ class SoulGuard:
     - Layer 3：SHA-256 哈希校验（启动时校验，不一致则拒绝启动）
     """
 
-    def __init__(self, kernel: Any):
+    def __init__(self, kernel: Any, core_md_path: str | None = None):
         """初始化
 
         Args:
             kernel: NanobeeKernel 实例
+            core_md_path: core.md 路径（可选，已展开的绝对路径）。
+                          为 None 时从 kernel.config 读取（不展开 ~）。
         """
         self.kernel = kernel
         # kernel.config 可能是 Config 对象（有 core_md_path 属性）或普通 dict
-        cfg = kernel.config
-        if hasattr(cfg, "core_md_path"):
-            core_md = cfg.core_md_path
+        if core_md_path is not None:
+            self.core_md_path = Path(core_md_path)
         else:
-            core_md = cfg.get("core_md_path", "core.md")
-        self.core_md_path = Path(core_md)
+            cfg = kernel.config
+            if hasattr(cfg, "core_md_path"):
+                core_md = cfg.core_md_path
+            else:
+                core_md = cfg.get("core_md_path", "core.md")
+            self.core_md_path = Path(core_md)
         self._expected_hash: str | None = None
 
     async def check(self) -> None:
