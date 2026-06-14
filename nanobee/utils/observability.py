@@ -1,4 +1,10 @@
-"""可观测性工具：结构化日志、Trace ID、Metrics 采集。"""
+"""可观测性工具：结构化日志、Trace ID、Metrics 采集。
+
+日志架构（分层）：
+    Layer 1: 审计日志 — 插件策略层（audit_logger Hook），业务记录
+    Layer 2: 运行时日志 — 程序自管理（loguru 文件 sink），运维排障
+    Layer 3: Shell 重定向 — stdout/stderr 兜底捕获
+"""
 
 from __future__ import annotations
 
@@ -10,6 +16,7 @@ import time
 from collections import defaultdict
 from contextvars import ContextVar
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from loguru import logger as _loguru_logger
@@ -113,6 +120,46 @@ def setup_structured_logging(
     
     # 将 loguru 适配为标准 logging
     logging.getLogger().setLevel(level)
+
+
+def init_log_file_sink(
+    log_cfg: dict[str, Any] | None = None,
+    instance_name: str | None = None,
+) -> None:
+    """根据配置添加 loguru 文件 sink（运行时日志自管理）。
+
+    从 ``logging:`` 配置段读取文件路径、轮转策略、保留策略等，
+    自动添加 loguru 文件 sink。如果 ``file`` 未配置则静默跳过。
+
+    支持 ``{instance}`` 占位符，多实例部署时传入不同实例名实现日志分散。
+
+    Args:
+        log_cfg: logging 配置字典，对应 LoggingConfig.model_dump()
+        instance_name: 实例名，用于替换 ``file`` 中的 ``{instance}`` 占位符
+    """
+    if not log_cfg:
+        return
+
+    log_file = log_cfg.get("file")
+    if not log_file:
+        return
+
+    # 替换实例名占位符
+    if instance_name is not None:
+        log_file = log_file.replace("{instance}", instance_name)
+
+    log_dir = log_cfg.get("dir", "logs")
+    log_path = Path(log_dir) / log_file
+
+    _loguru_logger.add(
+        str(log_path),
+        rotation=log_cfg.get("rotation", "500 MB"),
+        retention=log_cfg.get("retention", "30 days"),
+        compression=log_cfg.get("compression", "gz"),
+        level=log_cfg.get("level", "INFO"),
+        enqueue=True,
+        serialize=log_cfg.get("json_format", False),
+    )
 
 
 @dataclass

@@ -72,45 +72,47 @@ providers:
 #   #   headers:
 #   #     X-API-Key: "your-api-key"
 
-# 插件配置
+# 通道配置
 # （实例级 enabled 控制：每个 Gateway 实例通过独立配置文件的
-#  plugins.<name>.enabled 控制加载的插件组合，实现实例隔离）
+#  channels.<name>.enabled 控制加载的通道插件，实现实例隔离）
 #
-# 示例：基础版实例（仅文件操作 + 消息通道）
-#   plugins:
-#     tool_shell: { enabled: false }
-#     tool_web:   { enabled: false }
-#     tool_cron:  { enabled: false }
+# 示例：仅启用钉钉通道
+#   channels:
+#     channel_dingtalk:
+#       enabled: true
+#       client_id: "dingxxx"
+#       client_secret: "xxx"
+#     channel_http:
+#       enabled: false
 #
-# 示例：完整版实例（全功能）
-#   plugins:
-#     tool_shell: { sandbox: "bwrap" }
+# 示例：仅启用 HTTP API 通道
+#   channels:
+#     channel_dingtalk:
+#       enabled: false
+#     channel_http:
+#       enabled: true
+#       host: "127.0.0.1"
+#       port: 8080
 #
-# plugins:
-#   tool_shell:
-#     # 启用/禁用插件（默认 true）
-#     # enabled: false
-#     # 进程级沙箱后端（默认 "" = 不启用）
-#     # "bwrap" — 使用 bubblewrap 的 mount namespace 隔离子进程
-#     # 需要系统安装 bwrap（apt install bubblewrap）
-#     # 注意：启用后子进程只能访问 workspace 目录，不能通过 /proc/self/root 绕过
-#     sandbox: "bwrap"
-#   channel_http:
-#     # 监听地址（默认 127.0.0.1，建议保持默认仅本地访问）
-#     host: "127.0.0.1"
-#     # 监听端口（默认 8080）
-#     port: 8080
-#     # API Key（可选，配置后在请求头中传递 Authorization: Bearer <key>）
-#     # api_key: "sk-your-http-api-key"
-#   dingtalk:
-#     # 钉钉文档 MCP 服务器 URL（对应环境变量 DINGTALK_DOC_SERVER_URL）
-#     # doc_server_url: "https://mcp-gw.dingtalk.com/..."
-#     # 钉钉多维表 MCP 服务器 URL（对应环境变量 DINGTALK_AITABLE_SERVER_URL）
-#     # aitable_server_url: "https://mcp-gw.dingtalk.com/..."
-#     # 默认目标文件夹 ID（创建文档/多维表时未指定 folder_id 时使用）
-#     # folder_id: "kDnRL6jAJM3jqBKRIXX2YxadWyMoPYe1"
-#     # MCP API Key（可选）
-#     # api_key: "your-api-key"
+channels:
+  channel_dingtalk:
+    enabled: true
+    # 消息标题（Markdown 消息的标题字段）
+    # markdown_title: "AI助手回复"
+    # client_id: "dingxxx"
+    # client_secret: "xxx"
+    # allow_from: ["*"]
+    # streaming: true
+  channel_http:
+    enabled: false
+    # 监听地址（默认 127.0.0.1，建议保持默认仅本地访问）
+    # host: "127.0.0.1"
+    # 监听端口（默认 8080）
+    # port: 8080
+    # API Key（可选，配置后在请求头中传递 Authorization: Bearer <key>）
+    # api_key: "sk-your-http-api-key"
+  channel_cli:
+    enabled: true
 
 # 路由配置（多租户映射）
 # 格式："{channel}:{chat_id}" → user_id
@@ -125,3 +127,21 @@ providers:
 #   # 格式：CIDR 字符串列表
 #   ssrfWhitelist:
 #     - "100.64.0.0/10"
+
+# 日志配置（程序自管理，loguru 文件 sink）
+# 不配 file 字段（或注释掉）则不写文件，仅输出 stderr
+# logging:
+#   # 日志目录（相对路径基于进程 CWD，建议用绝对路径）
+#   dir: "logs"
+#   # 日志文件名（支持 {instance} 占位符，多实例时替换为实例名）
+#   file: "gateway.log"
+#   # 日志级别
+#   level: "INFO"
+#   # 轮转方式："500 MB" / "1 day" / "00:00"（每日午夜）
+#   rotation: "500 MB"
+#   # 保留天数
+#   retention: "30 days"
+#   # 是否压缩历史文件
+#   compression: "gz"
+#   # 生产环境建议开启 JSON 格式（便于 Promtail/Filebeat 采集）
+#   json_format: false

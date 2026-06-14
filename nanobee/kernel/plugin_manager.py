@@ -133,6 +133,11 @@ class PluginManager:
         """
         name = descriptor.metadata.name
 
+        # 检查配置中是否禁用（在 import 之前检查，避免加载未启用的插件）
+        if self._is_plugin_disabled(name):
+            logger.info("插件 {} 在配置中已禁用，跳过加载", name)
+            return None
+
         # 检查依赖
         for dep in descriptor.metadata.dependencies:
             if dep not in self._plugins:
@@ -176,6 +181,44 @@ class PluginManager:
         except Exception:
             logger.exception("加载插件 {name} 失败", name=name)
             return None
+
+    def _is_plugin_disabled(self, name: str) -> bool:
+        """检查插件是否在配置中被禁用。
+
+        在动态导入模块之前检查，避免加载未启用的插件导致 import 错误。
+
+        配置格式（在 nanobee.yaml 中）：
+        ```yaml
+        channels:
+          channel_http:
+            enabled: false  # 禁用 HTTP API 通道
+        ```
+
+        Args:
+            name: 插件名称
+
+        Returns:
+            bool: 插件被禁用返回 True
+        """
+        cfg = self.kernel.config
+        if cfg is None:
+            return False
+
+        # 兼容 kernel.config 为对象或 dict
+        if hasattr(cfg, "channels"):
+            channels_cfg = cfg.channels
+        else:
+            channels_cfg = cfg.get("channels", {})
+
+        if not isinstance(channels_cfg, dict):
+            return False
+
+        plugin_cfg = channels_cfg.get(name)
+        if not isinstance(plugin_cfg, dict):
+            return False
+
+        # 如果配置了 enabled: false，则禁用该插件
+        return plugin_cfg.get("enabled", True) is False
 
     def _find_plugin_class(self, module: Any, plugin_type: str) -> Type[NanobeePlugin] | None:
         """在模块中查找具体的插件类，排除导入的抽象基类。

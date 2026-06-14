@@ -85,6 +85,18 @@ class AgentsConfig(Base):
     defaults: AgentDefaults = AgentDefaults()
 
 
+class LoggingConfig(Base):
+    """运行时日志配置（程序自管理，loguru 文件 sink）。"""
+
+    dir: str = "logs"
+    file: str | None = None
+    level: str = "INFO"
+    rotation: str = "500 MB"
+    retention: str = "30 days"
+    compression: str = "gz"
+    json_format: bool = False
+
+
 class ToolsConfig(Base):
     """工具安全配置。"""
 
@@ -110,6 +122,7 @@ class Config(BaseModel):
     routing: dict[str, str] = {}
     channels: dict[str, dict[str, Any]] = {}
     plugins: dict[str, dict[str, Any]] = {}
+    logging: LoggingConfig = LoggingConfig()
     tools: ToolsConfig = ToolsConfig()
 
     def resolve_preset(self, name: str | None) -> ModelPresetConfig:

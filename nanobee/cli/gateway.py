@@ -21,7 +21,7 @@ from nanobee.kernel import NanobeeKernel
 from nanobee.kernel.process import run_signal_guard
 from nanobee.providers.factory import make_provider
 from nanobee.utils.logger import logger
-from nanobee.utils.observability import setup_structured_logging
+from nanobee.utils.observability import init_log_file_sink, setup_structured_logging
 
 
 
@@ -75,6 +75,11 @@ def gateway(
         if config_path:
             logger.debug("Auto-discovered config: {}", config_path)
     cfg = load_config(config_path)
+
+    # 根据配置添加 loguru 文件 sink（运行时日志自管理）
+    log_cfg = getattr(cfg, "logging", None)
+    if log_cfg is not None:
+        init_log_file_sink(log_cfg.model_dump() if hasattr(log_cfg, "model_dump") else log_cfg)
 
     # 运行 Gateway 服务
     _run_gateway(cfg, plugin_dir, cfg.plugin_dirs, port=port)

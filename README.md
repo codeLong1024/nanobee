@@ -56,6 +56,7 @@ CLI 命令        ████████████████████�
 - **Pipeline 声明式注入** — SkillStage 由 SKILL.md frontmatter 的 `full_inject` 标记驱动：标记为 true 的技能全量注入 body，其余仅注入元数据。从根源杜绝注入攻击（恶意 body 不进入 system prompt）
 - **安全模块** — SSRF 前置拦截（DNS 解析 + 私有 IP 校验 + IPv6-mapped IPv4 标准化）、CIDR 白名单、shell 命令内网 URL 检测（`contains_internal_url`）、路径边界工具函数（多 root 支持）
 - **实例级插件隔离** — 每个 Gateway 实例通过独立 `config.yaml` 的 `plugins.<name>.enabled` 控制加载的插件组合（config.yaml > plugin.toml > 默认 True），不同实例可配置不同的工具集
+- **运行时日志自管理** — `logging:` 配置段驱动 loguru 文件 sink，支持 rotation/retention/compression，程序自管理日志生命周期，无需外部 logrotate
 
 ### 尚不完整的功能
 
@@ -125,6 +126,23 @@ nanobee gateway
 ```
 
 > **提示**：Windows 用户也可以使用项目根目录的 `run.bat` 快捷启动脚本，自动完成虚拟环境创建、依赖安装和启动对话。
+
+### 日志配置
+
+运行时日志通过 `nanobee.yaml` 的 `logging:` 配置节程序自管理：
+
+```yaml
+logging:
+  dir: "logs"               # 日志目录
+  file: "gateway.log"        # 日志文件（不配则不写文件）
+  level: "INFO"              # 日志级别
+  rotation: "500 MB"         # 轮转策略："500 MB" / "1 day" / "00:00"
+  retention: "30 days"       # 保留天数
+  compression: "gz"          # 压缩历史文件
+  json_format: false         # 生产环境建议 true（便于 Promtail 采集）
+```
+
+不配 `file` 字段则仅输出 stderr，保持向后兼容。
 
 ## 架构
 

@@ -20,7 +20,7 @@ import click
 from nanobee.config.loader import load_config
 from nanobee.kernel import NanobeeKernel
 from nanobee.providers.factory import make_provider
-from nanobee.utils.observability import setup_structured_logging
+from nanobee.utils.observability import init_log_file_sink, setup_structured_logging
 
 from nanobee.utils.logger import logger
 
@@ -82,6 +82,11 @@ def run(
         if config_path:
             logger.debug("Auto-discovered config: {}", config_path)
     cfg = load_config(config_path)
+
+    # 根据配置添加 loguru 文件 sink（运行时日志自管理）
+    log_cfg = getattr(cfg, "logging", None)
+    if log_cfg is not None:
+        init_log_file_sink(log_cfg.model_dump() if hasattr(log_cfg, "model_dump") else log_cfg)
 
     # 创建内核并运行会话（轻量模式）
     _run_agent_session(cfg, plugin_dir, cfg.plugin_dirs, message, session_id)
