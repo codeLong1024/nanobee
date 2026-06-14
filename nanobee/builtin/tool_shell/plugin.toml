@@ -4,6 +4,7 @@ version = "1.0.0"
 description = "Shell 命令工具：execute_shell"
 author = "nanobee-team"
 type = "tool"
+exec_capable = true
 
 [config]
 enabled = true

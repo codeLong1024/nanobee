@@ -9,7 +9,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-TRACKED_FILE_EDIT_TOOLS = frozenset({"write_file", "edit_file", "apply_patch"})
 _MAX_SNAPSHOT_BYTES = 2 * 1024 * 1024
 _LIVE_EMIT_INTERVAL_S = 0.18
 _LIVE_EMIT_LINE_STEP = 24
@@ -43,8 +42,14 @@ class FileEditTracker:
     before: FileSnapshot
 
 
-def is_file_edit_tool(tool_name: str | None) -> bool:
-    return bool(tool_name) and tool_name in TRACKED_FILE_EDIT_TOOLS
+def is_file_edit_tool(tool_name: str | None, file_edit_tools: set[str]) -> bool:
+    """检查工具是否为文件编辑工具。
+
+    Args:
+        tool_name: 工具名称
+        file_edit_tools: 允许的文件编辑工具名集合，由调用方从插件元数据构建。
+    """
+    return bool(tool_name) and tool_name in file_edit_tools  # type: ignore[arg-type]
 
 
 def resolve_file_edit_path(
@@ -151,6 +156,7 @@ def prepare_file_edit_tracker(
     tool: Any,
     workspace: Path | None,
     params: dict[str, Any] | None,
+    file_edit_tools: set[str],
 ) -> FileEditTracker | None:
     trackers = prepare_file_edit_trackers(
         call_id=call_id,
@@ -158,6 +164,7 @@ def prepare_file_edit_tracker(
         tool=tool,
         workspace=workspace,
         params=params,
+        file_edit_tools=file_edit_tools,
     )
     return trackers[0] if trackers else None
 
@@ -169,8 +176,19 @@ def prepare_file_edit_trackers(
     tool: Any,
     workspace: Path | None,
     params: dict[str, Any] | None,
+    file_edit_tools: set[str],
 ) -> list[FileEditTracker]:
-    if not is_file_edit_tool(tool_name):
+    """Prepare file edit trackers for a given tool call.
+
+    Args:
+        call_id: 调用 ID
+        tool_name: 工具名称
+        tool: 工具实例
+        workspace: 工作区路径
+        params: 工具参数
+        file_edit_tools: 允许的文件编辑工具名集合，由调用方从插件元数据构建。
+    """
+    if not is_file_edit_tool(tool_name, file_edit_tools):
         return []
     paths = resolve_file_edit_paths(tool_name, tool, workspace, params)
     trackers: list[FileEditTracker] = []
@@ -367,6 +385,12 @@ class StreamingFileEditTracker:
     can have the same wait while ``old_text`` / ``new_text`` stream in.  This
     tracker converts those argument deltas into approximate WebUI file-edit
     events before the final exact diff is available.
+
+    Args:
+        workspace: 工作区路径
+        tools: 工具注册表
+        emit: 事件回调
+        file_edit_tools: 允许的文件编辑工具名集合，由调用方从插件元数据构建。
     """
 
     def __init__(
@@ -375,10 +399,12 @@ class StreamingFileEditTracker:
         workspace: Path | None,
         tools: Any,
         emit: Callable[[list[dict[str, Any]]], Awaitable[None]],
+        file_edit_tools: set[str],
     ) -> None:
         self._workspace = workspace
         self._tools = tools
         self._emit = emit
+        self._file_edit_tools = file_edit_tools
         self._states: dict[str, _StreamingFileEditState] = {}
 
     async def update(self, payload: dict[str, Any]) -> None:
@@ -391,10 +417,11 @@ class StreamingFileEditTracker:
             self._states[key] = state
 
         state.apply_delta(payload)
+        if state.name not in self._file_edit_tools:
+            return
+        # apply_patch 有特殊的多路径编辑逻辑
         if state.name == "apply_patch":
             await self._update_apply_patch(state)
-            return
-        if state.name not in {"write_file", "edit_file"}:
             return
         if state.path is None:
             state.path = _extract_complete_json_string(state.arguments, "path")
@@ -418,6 +445,7 @@ class StreamingFileEditTracker:
                 tool=tool,
                 workspace=self._workspace,
                 params={"path": state.path},
+                file_edit_tools=self._file_edit_tools,
             )
             if state.tracker is None:
                 return

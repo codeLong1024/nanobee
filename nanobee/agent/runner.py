@@ -156,6 +156,12 @@ class AgentRunSpec:
     chat_id: str = ""
     sender_id: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
+    # 需要节流的外部查询工具名集合，从插件 metadata.throttle_group 构建
+    throttled_tool_names: dict[str, str] = field(default_factory=dict)
+    # 具有命令执行能力的工具名集合，从插件 metadata.exec_capable 构建
+    exec_capable_tools: set[str] = field(default_factory=set)
+    # 具有文件编辑能力的工具名集合，从插件 metadata.file_edit_capability 构建
+    file_edit_tools: set[str] = field(default_factory=set)
 
 
 @dataclass(slots=True)
@@ -760,6 +766,7 @@ class AgentRunner:
                 workspace=spec.workspace,
                 tools=spec.tools,
                 emit=_emit_live_file_edits,
+                file_edit_tools=spec.file_edit_tools,
             )
 
         async def _tool_call_delta(delta: dict[str, Any]) -> None:
@@ -930,6 +937,7 @@ class AgentRunner:
             tool_call.name,
             tool_call.arguments,
             external_lookup_counts,
+            spec.throttled_tool_names,
         )
         if lookup_error:
             event = {
@@ -966,6 +974,7 @@ class AgentRunner:
                 event=event,
                 tool_call=tool_call,
                 workspace_violation_counts=workspace_violation_counts,
+                exec_capable_tools=spec.exec_capable_tools,
             )
             if handled is not None:
                 return handled
@@ -984,6 +993,7 @@ class AgentRunner:
                 tool=tool,
                 workspace=spec.workspace,
                 params=params if isinstance(params, dict) else None,
+                file_edit_tools=spec.file_edit_tools,
             )
             if progress_callback is not None
             else None
@@ -1064,7 +1074,9 @@ class AgentRunner:
 
         except asyncio.CancelledError:
             raise
-        except BaseException as exc:
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except Exception as exc:
             if file_edit_trackers and progress_callback is not None:
                 await invoke_file_edit_progress(
                     progress_callback,
@@ -1086,6 +1098,7 @@ class AgentRunner:
                 tool_call=tool_call,
                 workspace_violation_counts=workspace_violation_counts,
                 exception=exc,
+                exec_capable_tools=spec.exec_capable_tools,
             )
             if handled is not None:
                 return handled
@@ -1113,6 +1126,7 @@ class AgentRunner:
                 event=event,
                 tool_call=tool_call,
                 workspace_violation_counts=workspace_violation_counts,
+                exec_capable_tools=spec.exec_capable_tools,
             )
             if handled is not None:
                 return handled
@@ -1149,6 +1163,7 @@ class AgentRunner:
         tool_call: ToolCallRequest,
         workspace_violation_counts: dict[str, int],
         exception: BaseException | None = None,
+        exec_capable_tools: set[str] | None = None,
     ) -> tuple[Any, dict[str, str], BaseException | None] | None:
         """分类安全边界失败，或返回 None 以透传。
 
@@ -1160,6 +1175,7 @@ class AgentRunner:
         if isinstance(exception, SandboxViolationError):
             return self._handle_workspace_violation(
                 raw_text, soft_payload, event, tool_call, workspace_violation_counts,
+                exec_capable_tools=exec_capable_tools,
             )
 
         # 文本特征检测——只检查框架内部模块的结构化输出格式
@@ -1177,6 +1193,7 @@ class AgentRunner:
         if is_sandbox:
             return self._handle_workspace_violation(
                 raw_text, soft_payload, event, tool_call, workspace_violation_counts,
+                exec_capable_tools=exec_capable_tools,
             )
 
         return None
@@ -1201,12 +1218,14 @@ class AgentRunner:
         event: dict[str, str],
         tool_call: ToolCallRequest,
         workspace_violation_counts: dict[str, int],
+        exec_capable_tools: set[str] | None = None,
     ) -> tuple[Any, dict[str, str], BaseException | None] | None:
         """处理工作区越界：可恢复，重复时升级提示。"""
         escalation = repeated_workspace_violation_error(
             tool_call.name,
             tool_call.arguments,
             workspace_violation_counts,
+            exec_capable_tools,
         )
         event["detail"] = self._event_detail("workspace_violation: ", raw_text)
         if escalation is not None:

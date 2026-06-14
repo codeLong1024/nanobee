@@ -298,6 +298,9 @@ class AgentLoop:
             # 插件尚未加载，跳过注册（在 boot() 中会重新注册）
             return
         registered: list[str] = []
+        self._throttled_tool_groups: dict[str, str] = {}
+        self._exec_capable_tools: set[str] = set()
+        self._file_edit_tools: set[str] = set()
         for plugin in tool_plugins:
             # 检查插件是否已启用
             if not self.plugin_manager.is_enabled(getattr(plugin, "name", "")):
@@ -309,9 +312,28 @@ class AgentLoop:
                     adapter = ToolPluginAdapter(plugin, tool_def)
                     self.tools.register(adapter)
                     registered.append(adapter.name)
+                    # 收集需要节流的工具→组映射（插件声明了 throttle_group）
+                    if plugin.metadata.throttle_group:
+                        self._throttled_tool_groups[adapter.name] = plugin.metadata.throttle_group
+                    # 收集具有命令执行能力的工具（用于工作区逃逸检测）
+                    if plugin.metadata.exec_capable:
+                        self._exec_capable_tools.add(adapter.name)
+                    # 收集具有文件编辑能力的工具（用于进度追踪）
+                    if plugin.metadata.file_edit_capability:
+                        self._file_edit_tools.add(adapter.name)
             except Exception:
                 logger.exception("注册工具插件 {name} 失败", name=getattr(plugin, "name", "unknown"))
+        if self._throttled_tool_groups:
+            logger.info("节流工具→组映射: {}", self._throttled_tool_groups)
+        if self._exec_capable_tools:
+            logger.info("可执行命令的工具: {}", self._exec_capable_tools)
+        if self._file_edit_tools:
+            logger.info("文件编辑工具: {}", self._file_edit_tools)
         logger.info("注册了 {count} 个工具插件: {plugins}", count=len(registered), plugins=registered)
+
+        # 为沙箱注入 overlay 回退配置（skills/ → builtin skills）
+        # 注：overlay 现已由 ContextSandbox.prefix_map 统一管理，
+        # 在 _build_sandbox() 中构造时传入。
 
     def _register_skill_tools(self) -> None:
         """注册技能管理工具（不依赖插件系统，直接操作 SKILL.md）。
@@ -573,6 +595,9 @@ class AgentLoop:
             injection_callback=_drain_pending,
             filtered_tool_names=filtered_tool_names,
             plugin_hooks=plugin_hooks,
+            throttled_tool_names=self._throttled_tool_groups,
+            exec_capable_tools=self._exec_capable_tools,
+            file_edit_tools=self._file_edit_tools,
         ))
 
         if result.stop_reason == "max_iterations":
@@ -790,17 +815,25 @@ class AgentLoop:
         return "ok"
 
     async def _build_sandbox(self, user_id: str) -> Any | None:
-        """根据用户上下文构建沙箱（含只读根白名单）"""
+        """根据用户上下文构建沙箱（含只读根白名单 + prefix_map 回退）"""
         from nanobee.kernel.sandbox import ContextSandbox
         try:
             user_ctx = await self.context_manager.get_or_create(user_id)
             # 内置技能目录作为只读根加入沙箱，LLM 可读不可写
             read_only: list[Path | str] | None = None
+            prefix_map: dict[str, Path | str] | None = None
             if self.skill_manager is not None:
                 builtin = self.skill_manager.builtin_dir
                 if builtin is not None:
                     read_only = [builtin]
-            return ContextSandbox(user_ctx.context_root, read_only_roots=read_only)
+                    builtin_skills = builtin / "skills"
+                    if builtin_skills.is_dir():
+                        prefix_map = {"skills/": builtin_skills}
+            return ContextSandbox(
+                user_ctx.context_root,
+                read_only_roots=read_only,
+                prefix_map=prefix_map,
+            )
         except Exception:
             logger.debug("无法构建沙箱（非多租户模式）: {}", user_id)
             return None

@@ -61,6 +61,10 @@ class ContextSandbox:
     - writable_root：用户上下文根，可读写（== context_root）
     - read_only_roots：只读根列表，可读不可写（如内置技能目录）
 
+    prefix_map：前缀 → 回退目录映射。
+    "用户目录没找到，回退到内置目录"的 overlay 语义，
+    曾分散在 tool_fs 插件的 _overlay_dirs 中，现统一到沙箱层。
+
     同时包含元数据文件写保护：
     - identity.yaml：用户配置，LLM 不可修改
     - .history/ 下的所有文件：会话历史，LLM 不可修改
@@ -73,15 +77,22 @@ class ContextSandbox:
         self,
         context_root: Path | str,
         read_only_roots: list[Path | str] | None = None,
+        prefix_map: dict[str, Path | str] | None = None,
     ) -> None:
         """初始化沙箱
 
         Args:
             context_root: 用户上下文根目录（绝对路径），可读写
             read_only_roots: 只读根目录列表（如内置技能目录），可读不可写
+            prefix_map: 前缀 → 回退目录映射。
+                当路径在可写根内不存在时，按前缀匹配回退到指定目录。
+                例如 {"skills/": "/opt/nanobee/skills/"}。
         """
         self._context_root = Path(context_root).resolve()
         self._read_only_roots = [Path(r).resolve() for r in (read_only_roots or [])]
+        self._prefix_map = {
+            k: Path(v).resolve() for k, v in (prefix_map or {}).items()
+        }
 
     @property
     def context_root(self) -> Path:
@@ -158,6 +169,48 @@ class ContextSandbox:
             SandboxViolationError: 路径越界或指向受保护的元数据文件
         """
         return self._resolve(path_str, writable_only=True)
+
+    def resolve_with_fallback(self, path_str: str) -> Path:
+        """解析路径，支持前缀匹配回退（overlay 语义）。
+
+        先在可写根 + 只读根内尝试路径。
+        如果不存在，按 prefix_map 匹配前缀，回退到映射目录。
+
+        典型场景：LLM 请求 "skills/foo.md"，
+        用户目录 /ctx/skills/foo.md 不存在时，
+        回退到内置目录 /opt/nanobee/skills/foo.md。
+
+        Args:
+            path_str: 路径字符串
+
+        Returns:
+            解析后的安全绝对路径（可能不存在，由调用方检查）
+
+        Raises:
+            SandboxViolationError: 路径越界或指向受保护的元数据文件
+        """
+        p = self._resolve(path_str, writable_only=False)
+        if p.exists():
+            return p
+
+        # 前缀匹配回退
+        if not self._prefix_map:
+            return p
+        norm_path = path_str.lstrip("/")
+        for prefix, fallback_dir in self._prefix_map.items():
+            norm_prefix = prefix.rstrip("/")
+            if norm_path == norm_prefix:
+                # 精确匹配前缀本身（如 "skills" → 列出内置 skills 目录）
+                if fallback_dir.exists():
+                    self._check_blocked(fallback_dir)
+                    return fallback_dir.resolve()
+            elif norm_path.startswith(norm_prefix + "/"):
+                rel = Path(norm_path[len(norm_prefix) + 1:])
+                candidate = (fallback_dir / rel).resolve()
+                if candidate.exists():
+                    self._check_blocked(candidate)
+                    return candidate
+        return p
 
     def sanitize_params(
         self,

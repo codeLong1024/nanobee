@@ -149,6 +149,8 @@ class ToolFileSystemPlugin(ToolPlugin):
             "读取文件（文本）。文本输出格式：LINE_NUM|CONTENT。"
             "对大文件使用 offset 和 limit 分页读取。"
             "读取前建议使用 list_dir 确认路径。"
+            "支持自动回退到内置模板：用户目录不存在时自动读取内置文件"
+            "（如 skills/ 目录优先读用户版，不存在则回退到内置版本）。"
             "读取内容超过 100K 字符会被截断，可使用 offset 缩小范围。"
         )
 
@@ -453,8 +455,7 @@ class ToolFileSystemPlugin(ToolPlugin):
                 for item in sorted(dp.iterdir()):
                     if item.name in ignore_dirs:
                         continue
-                    prefix = "📁 " if item.is_dir() else "📄 "
-                    items.append(f"{prefix}{item.name}")
+                    items.append(f"{item.name}/" if item.is_dir() else item.name)
 
             if not items:
                 return f"目录 {path} 为空"
@@ -473,11 +474,13 @@ class ToolFileSystemPlugin(ToolPlugin):
     # ------------------------------------------------------------------
 
     def _resolve_path(self, path: str) -> Path:
-        """解析文件路径，支持相对路径转换为绝对路径，并通过 L2 沙箱校验
+        """解析文件路径，支持 L2 沙箱校验 + overlay 回退
 
         防御纵深 L2 层：通过 ContextVar 获取当前任务的沙箱实例进行路径边界校验。
         如果当前任务未绑定沙箱，回退到 Path.cwd() 作为默认工作目录。
-        读/列举操作使用此方法，允许访问所有沙箱根（含只读根）。
+
+        Overlay 回退（如 skills/ → 内置技能目录）由沙箱的 resolve_with_fallback
+        统一处理，取代了此前分散在插件中的 _overlay_dirs 逻辑。
 
         Args:
             path: 文件路径（可以是相对或绝对路径）
@@ -491,26 +494,16 @@ class ToolFileSystemPlugin(ToolPlugin):
         from nanobee.kernel.context_sandbox_var import current_sandbox as _current_sandbox
         from nanobee.kernel.sandbox import ContextSandbox
 
-        p = Path(path)
-        if not p.is_absolute():
-            # 相对路径基于沙箱根解析（而非 CWD），确保 skill 中 memory/xxx 类的路径正确
-            sandbox = _current_sandbox()
-            if sandbox is not None:
-                base = Path(sandbox.context_root)
-            else:
-                base = Path.cwd()
-            p = base / p
-        p = p.resolve()
-
-        # L2 沙箱校验（读操作允许多根）
         sandbox = _current_sandbox()
         if sandbox is not None:
-            sandbox.assert_allowed(p)
-        else:
-            # 回退：使用 Path.cwd() 作为默认 context_root
-            default_sandbox = ContextSandbox(Path.cwd())
-            default_sandbox.assert_allowed(p)
+            return sandbox.resolve_with_fallback(path)
 
+        # 无沙箱回退
+        p = Path(path)
+        if not p.is_absolute():
+            p = (Path.cwd() / p).resolve()
+        else:
+            p = p.resolve()
         return p
 
     def _resolve_write_path(self, path: str) -> Path:

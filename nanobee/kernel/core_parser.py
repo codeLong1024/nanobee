@@ -10,14 +10,20 @@ from nanobee.utils.logger import logger
 
 
 
+_TEMPLATE_DIR = Path(__file__).resolve().parent.parent / "templates"
+"""模板文件目录"""
+
+
 class CoreMDParser:
     """解析 core.md 文件
 
     core.md 结构：
     - ## Soul（人格）
     - ## Rules（行为规则）
-    - ## Memory Policy（记忆策略）[MVP 后实现]
-    - ## Context Bindings（上下文绑定）[MVP 后实现]
+    - ## Memory Policy（记忆策略）
+    - ## Context Bindings（上下文绑定）
+
+    默认模板位于 ``templates/core_default.md``，不硬编码在代码中。
     """
 
     # 支持的段落名
@@ -90,18 +96,19 @@ class CoreMDParser:
     def compute_hash(self) -> str:
         """计算 core.md 文件的 SHA-256 哈希
 
+        总是重新读取文件，确保哈希值反映磁盘上的最新内容。
+
         Returns:
             十六进制哈希字符串
         """
-        if not self._raw_content:
-            with open(self.core_md_path, "r", encoding="utf-8") as f:
-                self._raw_content = f.read()
+        with open(self.core_md_path, "r", encoding="utf-8") as f:
+            content = f.read()
 
-        return hashlib.sha256(self._raw_content.encode("utf-8")).hexdigest()
+        return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
     @classmethod
     def create_default(cls, output_path: str | Path) -> Path:
-        """创建默认的 core.md 模板
+        """创建默认的 core.md 模板（从外部模板文件读取）。
 
         Args:
             output_path: 输出路径
@@ -112,30 +119,36 @@ class CoreMDParser:
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        default_content = """# core.md — Nanobee 数字员工的唯一管控文件
+        template_path = _TEMPLATE_DIR / "core_default.md"
+        if template_path.is_file():
+            content = template_path.read_text(encoding="utf-8")
+            logger.debug("从模板文件读取默认 core.md: {}", template_path)
+        else:
+            content = cls._builtin_fallback()
+            logger.warning("模板文件不存在，使用内置回退: {}", template_path)
 
-## Soul（人格）
-
-你是 Nanobee，一个简洁、高效的数字员工。
-你的回答应当准确、有用且简洁。
-
-## Rules（行为规则）
-
-- 在调用工具前，先思考是否真的需要调用
-- 如果用户只打招呼，不需要调用任何工具
-- 保持回答简洁，避免冗余
-
-## Memory Policy（记忆策略）
-
-TODO: MVP 后实现
-
-## Context Bindings（上下文绑定）
-
-TODO: MVP 后实现
-"""
-
-        with open(output_path, "w", encoding="utf-8") as f:
-            f.write(default_content)
-
+        output_path.write_text(content, encoding="utf-8")
         logger.info("已创建默认 core.md: {}", output_path)
         return output_path
+
+    @classmethod
+    def _builtin_fallback(cls) -> str:
+        """内置回退模板（模板文件丢失时的保底内容）。"""
+        parts = [
+            "# core.md — Nanobee 数字员工的唯一管控文件\n",
+            "\n## Soul（人格）\n",
+            "\n你是 Nanobee，一个简洁、高效的数字员工。",
+            "你的回答应当准确、有用且简洁。\n",
+            "\n## Rules（行为规则）\n",
+            "\n- 在调用工具前，先思考是否真的需要调用",
+            "\n- 如果用户只打招呼，不需要调用任何工具",
+            "\n- 保持回答简洁，避免冗余",
+            "\n- 任何创建、修改、删除或查询数据的操作",
+            "（包括 cron 任务、文件、技能等）都必须调用对应工具",
+            "\n- 工具返回的结果是唯一可靠的事实来源",
+            "\n\n## Memory Policy（记忆策略）\n",
+            "\n由 skills/_memory 技能定义记忆策略。\n",
+            "\n## Context Bindings（上下文绑定）\n",
+            "\n运行时注入时间/通道/会话/发送者信息。\n",
+        ]
+        return "".join(parts)

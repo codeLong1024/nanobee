@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib
 import sys
 from pathlib import Path
@@ -42,6 +43,9 @@ class PluginDescriptor:
             plugin_type=plugin_type,
             dependencies=plugin_section.get("dependencies", {}).get("requires", []),
             permissions=self._parse_permissions(plugin_section),
+            throttle_group=plugin_section.get("throttle_group", ""),
+            exec_capable=plugin_section.get("exec_capable", False),
+            file_edit_capability=plugin_section.get("file_edit_capability", False),
         )
         self.config = self._data.get("config", {})
 
@@ -142,11 +146,10 @@ class PluginManager:
             return None
 
         try:
-            # 从插件目录路径派生出唯一的模块名，避免硬编码
+            # 从插件目录绝对路径的 MD5 散列派生出唯一模块名，避免路径碰撞
             relative_plugin_dir = descriptor.plugin_dir.resolve()
-            sanitized = "_".join(relative_plugin_dir.parts[-3:]) if len(relative_plugin_dir.parts) >= 3 \
-                        else "_".join(relative_plugin_dir.parts)
-            module_name = f"_nanobee_plugins.{sanitized}.{name}"
+            path_hash = hashlib.md5(str(relative_plugin_dir).encode()).hexdigest()[:8]
+            module_name = f"_nanobee_plugins.{path_hash}.{name}"
             spec = importlib.util.spec_from_file_location(module_name, main_module)
             if spec is None or spec.loader is None:
                 logger.error("插件 {} 的文件无法加载为 Python 模块: {}", name, main_module)
@@ -170,8 +173,8 @@ class PluginManager:
             logger.info("插件 {} 加载成功", name)
             return plugin_instance
 
-        except Exception as e:
-            logger.exception(f"加载插件 {name} 失败: {e}")
+        except Exception:
+            logger.exception("加载插件 {name} 失败", name=name)
             return None
 
     def _find_plugin_class(self, module: Any, plugin_type: str) -> Type[NanobeePlugin] | None:

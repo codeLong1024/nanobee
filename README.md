@@ -19,7 +19,7 @@
 
 ## 项目状态
 
-**版本 v0.1.0** — 核心框架（微内核、Agent 引擎、LLM Provider、插件体系）已通过 **517 个单元测试**验证。
+**版本 v0.1.0** — 核心框架（微内核、Agent 引擎、LLM Provider、插件体系）已通过 **532 个单元测试**验证。
 
 ```
 Kernel 内核     ████████████████████████████████  95%
@@ -41,25 +41,23 @@ CLI 命令        ████████████████████�
 - **技能管理** — SkillsLoader 双源发现（内置技能 `nanobee/skills/` + per-user 技能 `users/<user_id>/skills/`），SKILL.md frontmatter 驱动渐进/全量注入策略。内置 `_memory`（记忆策略，`full_inject: true`声明全量注入）、`skill_creator`（技能创建教程，渐进式注入，LLM 按需读取）
 - **内置 Skill** — 框架打包 `nanobee/skills/`，只读不可覆盖，同时加入沙箱只读根白名单，LLM 可通过 `read_file` 读取参考格式。标记 `full_inject: true` 的技能全量注入 system prompt，普通技能仅注入元数据 + 文件绝对路径，由 LLM 按需读取
 - **Sandbox 多根白名单** — ContextSandbox 从单根扩展为可读写根 + 只读根列表。写操作（write_file/edit_file）仅限 context_root 内，读操作（read_file/list_dir）可访问所有白名单根。内置技能目录自动加入只读白名单
+- **Overlay 文件系统** — tool_fs 支持前缀级只读回退：LLM 读取 `skills/` 目录时，如果用户目录文件不存在，自动回退到内置技能目录。用户修改无需修改框架代码，通过 write_file 自主覆盖同名文件即生效。LLM 透明，零感知
 - **ProcessWorkspace 进程级隔离** — 框架层定义"子进程可访问目录边界"(ProcessWorkspace)，与路径校验边界(ContextSandbox)解耦。tool_shell 通过 ContextVar 读取窄 workspace(=workspace/)，bwrap 以 `--tmpfs $HOME` 掩藏整个用户主目录，子进程仅暴露工作区目录
 - **上下文管理** — 按用户物理隔离的目录结构（identity.yaml / .history/ / workspace/ / memory/ / .tmp/），框架通过 ContextVar 按请求向插件注入 `self.tmp`（临时目录）和 `self.context_root`（用户根目录），插件自管清理和持久化子目录创建
 - **灵魂守卫** — 三层保护（chmod 444 + 写入拦截 Hook + SHA-256 哈希校验）
 - **插件管理器** — 扫描、加载（含依赖拓扑排序）、启用/禁用/卸载生命周期
 - **LLM Provider** — Anthropic、OpenAI、Azure、Bedrock、GitHub Copilot、OpenAI 兼容接口、30+ 模型规格注册
 - **MCP 桥接** — 连接 MCP 服务器注册工具，支持 stdio / SSE / Streamable HTTP 三种传输协议
-- **CLI 命令** — `nanobee run`（轻量级 Agent CLI 模式，支持 `-m` 单次消息和 `-s` 会话 ID）、`nanobee gateway`（完整服务栈，通道 + 健康端点）、`plugin list`/`create`/`enable`/`disable` 完整实现、`hub` 子命令🚧
+- **CLI 命令** — `nanobee run`（轻量级 Agent CLI 模式，支持 `-m` 单次消息和 `-s` 会话 ID）、`nanobee gateway`（完整服务栈，通道 + 健康端点）、`plugin list`/`create`/`enable`/`disable` 完整实现
 - **CLI/Gateway 职责分离** — 借鉴 nanobot 设计哲学：`boot()` 只做核心启动，`boot_services()` 启动后台服务。`nanobee run` 轻量无后台，`nanobee gateway` 启动完整服务栈
 - **max_iterations 配置化** — 支持从 `nanobee.yaml` 配置 LLM 最大对话循环次数（默认 10）
 - **OpenAI 兼容 HTTP API** — `POST /v1/chat/completions`（SSE 流式 + JSON 非流式）、`GET /v1/models`、API Key 认证，支持 LobeChat 等第三方客户端连接
+- **信号守卫（Signal Guard）** — `run_signal_guard()` 注册 SIGINT/SIGTERM asyncio 信号处理器，收到终止信号后自动触发 `Kernel.shutdown()` 优雅退出（停止 AgentLoop / 关闭通道 / 卸载插件），替代 nanobot 缺失的 SIGTERM 处理能力
 - **Pipeline 声明式注入** — SkillStage 由 SKILL.md frontmatter 的 `full_inject` 标记驱动：标记为 true 的技能全量注入 body，其余仅注入元数据。从根源杜绝注入攻击（恶意 body 不进入 system prompt）
 - **安全模块** — SSRF 前置拦截（DNS 解析 + 私有 IP 校验 + IPv6-mapped IPv4 标准化）、CIDR 白名单、shell 命令内网 URL 检测（`contains_internal_url`）、路径边界工具函数（多 root 支持）
 - **实例级插件隔离** — 每个 Gateway 实例通过独立 `config.yaml` 的 `plugins.<name>.enabled` 控制加载的插件组合（config.yaml > plugin.toml > 默认 True），不同实例可配置不同的工具集
 
 ### 尚不完整的功能
-
-| 模块 | 说明 | 优先级 |
-|------|------|--------|
-| `cli/hub.py` | `search/install/uninstall` 子命令仅有 echo 占位 | 低 |
 
 ## 快速开始
 
@@ -91,6 +89,11 @@ nanobee run -c /path/to/config.yaml
 # 完整 Gateway 服务栈模式（生产部署：通道 + 健康端点）
 nanobee gateway
 nanobee gateway --port 8080           # 带健康检查 HTTP 端点
+
+# Gateway 支持优雅退出（收到 SIGTERM/SIGINT 自动清理后退出）
+# 适合搭配 systemd / Docker / kill 命令使用
+nanobee gateway &
+kill $!    # SIGTERM → 优雅关闭通道 + 保存状态 → 退出
 ```
 
 ### Windows
@@ -176,7 +179,7 @@ ChannelPlugin ──▶ EventBus ──▶ NanobeeKernel
 | `SoulGuard` | 灵魂文件三层保护 |
 | `LockManager` | 按用户粒度的 asyncio 并发锁 |
 | `ContextRouter` | 多租户路由（`channel:chat_id` → `user_id`） |
-| `ContextSandbox` | 多根沙箱 — 写操作仅限 context_root，读操作用于多根白名单（如内置技能只读目录），防御 `../` 逃逸 |
+| `ContextSandbox` | 多根沙箱 — 写操作仅限 context_root，读操作用于多根白名单（如内置技能只读目录），防御 `../` 逃逸。内置技能目录自动加入只读根，tool_fs 的 Overlay 文件系统在此基础上实现 `skills/` 前缀级别自动回退 |
 | `ProcessWorkspace` | 子进程执行边界 — 与 ContextSandbox（路径校验边界）解耦，tool_shell 使用此边界做 bwrap mount namespace 隔离 |
 | `context_sandbox_var` | ContextVar 注入：bind_sandbox/bind_tmp/bind_context_root/bind_process_workspace 及对应 reset/current 函数 |
 | `ToolCollector` | 工具白/黑名单双重过滤 |
@@ -190,6 +193,7 @@ ChannelPlugin ──▶ EventBus ──▶ NanobeeKernel
                         · full_inject=true：全量注入 body（如 _memory 记忆策略）
                         · full_inject=false：渐进式注入（仅 name/description 元数据 + 文件**绝对路径**，LLM 直接 read_file 读取正文）
                         · 同名技能双方都展示，标注 [builtin] / [user] 来源
+                        · tool_fs 的 Overlay 文件系统自动回退：LLM 读取 skills/ 文件时，用户目录无文件则自动读取内置版
 [P??] 插件段           ← 遍历插件 contribute_to_prompt → 按 plugin_type 生成段标题
                         · 由插件 stage/plugin_type 决定，不做固定顺序
 [P90] FinalGuard 段    ← 不可绕过的优先级规则段（始终在最后）
@@ -240,7 +244,7 @@ class MyPlugin(ToolPlugin):
 | `channel_http` | Channel | ✅ 完整 | OpenAI 兼容 HTTP API（/v1/chat/completions、/v1/models），支持流式 SSE，API Key 认证 |
 | `channel_dingtalk` | Channel | ✅ 完整 | 钉钉机器人通道（Stream SDK + AI Card 流式输出 + 媒体文件收发与解析） |
 | `tool_echo` | Tool | ✅ 完整 | 回显测试工具 |
-| `tool_fs` | Tool | ✅ 完整 | 文件系统工具（read_file, write_file, edit_file, list_dir），L1/L2 防御纵深 |
+| `tool_fs` | Tool | ✅ 完整 | 文件系统工具（read_file, write_file, edit_file, list_dir），L1/L2 防御纵深，Overlay 文件系统（`skills/` 前缀自动回退到内置技能目录） |
 | `tool_shell` | Tool | ✅ 完整 | Shell 命令工具（execute_shell），双层安全守卫：deny 模式拦截危险命令 + bwrap 进程级沙箱（掩藏 $HOME 仅暴露 workspace/） |
 | `tool_web` | Tool | ✅ 完整 | Web 工具（web_search, web_fetch），含 HTML 清理、SSRF 保护 |
 | `tool_cron` | Tool | ✅ 完整 | Cron 定时任务（add, list, remove） |
@@ -302,7 +306,7 @@ class MyPlugin(NanobeePlugin):
 # 安装开发依赖
 pip install -e ".[dev]"
 
-# 运行全部测试（517 个用例）
+# 运行全部测试（532 个用例）
 python -m pytest tests/ -v --tb=short
 
 # 查看覆盖率
@@ -320,7 +324,7 @@ python -m pytest tests/ --cov=nanobee --cov-report=term-missing
 | `test_router.py` | 12 | 路由解析/降级/自定义 |
 | `test_sandbox.py` | 29 | 路径逃逸拦截/多根白名单/写隔离 |
 | `test_tool_collector.py` | 11 | 白/黑名单过滤 |
-| `test_tool_fs.py` | 21 | 文件系统工具（read/write/edit/list） |
+| `test_tool_fs.py` | 30 | 文件系统工具（read/write/edit/list）+ Overlay 回退 |
 | `test_phase1_acceptance.py` | 9 | 多租户隔离验收 |
 | `test_phase2_acceptance.py` | 17 | Hook 机制验收 |
 | `test_phase3_acceptance.py` | 9 | 参考插件 + SkillStage 验收（含内置 skill 注入，绝对路径白名单） |
@@ -338,6 +342,7 @@ python -m pytest tests/ --cov=nanobee --cov-report=term-missing
 | `test_tool_cron_isolation.py` | 9 | Cron 定时任务用户隔离 |
 | `test_tool_shell_sandbox.py` | 13 | Shell 沙箱路径逃逸拦截 |
 | `test_plugin_enabled_override.py` | 6 | config.yaml enabled 覆盖 plugin.toml 的实例隔离 |
+| `test_process.py` | 6 | 信号守卫（SIGINT/SIGTERM 触发、重复信号防抖、mock kernel shutdown、降级兜底） |
 | 其他 | 84+ | Run-level Hook、用户上下文、异常层次、钉钉文件等 |
 
 ## 项目结构
@@ -375,10 +380,9 @@ nanobee/
 │   ├── main.py           # Click 入口
 │   ├── run.py            # run 命令（轻量 Agent CLI，-m/-s 支持）
 │   ├── gateway.py        # gateway 命令（完整服务栈）
-│   ├── plugin.py         # plugin 子命令（list/create/enable/disable）
-│   └── hub.py            # hub 子命令 🚧 存根
+│   └── plugin.py         # plugin 子命令（list/create/enable/disable）
 ├── config/               # 配置加载
-├── kernel/               # 微内核核心（15 个模块）
+├── kernel/               # 微内核核心（16 个模块）
 │   ├── kernel.py         # NanobeeKernel
 │   ├── plugin_manager.py # 插件管理器
 │   ├── skill_manager.py  # 技能加载器 SkillsLoader（双源发现 + mtime 缓存）
@@ -392,7 +396,8 @@ nanobee/
 │   ├── context_pipeline.py # System Prompt 构建（含 FinalGuardStage）
 │   ├── user_context.py   # 用户上下文
 │   ├── event_bus.py      # 事件总线
-│   └── core_parser.py    # core.md 解析
+│   ├── core_parser.py    # core.md 解析
+│   └── process.py        # 进程管理（信号守卫 → 优雅退出）
 ├── plugins/              # 插件接口定义
 ├── providers/            # LLM Provider（6 个实现 + 注册表）
 ├── security/             # 安全策略（SSRF 防护 + 路径边界工具）
@@ -413,6 +418,7 @@ nanobee 从 [nanobot](https://github.com/HKUDS/nanobot) 衍生开发，核心差
 |------|---------|---------|
 | 架构哲学 | 大而全（内置记忆/梦境/人设） | 极简微内核（路由/隔离/拼装） |
 | CLI/Gateway 分离 | `agent` + `gateway` 双模式 | ✅ 已复刻：`run` 轻量 + `gateway` 完整服务栈 |
+| 优雅退出 | 无 SIGTERM handler（`KeyboardInterrupt` 兜底） | ✅ `run_signal_guard()` 注册 SIGINT/SIGTERM asyncio 处理器，`Kernel.shutdown()` 完整清理 |
 | 记忆策略 | 框架内置多种算法 | 内置 `_memory` Skill（LLM 自主管理），用户可覆盖自定义 |
 | 技能管理 | 框架内置 CRUD | 文件驱动 SkillsLoader（builtin/ + users/<user_id>/skills/），用户通过 write_file 自主管理 |
 | 隔离机制 | 逻辑隔离 | 物理隔离 + 沙箱 + 锁 |

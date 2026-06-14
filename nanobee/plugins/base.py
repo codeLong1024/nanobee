@@ -26,6 +26,9 @@ class PluginMetadata(BaseModel):
     plugin_type: str = "unknown"  # tool | channel | memory | skill | dream
     dependencies: list[str] = Field(default_factory=list)
     permissions: list[str] = Field(default_factory=list)
+    throttle_group: str = ""  # 节流分组标识，同组工具共享节流计数
+    exec_capable: bool = False  # 是否具备命令执行能力（用于工作区逃逸检测）
+    file_edit_capability: bool = False  # 是否具备文件编辑能力（用于进度追踪）
 
 
 class NanobeePlugin(PluginHookMixin, ABC):

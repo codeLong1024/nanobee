@@ -18,6 +18,7 @@ import click
 
 from nanobee.config.loader import load_config
 from nanobee.kernel import NanobeeKernel
+from nanobee.kernel.process import run_signal_guard
 from nanobee.providers.factory import make_provider
 from nanobee.utils.logger import logger
 from nanobee.utils.observability import setup_structured_logging
@@ -137,32 +138,30 @@ def _run_gateway(
 
         click.echo("")
 
+        # 信号守卫：等待 SIGINT/SIGTERM 后优雅退出
+        guard_task = asyncio.create_task(run_signal_guard())
+        health_task_list = [asyncio.create_task(h) for h in health_tasks]
+
         try:
-            # 运行 Gateway 主循环
-            await asyncio.gather(
-                _gateway_loop(kernel),
-                *health_tasks,
+            done, pending = await asyncio.wait(
+                [guard_task, *health_task_list],
+                return_when=asyncio.FIRST_COMPLETED,
             )
         except KeyboardInterrupt:
             click.echo("\n正在关闭 Gateway...")
         except Exception:
             logger.exception("Gateway 异常退出")
         finally:
+            # 取消正在运行的健康检查任务
+            for task in health_task_list:
+                if not task.done():
+                    task.cancel()
+            if health_task_list:
+                await asyncio.gather(*health_task_list, return_exceptions=True)
             await kernel.shutdown()
             click.echo("👋 Gateway 已停止")
 
     asyncio.run(_run())
-
-
-async def _gateway_loop(kernel: NanobeeKernel) -> None:
-    """Gateway 主循环
-
-    保持进程运行，处理通道消息。
-    通道插件通过 boot_services() 启动后，
-    在后台独立运行事件循环。
-    """
-    while True:
-        await asyncio.sleep(1)
 
 
 async def _health_server(host: str, health_port: int) -> None:

@@ -366,3 +366,175 @@ class TestToolDefinitions:
     #         assert result == inside.resolve()
     #     finally:
     #         reset_sandbox(token)
+
+
+# ---- Overlay 回退测试（通过沙箱 resolve_with_fallback） ----
+
+
+def _with_sandbox(
+    tmp_path: Path,
+    *,
+    prefix_map: dict[str, Path] | None = None,
+    read_only: list[Path] | None = None,
+) -> object:
+    """创建并绑定测试沙箱到 ContextVar，返回 token（用于 finally reset）"""
+    from nanobee.kernel.context_sandbox_var import bind_sandbox
+    sandbox = ContextSandbox(
+        tmp_path,
+        read_only_roots=read_only,
+        prefix_map=prefix_map,
+    )
+    return bind_sandbox(sandbox)
+
+
+class TestOverlayFallback:
+    """验证 read_file / list_dir 的 overlay 回退逻辑（沙箱注入模式）"""
+
+    def test_read_fallback_to_builtin(self, tmp_path: Path):
+        """read_file 用户目录没有，内置目录有 → 回退读取内置版"""
+        builtin_parent = tmp_path / "builtin_skills"
+        builtin_skills = builtin_parent / "skills"
+        builtin_skills.mkdir(parents=True)
+        builtin_file = builtin_skills / "builtin_guide.md"
+        builtin_file.write_text("# Builtin Skill\nbuiltin content", encoding="utf-8")
+
+        plugin = _create_plugin(tmp_path)
+        token = _with_sandbox(tmp_path, prefix_map={"skills/": builtin_skills})
+        try:
+            result = _run_async(plugin.execute_tool("read_file", path="skills/builtin_guide.md"))
+        finally:
+            from nanobee.kernel.context_sandbox_var import reset_sandbox
+            reset_sandbox(token)
+
+        assert "Builtin Skill" in result
+        assert "builtin content" in result
+
+    def test_read_user_overrides_builtin(self, tmp_path: Path):
+        """read_file 用户目录有同名文件 → 读用户版，不回退"""
+        builtin_parent = tmp_path / "builtin_skills"
+        builtin_skills = builtin_parent / "skills"
+        builtin_skills.mkdir(parents=True)
+        builtin_file = builtin_skills / "guide.md"
+        builtin_file.write_text("builtin content", encoding="utf-8")
+
+        user_skills = tmp_path / "skills"
+        user_skills.mkdir()
+        user_file = user_skills / "guide.md"
+        user_file.write_text("user content", encoding="utf-8")
+
+        plugin = _create_plugin(tmp_path)
+        token = _with_sandbox(tmp_path, prefix_map={"skills/": builtin_skills})
+        try:
+            result = _run_async(plugin.execute_tool("read_file", path="skills/guide.md"))
+        finally:
+            from nanobee.kernel.context_sandbox_var import reset_sandbox
+            reset_sandbox(token)
+
+        assert "user content" in result
+        assert "builtin" not in result
+
+    def test_read_overlay_no_fallback_no_user_file(self, tmp_path: Path):
+        """read_file 用户和内置都没有 → 报错"""
+        builtin_parent = tmp_path / "builtin_skills"
+        builtin_skills = builtin_parent / "skills"
+        builtin_skills.mkdir(parents=True)
+
+        plugin = _create_plugin(tmp_path)
+        token = _with_sandbox(tmp_path, prefix_map={"skills/": builtin_skills})
+        try:
+            result = _run_async(plugin.execute_tool("read_file", path="skills/nonexistent.md"))
+        finally:
+            from nanobee.kernel.context_sandbox_var import reset_sandbox
+            reset_sandbox(token)
+
+        assert "错误" in result
+        assert "不存在" in result
+
+    def test_read_no_overlay_configured(self, tmp_path: Path):
+        """read_file 无 overlay 配置时不回退"""
+        plugin = _create_plugin(tmp_path)
+        result = _run_async(plugin.execute_tool("read_file", path="skills/nonexistent.md"))
+
+        assert "错误" in result
+        assert "不存在" in result
+
+    def test_list_dir_fallback_to_builtin(self, tmp_path: Path):
+        """list_dir 用户目录不存在 → 回退列出内置目录"""
+        builtin_parent = tmp_path / "builtin_skills"
+        builtin_skills = builtin_parent / "skills"
+        builtin_skills.mkdir(parents=True)
+        (builtin_skills / "_memory").mkdir()
+        (builtin_skills / "skill_creator").mkdir()
+
+        plugin = _create_plugin(tmp_path)
+        token = _with_sandbox(tmp_path, prefix_map={"skills/": builtin_skills})
+        try:
+            result = _run_async(plugin.execute_tool("list_dir", path="skills"))
+        finally:
+            from nanobee.kernel.context_sandbox_var import reset_sandbox
+            reset_sandbox(token)
+
+        assert "_memory" in result
+        assert "skill_creator" in result
+
+    def test_list_dir_no_overlay_fallback(self, tmp_path: Path):
+        """list_dir 用户和内置都没有 → 报错"""
+        builtin_parent = tmp_path / "builtin_skills"
+        builtin_skills = builtin_parent / "skills"
+        builtin_skills.mkdir(parents=True)
+
+        plugin = _create_plugin(tmp_path)
+        token = _with_sandbox(tmp_path, prefix_map={"skills/": builtin_skills})
+        try:
+            result = _run_async(plugin.execute_tool("list_dir", path="nonexistent_dir"))
+        finally:
+            from nanobee.kernel.context_sandbox_var import reset_sandbox
+            reset_sandbox(token)
+
+        assert "错误" in result
+        assert "不存在" in result
+
+    def test_read_overlay_deep_nested_file(self, tmp_path: Path):
+        """read_file 回退读取多级嵌套文件"""
+        builtin_parent = tmp_path / "builtin_skills"
+        builtin_skills = builtin_parent / "skills"
+        nested = builtin_skills / "_memory"
+        nested.mkdir(parents=True)
+        nested_file = nested / "SKILL.md"
+        nested_file.write_text("---\nname: _memory\n---\n\n# Memory Skill", encoding="utf-8")
+
+        plugin = _create_plugin(tmp_path)
+        token = _with_sandbox(tmp_path, prefix_map={"skills/": builtin_skills})
+        try:
+            result = _run_async(plugin.execute_tool("read_file", path="skills/_memory/SKILL.md"))
+        finally:
+            from nanobee.kernel.context_sandbox_var import reset_sandbox
+            reset_sandbox(token)
+
+        assert "name: _memory" in result
+        assert "Memory Skill" in result
+
+    def test_read_file_desc_mentions_overlay(self):
+        """_read_file_desc 提及 overlay 回退"""
+        plugin = _create_plugin()
+        desc = plugin._read_file_desc()
+        assert "自动回退" in desc or "内置" in desc
+
+    def test_overlay_non_skills_prefix(self, tmp_path: Path):
+        """非 skills 前缀路径不触发 overlay 回退"""
+        builtin_parent = tmp_path / "builtin_dir"
+        builtin_skills = builtin_parent / "skills"
+        builtin_skills.mkdir(parents=True)
+        builtin_file = builtin_skills / "config.yaml"
+        builtin_file.write_text("key: value", encoding="utf-8")
+
+        plugin = _create_plugin(tmp_path)
+        token = _with_sandbox(tmp_path, prefix_map={"skills/": builtin_skills})
+        try:
+            result = _run_async(plugin.execute_tool("read_file", path="config.yaml"))
+        finally:
+            from nanobee.kernel.context_sandbox_var import reset_sandbox
+            reset_sandbox(token)
+
+        assert "错误" in result
+        assert "不存在" in result

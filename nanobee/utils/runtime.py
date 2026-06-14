@@ -66,26 +66,49 @@ def build_length_recovery_message() -> dict[str, str]:
     return {"role": "user", "content": LENGTH_RECOVERY_PROMPT}
 
 
-def external_lookup_signature(tool_name: str, arguments: dict[str, Any]) -> str | None:
-    """Stable signature for repeated external lookups we want to throttle."""
-    if tool_name == "web_fetch":
-        url = str(arguments.get("url") or "").strip()
-        if url:
-            return f"web_fetch:{url.lower()}"
-    if tool_name == "web_search":
-        query = str(arguments.get("query") or arguments.get("search_term") or "").strip()
-        if query:
-            return f"web_search:{query.lower()}"
+def _extract_lookup_key(tool_name: str, arguments: dict[str, Any]) -> str | None:
+    """从工具参数中提取标准化查找键，工具无关，只关心参数中的 URL/query。"""
+    url = str(arguments.get("url") or "").strip()
+    if url:
+        return url.lower()
+    query = str(arguments.get("query") or arguments.get("search_term") or "").strip()
+    if query:
+        return query.lower()
     return None
+
+
+def external_lookup_signature(
+    tool_name: str,
+    arguments: dict[str, Any],
+    throttled_tools: dict[str, str],
+) -> str | None:
+    """Stable signature for repeated external lookups we want to throttle.
+
+    Args:
+        tool_name: 工具名称
+        arguments: 工具参数
+        throttled_tools: 工具名→节流组名的映射，由调用方从插件元数据构建。
+
+    Returns:
+        节流签名 ``{group}:{key}``，不匹配时返回 None。
+    """
+    group = throttled_tools.get(tool_name)
+    if group is None:
+        return None
+    key = _extract_lookup_key(tool_name, arguments)
+    if key is None:
+        return None
+    return f"{group}:{key}"
 
 
 def repeated_external_lookup_error(
     tool_name: str,
     arguments: dict[str, Any],
     seen_counts: dict[str, int],
+    throttled_tools: dict[str, str],
 ) -> str | None:
     """Block repeated external lookups after a small retry budget."""
-    signature = external_lookup_signature(tool_name, arguments)
+    signature = external_lookup_signature(tool_name, arguments, throttled_tools)
     if signature is None:
         return None
     count = seen_counts.get(signature, 0) + 1
@@ -111,14 +134,21 @@ _OUTSIDE_PATH_PATTERN = re.compile(r"(?:^|[\s|>'\"])((?:/[^\s\"'>;|<]+)|(?:~[^\s
 def workspace_violation_signature(
     tool_name: str,
     arguments: dict[str, Any],
+    exec_capable_tools: set[str],
 ) -> str | None:
-    """Return a stable cross-tool signature for the outside-workspace target."""
+    """Return a stable cross-tool signature for the outside-workspace target.
+
+    Args:
+        tool_name: 工具名称
+        arguments: 工具参数
+        exec_capable_tools: 具有命令执行能力的工具名集合，由调用方从插件元数据构建。
+    """
     for key in ("path", "file_path", "target", "source", "destination"):
         val = arguments.get(key)
         if isinstance(val, str) and val.strip():
             return _normalize_violation_target(val.strip())
 
-    if tool_name in {"exec", "shell"}:
+    if tool_name in exec_capable_tools:
         cmd = str(arguments.get("command") or "").strip()
         if cmd:
             match = _OUTSIDE_PATH_PATTERN.search(cmd)
@@ -144,9 +174,10 @@ def repeated_workspace_violation_error(
     tool_name: str,
     arguments: dict[str, Any],
     seen_counts: dict[str, int],
+    exec_capable_tools: set[str],
 ) -> str | None:
     """Return an escalated error after repeated bypass attempts."""
-    signature = workspace_violation_signature(tool_name, arguments)
+    signature = workspace_violation_signature(tool_name, arguments, exec_capable_tools)
     if signature is None:
         return None
     count = seen_counts.get(signature, 0) + 1

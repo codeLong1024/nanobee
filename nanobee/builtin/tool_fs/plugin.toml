@@ -4,6 +4,7 @@ version = "1.0.0"
 description = "文件系统工具：read_file, write_file, edit_file, list_dir"
 author = "nanobee-team"
 type = "tool"
+file_edit_capability = true
 
 [config]
 enabled = true

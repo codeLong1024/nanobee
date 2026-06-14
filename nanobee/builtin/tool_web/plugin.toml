@@ -4,6 +4,7 @@ version = "1.0.0"
 description = "Web 工具：web_search, web_fetch"
 author = "nanobee-team"
 type = "tool"
+throttle_group = "web"
 
 [config]
 enabled = false
