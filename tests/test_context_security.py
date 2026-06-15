@@ -17,8 +17,8 @@ async def test_context_isolation(tmp_path):
     # 模拟 kernel
     class MockKernel:
         def __init__(self):
-            self.config = {"work_dir": str(tmp_path)}
-            self.work_dir = tmp_path
+            self.config = {"data_dir": str(tmp_path)}
+            self.data_dir = tmp_path
             self.event_bus = None
 
     kernel = MockKernel()

@@ -56,7 +56,7 @@ class NanobeeKernel:
         if isinstance(config, dict):
             config = Config(**config)
         self.config = config or Config()
-        self.work_dir = Path(self.config.work_dir).expanduser()
+        self.data_dir = Path(self.config.data_dir).expanduser()
 
         # 核心组件
         self.event_bus = EventBus()              # 字符串 key 事件（供插件使用）
@@ -335,7 +335,7 @@ class NanobeeKernel:
 
         self._agent_loop = AgentLoop.from_kernel(
             provider=actual_provider,
-            workspace=self.work_dir,
+            workspace=self.data_dir,
             context_manager=self.context_manager,
             context_pipeline=self.context_pipeline,
             event_bus=self.event_bus,

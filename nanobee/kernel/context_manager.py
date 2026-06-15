@@ -29,9 +29,8 @@ class ContextManager:
         self.kernel = kernel
         self._contexts: dict[str, UserContext] = {}
 
-        # 用户基础目录（使用 kernel.work_dir，确保默认值一致）
-        work_dir = Path(kernel.work_dir).expanduser()
-        self.users_base_dir = work_dir / "users"
+        # 用户基础目录（使用 kernel.data_dir，确保默认值一致）
+        self.users_base_dir = Path(kernel.data_dir).expanduser() / "users"
         self.users_base_dir.mkdir(parents=True, exist_ok=True)
 
     async def get_or_create(self, user_id: str) -> UserContext:

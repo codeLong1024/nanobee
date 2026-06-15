@@ -49,7 +49,7 @@ def test_core_md_parser_hash(temp_core_md):
 async def test_kernel_boot(tmp_path):
     """测试内核启动"""
     config = {
-        "work_dir": str(tmp_path),
+        "data_dir": str(tmp_path),
         "core_md_path": str(tmp_path / "core.md"),
     }
 

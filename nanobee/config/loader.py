@@ -77,4 +77,10 @@ def load_config(config_path: Path | None = None) -> Config:
     config = Config(**raw)
     config.providers = providers
     config.model_presets = presets
+
+    # 将 logging.dir 解析为基于配置文件的绝对路径（消除 CWD 依赖）
+    if config_path is not None and config.logging.dir and not Path(config.logging.dir).is_absolute():
+        config_dir = config_path.resolve().parent
+        config.logging.dir = str((config_dir / config.logging.dir).resolve())
+
     return config

@@ -20,7 +20,7 @@ def plugin(tmp_path: Path) -> ToolCronPlugin:
 
     # 模拟 kernel
     kernel = MagicMock()
-    kernel.work_dir = str(tmp_path)
+    kernel.data_dir = str(tmp_path)
     # get_config 返回默认时区
     kernel.config.get.return_value.get.return_value.get.return_value = "UTC"
 

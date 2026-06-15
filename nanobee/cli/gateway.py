@@ -49,11 +49,18 @@ from nanobee.utils.observability import init_log_file_sink, setup_structured_log
     default=False,
     help="显示详细日志",
 )
+@click.option(
+    "--data-dir",
+    type=str,
+    help="覆盖配置中的 data_dir",
+    default=None,
+)
 def gateway(
     config: str | None,
     plugin_dir: str | None,
     port: int | None,
     verbose: bool,
+    data_dir: str | None,
 ) -> None:
     """启动 Gateway 服务（完整服务栈）
 
@@ -75,6 +82,10 @@ def gateway(
         if config_path:
             logger.debug("Auto-discovered config: {}", config_path)
     cfg = load_config(config_path)
+
+    # 命令行 --data-dir 覆盖配置
+    if data_dir is not None:
+        cfg.data_dir = data_dir
 
     # 根据配置添加 loguru 文件 sink（运行时日志自管理）
     log_cfg = getattr(cfg, "logging", None)

@@ -78,8 +78,8 @@ class ToolCronPlugin(ToolPlugin):
         """扫描 users 目录下已有的 cron 任务文件。"""
         if not self.kernel:
             return
-        work_dir = Path(self.kernel.work_dir).expanduser()
-        users_base = work_dir / "users"
+        data_dir = Path(self.kernel.data_dir).expanduser()
+        users_base = data_dir / "users"
         if not users_base.is_dir():
             return
         for user_dir in sorted(users_base.iterdir()):
@@ -139,8 +139,8 @@ class ToolCronPlugin(ToolPlugin):
             else:
                 # 回退：boot 阶段或非请求上下文
                 if self._cron_base_dir is None:
-                    work_dir = Path(self._kernel.work_dir) if self._kernel and hasattr(self._kernel, "work_dir") else Path.cwd()
-                    self._cron_base_dir = work_dir / "cron"
+                    data_dir = Path(self._kernel.data_dir) if self._kernel and hasattr(self._kernel, "data_dir") else Path.cwd()
+                    self._cron_base_dir = data_dir / "cron"
                     self._cron_base_dir.mkdir(parents=True, exist_ok=True)
                 self._current_store_path = self._cron_base_dir / f"jobs_{user_id}.json"
             # 如果 user_id 变化或 _cron 未初始化，创建新的 CronService 实例

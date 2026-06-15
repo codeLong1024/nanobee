@@ -1,10 +1,9 @@
 # Nanobee 配置文件示例
 # 复制此文件为 nanobee.yaml 并填入你的 API 密钥
 
-# 插件目录（相对于工作目录，建议使用绝对路径或相对于 ~/.nanobee 的路径）
-# 内置插件会自动加载，无需手动配置
-# plugin_dirs:
-#   - ~/.nanobee/plugins
+# 数据目录（所有运行时数据的根目录，包括用户上下文、记忆、cron 任务等）
+# 相对路径基于配置文件所在目录解析
+data_dir: "~/.nanobee"
 
 agents:
   defaults:

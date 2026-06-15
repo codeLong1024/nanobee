@@ -35,7 +35,7 @@ def temp_core_md(tmp_path):
 async def test_enabled_override_false_disables_plugin(temp_core_md, tmp_path):
     """配置 plugins.foo.enabled=false 应阻止插件启用"""
     config = Config(
-        work_dir=str(tmp_path),
+        data_dir=str(tmp_path),
         core_md_path=str(temp_core_md),
         plugins={"foo": {"enabled": False}},
     )
@@ -60,7 +60,7 @@ async def test_enabled_override_false_disables_plugin(temp_core_md, tmp_path):
 async def test_enabled_override_true_enables_plugin(temp_core_md, tmp_path):
     """配置 plugins.foo.enabled=true 应允许插件启用"""
     config = Config(
-        work_dir=str(tmp_path),
+        data_dir=str(tmp_path),
         core_md_path=str(temp_core_md),
         plugins={"foo": {"enabled": True}},
     )
@@ -81,7 +81,7 @@ async def test_enabled_override_true_enables_plugin(temp_core_md, tmp_path):
 async def test_enabled_not_in_config_falls_back_to_plugin_toml(temp_core_md, tmp_path):
     """config.yaml 未配置 enabled 时，回退到 plugin.toml 的 enabled"""
     config = Config(
-        work_dir=str(tmp_path),
+        data_dir=str(tmp_path),
         core_md_path=str(temp_core_md),
         plugins={},
     )
@@ -102,7 +102,7 @@ async def test_enabled_not_in_config_falls_back_to_plugin_toml(temp_core_md, tmp
 async def test_enabled_not_in_config_and_plugin_toml_false_disables(temp_core_md, tmp_path):
     """plugin.toml 中 enabled=false 应阻止启用（无 config.yaml 覆盖时）"""
     config = Config(
-        work_dir=str(tmp_path),
+        data_dir=str(tmp_path),
         core_md_path=str(temp_core_md),
         plugins={},
     )
@@ -122,7 +122,7 @@ async def test_enabled_not_in_config_and_plugin_toml_false_disables(temp_core_md
 async def test_multiple_plugins_mixed_enabled(temp_core_md, tmp_path):
     """混合场景：config.yaml 禁用部分插件，其他保持默认"""
     config = Config(
-        work_dir=str(tmp_path),
+        data_dir=str(tmp_path),
         core_md_path=str(temp_core_md),
         plugins={
             "tool_shell": {"enabled": False},
@@ -155,7 +155,7 @@ async def test_enabled_override_with_real_plugin_manager(temp_core_md, tmp_path)
     使用真实 PluginManager（但插件目录为空，无插件可加载，不报错即可）。
     """
     config = Config(
-        work_dir=str(tmp_path),
+        data_dir=str(tmp_path),
         core_md_path=str(temp_core_md),
         # plugins 不为空，但实际无插件会被加载（空目录），不会触发错误
         plugins={"tool_shell": {"enabled": False}},

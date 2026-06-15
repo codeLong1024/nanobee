@@ -112,7 +112,7 @@ class Config(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    work_dir: str = "~/.nanobee"
+    data_dir: str = "~/.nanobee"
     core_md_path: str = "core.md"
     plugin_dirs: list[str] = []
     model_presets: dict[str, ModelPresetConfig] = {}

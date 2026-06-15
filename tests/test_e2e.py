@@ -89,7 +89,7 @@ class EchoToolPlugin(ToolPlugin):
     (tool_echo_dir / "__init__.py").write_text("from .plugin import EchoToolPlugin\n", encoding="utf-8")
 
     config = {
-        "work_dir": str(tmp_path),
+        "data_dir": str(tmp_path),
         "core_md_path": str(tmp_path / "core.md"),
         "plugin_dirs": [str(builtin_dir)],
     }
@@ -129,7 +129,7 @@ class EchoToolPlugin(ToolPlugin):
 async def test_e2e_context_lifecycle(tmp_path):
     """测试上下文管理器的完整生命周期"""
     config = {
-        "work_dir": str(tmp_path),
+        "data_dir": str(tmp_path),
         "core_md_path": str(tmp_path / "core.md"),
     }
     CoreMDParser.create_default(tmp_path / "core.md")
@@ -166,7 +166,7 @@ async def test_e2e_context_lifecycle(tmp_path):
 async def test_e2e_soul_guard(tmp_path):
     """测试灵魂守卫的三层防护"""
     config = {
-        "work_dir": str(tmp_path),
+        "data_dir": str(tmp_path),
         "core_md_path": str(tmp_path / "core.md"),
     }
     CoreMDParser.create_default(tmp_path / "core.md")
