@@ -101,6 +101,8 @@ class TurnContext:
 
     pending_queue: asyncio.Queue | None = None
 
+    extra_hook: Any = None
+
     turn_wall_started_at: float = field(default_factory=time.time)
     turn_latency_ms: int | None = None
 
@@ -526,6 +528,7 @@ class AgentLoop:
         on_stream_end: Callable[..., Awaitable[None]] | None = None,
         on_retry_wait: Callable[[str], Awaitable[None]] | None = None,
         pending_queue: asyncio.Queue | None = None,
+        extra_hook: Any = None,
     ) -> tuple[str | None, list[str], list[dict], str, bool]:
         """运行 Agent 迭代循环（LLM 调用 + 工具执行）。
 
@@ -546,9 +549,12 @@ class AgentLoop:
                     break
             return items
 
-        hook: AgentHook = AgentHook()
-        if self._extra_hooks:
-            hook = CompositeHook(list(self._extra_hooks))
+        # 组装 hook：实例级 hooks（如 SDKCaptureHook）+ 请求级 extra_hook（如 StreamBridgeHook）
+        # 使用请求级显式组合替代全局共享列表 append/remove，避免并发串台
+        hooks: list[AgentHook] = list(self._extra_hooks or [])
+        if extra_hook is not None:
+            hooks.append(extra_hook)
+        hook = CompositeHook(hooks) if hooks else AgentHook()
 
         # 构造插件 Hook 闭包列表（on_pre_invoke / on_post_invoke）
         plugin_hooks: PluginHooks | None = None
@@ -689,6 +695,7 @@ class AgentLoop:
         on_stream: Callable[[str], Awaitable[None]] | None = None,
         on_stream_end: Callable[..., Awaitable[None]] | None = None,
         pending_queue: asyncio.Queue | None = None,
+        extra_hook: Any = None,
     ) -> OutboundMessage | None:
         """处理单条入站消息，通过状态机驱动。"""
         # 刷新 provider 快照
@@ -704,6 +711,7 @@ class AgentLoop:
             on_stream=on_stream,
             on_stream_end=on_stream_end,
             pending_queue=pending_queue,
+            extra_hook=extra_hook,
         )
         # 设置当前协程的 Trace ID，贯穿整个处理链路
         set_trace_id(ctx.trace_id)
@@ -893,6 +901,7 @@ class AgentLoop:
                 on_stream=ctx.on_stream,
                 on_stream_end=ctx.on_stream_end,
                 pending_queue=ctx.pending_queue,
+                extra_hook=ctx.extra_hook,
             )
         finally:
             if _sandbox_token is not None:

@@ -277,9 +277,6 @@ class NanobeeKernel:
             metadata=metadata or {},
         )
 
-        if extra_hook is not None:
-            self._agent_loop._extra_hooks.append(extra_hook)
-
         agent = self._agent_loop
         try:
             # 使用串行锁 + 待处理队列，同 _dispatch 设计
@@ -291,7 +288,9 @@ class NanobeeKernel:
                 async with agent._lock_manager.acquire(key):
                     try:
                         response = await agent._process_message(
-                            msg, pending_queue=pending,
+                            msg,
+                            pending_queue=pending,
+                            extra_hook=extra_hook,
                         )
                     except asyncio.CancelledError:
                         raise
@@ -318,8 +317,7 @@ class NanobeeKernel:
 
             return response
         finally:
-            if extra_hook is not None and extra_hook in agent._extra_hooks:
-                agent._extra_hooks.remove(extra_hook)
+            pass
 
 
 
