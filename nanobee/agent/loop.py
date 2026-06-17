@@ -266,6 +266,9 @@ class AgentLoop:
         # 从配置中提取 context_window_tokens（如果未在 extra 中指定）
         if "context_window_tokens" not in extra:
             extra["context_window_tokens"] = defaults.context_window_tokens
+        # 传递 MCP 服务器配置
+        if "mcp_servers" not in extra and hasattr(cfg, "mcp_servers"):
+            extra["mcp_servers"] = cfg.mcp_servers
 
         return cls(
             provider=provider,

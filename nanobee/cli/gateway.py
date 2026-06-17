@@ -28,7 +28,7 @@ from nanobee.utils.observability import init_log_file_sink, setup_structured_log
 @click.command()
 @click.option(
     "-c", "--config",
-    type=click.Path(exists=True, dir_okay=False, file_okay=True),
+    type=click.Path(dir_okay=False, file_okay=True),
     help="配置文件路径 (YAML 格式)",
 )
 @click.option(
@@ -67,7 +67,7 @@ def gateway(
     启动所有已启用的通道插件和健康检查端点。
     适用于生产部署。
     """
-    log_level = logging.DEBUG if verbose else logging.WARNING
+    log_level = logging.DEBUG if verbose else logging.INFO
     setup_structured_logging(level=log_level)
     logger.debug("Gateway 命令已启动，verbose={}", verbose)
 
@@ -91,7 +91,6 @@ def gateway(
     log_cfg = getattr(cfg, "logging", None)
     if log_cfg is not None:
         init_log_file_sink(log_cfg.model_dump() if hasattr(log_cfg, "model_dump") else log_cfg)
-
     # 运行 Gateway 服务
     _run_gateway(cfg, plugin_dir, cfg.plugin_dirs, port=port)
 
@@ -116,7 +115,7 @@ def _run_gateway(
         provider = make_provider(cfg)
         click.echo(f"  Provider 已初始化: {provider.__class__.__name__}")
 
-        # 确定插件目录
+        # 确定插件目录：默认相对于 nanobee 包位置（兼容 pip install 和 tar 部署）
         kernel_config = dict(cfg)
         effective_plugin_dirs = []
         if plugin_dir:
@@ -124,14 +123,19 @@ def _run_gateway(
         elif config_plugin_dirs:
             effective_plugin_dirs = list(config_plugin_dirs)
         else:
-            effective_plugin_dirs = ["builtin", "plugins"]
+            _package_builtin = str(Path(__file__).resolve().parent.parent / "builtin")
+            effective_plugin_dirs = [_package_builtin]
+
+        logger.debug("插件目录: {}", effective_plugin_dirs)
 
         # 创建内核
         kernel = NanobeeKernel(config=kernel_config, plugin_dirs=effective_plugin_dirs)
         await kernel.boot_with_provider(provider, model=cfg.agents.defaults.model)
 
-        # 启动后台服务（通道插件）
+        # 启动后台服务（通道插件，作为后台任务不阻塞）
+        logger.debug("正在启动后台通道服务...")
         await kernel.boot_services()
+        logger.debug("后台通道服务已启动（后台任务）")
 
         click.echo("🚪 Nanobee Gateway 已启动")
         click.echo(f"  默认模型: {cfg.agents.defaults.model}")
@@ -147,6 +151,7 @@ def _run_gateway(
 
         # 启动健康检查 HTTP 服务器（可选）
         health_port = port or _resolve_health_port(cfg)
+        logger.debug("健康端口: {} (来自: config={}, CLI arg={})", health_port, _resolve_health_port(cfg), port)
         health_tasks = []
         if health_port:
             health_tasks.append(_health_server("127.0.0.1", health_port))
@@ -224,7 +229,8 @@ async def _health_server(host: str, health_port: int) -> None:
 
 def _resolve_health_port(cfg: Any) -> int | None:
     """从配置中解析健康检查端口"""
-    return getattr(cfg, "gateway", {}).get("port") if hasattr(cfg, "gateway") else None
+    gw = getattr(cfg, "gateway", None)
+    return gw.port if gw is not None else None
 
 
 def register(cli_group: click.Group) -> None:

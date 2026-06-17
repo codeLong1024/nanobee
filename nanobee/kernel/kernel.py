@@ -62,7 +62,9 @@ class NanobeeKernel:
         self.event_bus = EventBus()              # 字符串 key 事件（供插件使用）
         self.runtime_events = RuntimeEventBus()  # 类型化运行时事件（内核内部通知）
         self.metrics = MetricsCollector()
-        resolved_plugin_dirs = plugin_dirs or self.config.plugin_dirs or ["builtin", "plugins"]
+        # 默认插件目录：相对于 nanobee 包位置（兼容 pip install 和 tar 部署）
+        _package_builtin = str(Path(__file__).resolve().parent.parent / "builtin")
+        resolved_plugin_dirs = plugin_dirs or self.config.plugin_dirs or [_package_builtin]
         self.plugin_manager = PluginManager(self, resolved_plugin_dirs)
         self.context_manager = ContextManager(self)
         # 内置技能目录：nanobee/skills/
@@ -150,16 +152,36 @@ class NanobeeKernel:
 
         logger.info("正在启动 Nanobee 后台服务...")
 
-        # 1. 启动通道插件（跳过非 Gateway 安全的通道，如 CLI）
+        # 1. 启动通道插件（后台任务，不与健康服务器串行阻塞）
         channels = self.plugin_manager.get_by_type("channel")
+        self._channel_tasks: list[asyncio.Task] = []
+
+        def _log_channel_error(name: str) -> Any:
+            """返回一个 done callback，捕获通道任务异常并记录日志。"""
+            def _cb(t: asyncio.Task) -> None:
+                try:
+                    t.result()
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    logger.exception("通道 {} 后台任务异常退出", name)
+            return _cb
+
         for channel in channels:
             if not getattr(channel, "safe_for_gateway", True):
                 logger.info("通道 {} 跳过 Gateway 启动（交互式通道）", getattr(channel, "name", "?"))
                 continue
+            chan_name = getattr(channel, "name", "?")
             try:
-                await channel.start()
+                task = asyncio.create_task(channel.start())
+                task.add_done_callback(_log_channel_error(chan_name))
+                self._channel_tasks.append(task)
             except Exception:
-                logger.exception("通道插件 {} 启动失败，已跳过", getattr(channel, "name", "?"))
+                logger.exception("通道插件 {} 启动失败，已跳过", chan_name)
+
+        # 2. 主动连接 MCP 服务器（后台任务，不阻塞启动）
+        if self._agent_loop is not None:
+            asyncio.ensure_future(self._agent_loop._connect_mcp())
 
         self._services_started = True
         logger.info("Nanobee 后台服务启动完成")
@@ -415,6 +437,16 @@ class NanobeeKernel:
         channels = self.plugin_manager.get_by_type("channel")
         for channel in channels:
             await channel.stop()
+
+        # 等待后台通道任务退出（取消后等待 3s 超时兜底）
+        for task in getattr(self, "_channel_tasks", []):
+            if not task.done():
+                task.cancel()
+        if getattr(self, "_channel_tasks", []):
+            await asyncio.wait(
+                self._channel_tasks, timeout=3,
+                return_when=asyncio.ALL_COMPLETED,
+            )
 
         # 卸载所有插件
         self.plugin_manager.unload_all()

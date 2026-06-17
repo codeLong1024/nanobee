@@ -97,6 +97,12 @@ class LoggingConfig(Base):
     json_format: bool = False
 
 
+class GatewayConfig(Base):
+    """网关配置。"""
+
+    port: int = 8080
+
+
 class ToolsConfig(Base):
     """工具安全配置。"""
 
@@ -114,6 +120,7 @@ class Config(BaseModel):
 
     data_dir: str = "~/.nanobee"
     core_md_path: str = "core.md"
+    gateway: GatewayConfig = GatewayConfig()
     plugin_dirs: list[str] = []
     model_presets: dict[str, ModelPresetConfig] = {}
     agents: AgentsConfig = AgentsConfig()

@@ -236,7 +236,10 @@ class HTTPChannelPlugin(ChannelPlugin):
         logger.info("HTTP 通道模型: {}", self._model)
 
     async def start(self) -> None:
-        """启动 aiohttp HTTP 服务器。"""
+        """启动 aiohttp HTTP 服务器（检查 enabled 配置）。"""
+        if not self.get_config("enabled", False):
+            logger.info("HTTP 通道已禁用（enabled: false），跳过启动")
+            return
         host = self.get_config("host", "127.0.0.1")
         port = int(self.get_config("port", 8080))
 

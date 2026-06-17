@@ -27,6 +27,7 @@ class MCPServerConfig(BaseModel):
     command: str | None = None
     args: list[str] | None = None
     env: dict[str, str] | None = None
+    cwd: str | None = None
     enabled_tools: list[str] | None = None
     tool_timeout: int = 30
     headers: dict[str, str] | None = None
@@ -687,7 +688,7 @@ async def connect_mcp_servers(
                     and wrapped_name not in enabled_tools
                 ):
                     logger.debug(
-                        "MCP: skipping tool '%s' from server '%s' (not in enabledTools)",
+                        "MCP: skipping tool '{}' from server '{}' (not in enabledTools)",
                         wrapped_name,
                         name,
                     )
@@ -706,8 +707,8 @@ async def connect_mcp_servers(
                 unmatched_enabled_tools = sorted(enabled_tools - matched_enabled_tools)
                 if unmatched_enabled_tools:
                     logger.warning(
-                        "MCP server '%s': enabledTools entries not found: %s. Available raw names: %s. "
-                        "Available wrapped names: %s",
+                        "MCP server '{}': enabledTools entries not found: {}. Available raw names: {}. "
+                        "Available wrapped names: {}",
                         name,
                         ", ".join(unmatched_enabled_tools),
                         ", ".join(available_raw_names) or "(none)",
@@ -723,7 +724,7 @@ async def connect_mcp_servers(
                     registry.register(wrapper)
                     registered_count += 1
                     logger.debug(
-                        "MCP: registered resource '%s' from server '%s'", wrapper.name, name
+                        "MCP: registered resource '{}' from server '{}'", wrapper.name, name
                     )
             except Exception as e:
                 logger.debug("MCP server '{}': resources not supported or failed: {}", name, e)
@@ -741,7 +742,7 @@ async def connect_mcp_servers(
                 logger.debug("MCP server '{}': prompts not supported or failed: {}", name, e)
 
             logger.info(
-                "MCP server '%s': connected, %s capabilities registered", name, registered_count
+                "MCP server '{}': connected, {} capabilities registered", name, registered_count
             )
             return name, server_stack
 
