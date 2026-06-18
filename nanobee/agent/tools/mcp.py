@@ -579,7 +579,9 @@ class MCPPromptWrapper(_MCPWrapperBase):
 
 
 async def connect_mcp_servers(
-    mcp_servers: dict, registry: ToolRegistry
+    mcp_servers: dict,
+    registry: ToolRegistry,
+    default_cwd: str | None = None,
 ) -> dict[str, AsyncExitStack]:
     """Connect to configured MCP servers and register their tools, resources, prompts.
 
@@ -620,7 +622,7 @@ async def connect_mcp_servers(
                     command=command,
                     args=args,
                     env=env,
-                    cwd=cfg.cwd or None,
+                    cwd=cfg.cwd or default_cwd,
                 )
                 read, write = await server_stack.enter_async_context(stdio_client(params))
             elif transport_type == "sse":
@@ -835,6 +837,8 @@ async def _refresh_terminated_server(
     server_name: str,
     tool_name: str,
     stale_tool: Tool,
+    *,
+    default_cwd: str | None = None,
 ) -> Tool | None:
     """重新连接已终止的 MCP 服务器，返回刷新后的工具（或 None）。"""
     async with _reload_lock(manager):
@@ -859,7 +863,7 @@ async def _refresh_terminated_server(
         _close_server(manager, server_name)
 
         from nanobee.agent.tools.mcp import connect_mcp_servers
-        connected = await connect_mcp_servers({server_name: cfg}, registry)
+        connected = await connect_mcp_servers({server_name: cfg}, registry, default_cwd=default_cwd)
         manager._stacks.update(connected)
         _attach_reconnect_handlers(manager, registry, connected)
         manager._connected = bool(manager._stacks)
@@ -869,7 +873,13 @@ async def _refresh_terminated_server(
         return registry.get(tool_name)
 
 
-def _attach_reconnect_handlers(manager, registry: ToolRegistry, server_names) -> None:
+def _attach_reconnect_handlers(
+    manager,
+    registry: ToolRegistry,
+    server_names,
+    *,
+    default_cwd: str | None = None,
+) -> None:
     """为指定服务器的所有 MCP Wrapper 注入重连回调。"""
     async def reconnect(server_name: str, tool_name: str, stale_tool: Tool) -> Tool | None:
         return await _refresh_terminated_server(
@@ -878,6 +888,7 @@ def _attach_reconnect_handlers(manager, registry: ToolRegistry, server_names) ->
             server_name,
             tool_name,
             stale_tool,
+            default_cwd=default_cwd,
         )
 
     for server_name in server_names:

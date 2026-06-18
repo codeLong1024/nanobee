@@ -69,9 +69,23 @@ class TestMCPManagerConnect:
         mock_stacks = {"s1": AsyncMock()}
         with patch("nanobee.agent.tools.mcp.connect_mcp_servers", new=AsyncMock(return_value=mock_stacks)) as mock_connect:
             await mgr.connect(tools)
-            mock_connect.assert_awaited_once_with({"s1": {"type": "stdio", "command": "echo"}}, tools)
+            mock_connect.assert_awaited_once_with(
+                {"s1": {"type": "stdio", "command": "echo"}}, tools, default_cwd=None,
+            )
             assert mgr.connected
             assert mgr.stacks == mock_stacks
+
+    @pytest.mark.asyncio
+    async def test_connect_with_default_cwd(self):
+        """default_cwd 从 connect() 透传到 connect_mcp_servers。"""
+        mgr = MCPManager({"s1": {"type": "stdio", "command": "echo"}})
+        tools = ToolRegistry()
+        mock_stacks = {"s1": AsyncMock()}
+        with patch("nanobee.agent.tools.mcp.connect_mcp_servers", new=AsyncMock(return_value=mock_stacks)) as mock_connect:
+            await mgr.connect(tools, default_cwd="/tmp")
+            mock_connect.assert_awaited_once_with(
+                {"s1": {"type": "stdio", "command": "echo"}}, tools, default_cwd="/tmp",
+            )
 
     @pytest.mark.asyncio
     async def test_connect_failure_clears_stacks(self):

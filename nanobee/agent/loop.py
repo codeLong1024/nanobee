@@ -425,7 +425,7 @@ class AgentLoop:
 
     async def _connect_mcp(self) -> None:
         """连接配置的 MCP 服务器（委托给 MCPManager）。"""
-        await self.mcp.connect(self.tools)
+        await self.mcp.connect(self.tools, default_cwd=str(self.workspace))
 
     @property
     def _pending_queues(self) -> dict[str, asyncio.Queue]:
@@ -611,11 +611,6 @@ class AgentLoop:
 
         if result.stop_reason == "max_iterations":
             logger.warning("达到最大迭代次数 ({max_iter})", max_iter=self.max_iterations)
-            # 不通过 on_stream/on_stream_end 推送终止消息到卡片：
-            # 1) 卡片可能处于"工具调用中"暂停状态，推送可能失败
-            # 2) max_iterations 消息是系统通知而非 LLM 流式输出
-            # 让 _assemble_outbound 设置 _streamed=False，
-            # 通道看到后会通过常规 API（markdown）发送，确保用户收到。
         elif result.stop_reason == "error":
             logger.error("LLM 返回错误: {error}", error=(result.final_content or "")[:200])
 
@@ -767,9 +762,6 @@ class AgentLoop:
             new_content, image_only = extract_documents(msg.content, msg.media)
             ctx.msg = dataclasses.replace(msg, content=new_content, media=image_only)
             msg = ctx.msg
-
-        preview = msg.content[:80] + "..." if len(msg.content) > 80 else msg.content
-        logger.info("处理来自 {}:{} 的消息: {}", msg.channel, msg.sender_id, preview)
 
         # 灵魂校验
         if self.event_bus:
@@ -967,7 +959,7 @@ class AgentLoop:
         """组装并返回出站消息。"""
         ctx.outbound = self._assemble_outbound(
             ctx.msg, ctx.final_content, ctx.all_messages,
-            ctx.stop_reason, ctx.had_injections, ctx.on_stream,
+            ctx.stop_reason, ctx.had_injections,
             turn_latency_ms=ctx.turn_latency_ms,
         )
         return "ok"
@@ -981,7 +973,6 @@ class AgentLoop:
         all_msgs: list[dict[str, Any]],
         stop_reason: str,
         had_injections: bool,
-        on_stream: Callable[[str], Awaitable[None]] | None,
         *,
         turn_latency_ms: int | None = None,
     ) -> OutboundMessage | None:
@@ -996,12 +987,11 @@ class AgentLoop:
         logger.info("回复 {}: {}: {}", msg.channel, msg.sender_id, preview)
 
         meta = dict(msg.metadata or {})
-        # max_iterations 时强制不标记 _streamed，确保通道通过常规 API 发送终止消息
-        # （流式路径可能在 on_stream_end 为 None 时未实际发送消息）
-        if on_stream is not None and stop_reason not in {"error", "tool_error", "max_iterations"}:
-            meta["_streamed"] = True
         if turn_latency_ms is not None:
             meta["latency_ms"] = int(turn_latency_ms)
+        # 写入客观终止原因（如 completed / max_iterations / error），
+        # 通道据此决策：max_iterations 时卡片内容可能不完整，需追加通知。
+        meta["stop_reason"] = stop_reason
 
         # 收集 message 工具调用中的 media 路径
         from nanobee.agent.tools.message import collect_message_tool_media

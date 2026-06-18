@@ -53,6 +53,8 @@ providers:
 #     type: "stdio"
 #     command: "npx"
 #     args: ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/dir"]
+#     # 可选：进程工作目录（默认回退到 data_dir，避免文件导出到 CWD）
+#     # cwd: "/path/to/workdir"
 #     # 可选：只启用特定工具
 #     # enabled_tools: ["read_file", "write_file"]
 #     # 工具调用超时时间（秒）

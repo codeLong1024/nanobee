@@ -45,7 +45,7 @@ class MCPManager:
         """是否有配置的 MCP 服务器。"""
         return bool(self._servers)
 
-    async def connect(self, tools: ToolRegistry) -> None:
+    async def connect(self, tools: ToolRegistry, *, default_cwd: str | None = None) -> None:
         """懒加载连接配置的 MCP 服务器。
 
         幂等：已连接或连接中时跳过。
@@ -53,6 +53,8 @@ class MCPManager:
 
         Args:
             tools: 工具注册表，MCP 工具将注册到此注册表
+            default_cwd: MCP stdio 进程的默认工作目录，未配置 cwd 时使用
+                         通常传入 data_dir，避免文件导出到任意 CWD
         """
         if self._connected or self._connecting or not self._servers:
             return
@@ -62,10 +64,10 @@ class MCPManager:
 
         try:
             logger.info("MCP: 开始连接 {count} 个服务器", count=len(self._servers))
-            self._stacks = await connect_mcp_servers(self._servers, tools)
+            self._stacks = await connect_mcp_servers(self._servers, tools, default_cwd=default_cwd)
             if self._stacks:
                 self._connected = True
-                _attach_reconnect_handlers(self, tools, self._stacks)
+                _attach_reconnect_handlers(self, tools, self._stacks, default_cwd=default_cwd)
                 logger.info("MCP: 成功连接 {count} 个服务器", count=len(self._stacks))
             else:
                 logger.warning("MCP: 没有 MCP 服务器成功连接（下次消息时重试）")
