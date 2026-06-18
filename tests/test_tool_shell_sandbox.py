@@ -327,6 +327,9 @@ def test_wrap_sandbox_empty_config(plugin: ToolShellPlugin):
 
 def test_wrap_sandbox_bwrap_not_installed(plugin: ToolShellPlugin, tmp_path: Path):
     """bwrap 未安装时优雅降级"""
+    import shutil
+    if shutil.which("bwrap"):
+        pytest.skip("bwrap 已安装，跳过降级测试")
     plugin.get_config = lambda k, d="": "bwrap"  # type: ignore[method-assign]
     result = plugin._wrap_sandbox("echo hello", str(tmp_path))
     # 应该返回原始命令（不支持跳过不报错）

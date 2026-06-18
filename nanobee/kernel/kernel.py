@@ -69,8 +69,12 @@ class NanobeeKernel:
         self.context_manager = ContextManager(self)
         # 内置技能目录：nanobee/skills/
         _builtin_skills = Path(__file__).resolve().parent.parent / "skills"
+        # 实例级技能目录：<data_dir>/skills/（管理员配属，实例内所有用户共享）
+        _instance_skills = self.data_dir / "skills"
         self.skill_manager = SkillsLoader(
             builtin_skills_dir=_builtin_skills,
+            instance_skills_dir=_instance_skills,
+            enabled_instance_skills=self.config.skills.enabled,
         )
         self._core_md_path = Path(self.config.core_md_path).expanduser()
         self.soul_guard = SoulGuard(self, core_md_path=str(self._core_md_path))

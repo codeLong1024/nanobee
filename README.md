@@ -38,7 +38,7 @@ CLI 命令        ████████████████████�
 - **Plugin Hook 机制** — 5 个核心契约接口（contribute_to_prompt/contribute_to_tools/on_pre_invoke/on_post_invoke/on_message_completed），插件可在关键切面注入逻辑
 
 - **Run-level Hook 机制** — AgentRunner 外层生命周期：before_run / after_run / on_error / on_finally，包裹整个 LLM 迭代循环，支持启动初始化、完成汇总、错误记录、资源释放
-- **技能管理** — SkillsLoader 双源发现（内置技能 `nanobee/skills/` + per-user 技能 `users/<user_id>/skills/`），SKILL.md frontmatter 驱动渐进/全量注入策略。内置 `_memory`（记忆策略，`full_inject: true`声明全量注入）、`skill_creator`（技能创建教程，渐进式注入，LLM 按需读取）
+- **技能管理** — SkillsLoader 三级机制（内置 `nanobee/skills/` 始终注入 + 实例 `<data_dir>/skills/` 由 `skills.enabled` 声明 + 用户 `users/<user_id>/skills/` 始终注入），同名优先级 user > instance > builtin。部署方通过 `skills.enabled` 控制实例技能注入，同时自动推导为沙箱只读白名单 + bwrap 进程沙箱挂载点。SKILL.md frontmatter 驱动渐进/全量注入策略
 - **内置 Skill** — 框架打包 `nanobee/skills/`，只读不可覆盖，同时加入沙箱只读根白名单，LLM 可通过 `read_file` 读取参考格式。标记 `full_inject: true` 的技能全量注入 system prompt，普通技能仅注入元数据 + 文件绝对路径，由 LLM 按需读取
 - **Sandbox 多根白名单** — ContextSandbox 从单根扩展为可读写根 + 只读根列表。写操作（write_file/edit_file）仅限 context_root 内，读操作（read_file/list_dir）可访问所有白名单根。内置技能目录自动加入只读白名单
 - **Overlay 文件系统** — tool_fs 支持前缀级只读回退：LLM 读取 `skills/` 目录时，如果用户目录文件不存在，自动回退到内置技能目录。用户修改无需修改框架代码，通过 write_file 自主覆盖同名文件即生效。LLM 透明，零感知
@@ -193,7 +193,7 @@ ChannelPlugin ──▶ EventBus ──▶ NanobeeKernel
 | `ContextManager` | 多租户上下文隔离（每个用户独立目录：history.jsonl / work / memory / tmp） |
 | `ContextPipeline` | System Prompt 构建（Soul → Rules → Skill → Memory 管线 + FinalGuard） |
 | `PluginManager` | 插件扫描、加载、生命周期控制 |
-| `SkillsLoader` | 技能双源发现（内置技能 + 用户技能），mtime 文件系统缓存（TTL 2 秒），去中心化：用户通过 write_file 自主管理 SKILL.md |
+| `SkillsLoader` | 技能三级机制（内置 + 实例 + 用户），实例级由 skills.enabled 声明驱动，mtime 文件系统缓存（TTL 2 秒），去中心化：用户通过 write_file 自主管理 SKILL.md，管理员通过文件部署 + 配置声明实例级共享技能 |
 | `EventBus` | 异步事件发布/订阅 |
 | `SoulGuard` | 灵魂文件三层保护 |
 | `LockManager` | 按用户粒度的 asyncio 并发锁 |
@@ -208,11 +208,14 @@ ChannelPlugin ──▶ EventBus ──▶ NanobeeKernel
 ```
 [P10] Soul 段         ← core.md Soul 节（框架内置）
 [P20] Rules 段         ← core.md Rules 节 + 用户身份（框架内置）
-[P28] 技能段           ← SkillStage：从 nanobee/skills/ + users/<user_id>/skills/ 读取技能文档
+[P28] 技能段           ← SkillStage：三级机制（框架提供，部署方声明）
+                        · 内置技能（nanobee/skills/）：始终注入
+                        · 实例技能（<data_dir>/skills/）：由 skills.enabled 配置白名单控制
+                        · 用户技能（users/<user_id>/skills/）：始终注入
                         · full_inject=true：全量注入 body（如 _memory 记忆策略）
                         · full_inject=false：渐进式注入（仅 name/description 元数据 + 文件**绝对路径**，LLM 直接 read_file 读取正文）
-                        · 同名技能双方都展示，标注 [builtin] / [user] 来源
-                        · tool_fs 的 Overlay 文件系统自动回退：LLM 读取 skills/ 文件时，用户目录无文件则自动读取内置版
+                        · 同名技能标注 [builtin] / [instance] / [user] 来源，去重优先级 user > instance > builtin
+                        · 启用实例技能的目录自动加入沙箱只读白名单 + bwrap --ro-bind-try
 [P??] 插件段           ← 遍历插件 contribute_to_prompt → 按 plugin_type 生成段标题
                         · 由插件 stage/plugin_type 决定，不做固定顺序
 [P90] FinalGuard 段    ← 不可绕过的优先级规则段（始终在最后）

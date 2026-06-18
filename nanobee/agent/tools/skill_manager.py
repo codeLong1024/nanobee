@@ -39,7 +39,7 @@ class ListSkillsTool(Tool):
 
         lines: list[str] = ["## 可用技能\n"]
         for s in all_skills:
-            tag = "[builtin]" if s.source == "builtin" else "[user]"
+            tag = f"[{s.source}]"
             base = f"- {tag} **{s.meta.name}**: {s.meta.description}"
             if s.meta.author:
                 base += f" (@{s.meta.author})"

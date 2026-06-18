@@ -17,7 +17,7 @@ from typing import Callable
 from nanobee.utils.logger import logger
 
 
-def _bwrap(command: str, workspace: str, cwd: str) -> str:
+def _bwrap(command: str, workspace: str, cwd: str, extra_ro_bind: list[str] | None = None) -> str:
     """使用 bubblewrap 包裹命令（需要系统安装 bwrap）。
 
     只将 workspace 目录 bind-mount 为可读写，其父目录以 tmpfs 遮掩，
@@ -27,6 +27,7 @@ def _bwrap(command: str, workspace: str, cwd: str) -> str:
         command: 原始 shell 命令
         workspace: 可读写的工作区根目录（子进程唯一可写入的地方）
         cwd: 容器内的工作目录（通常与 workspace 相同或为其子目录）
+        extra_ro_bind: 额外只读挂载路径列表（如启用的实例技能目录）
 
     Returns:
         包裹后的 bwrap 命令字符串
@@ -58,6 +59,13 @@ def _bwrap(command: str, workspace: str, cwd: str) -> str:
         "--dev", "/dev",
         "--tmpfs", "/tmp",
         "--tmpfs", str(home),             # 掩藏整个 $HOME（阻止访问配置/SSH 密钥等）
+    ]
+    # 额外只读挂载（启用的实例技能目录）—— 部署方通过 skills.enabled 声明
+    # 必须在 --tmpfs $HOME 之后，否则被 tmpfs 掩藏覆盖
+    for p in (extra_ro_bind or []):
+        resolved = str(Path(p).expanduser().resolve())
+        args += ["--ro-bind-try", resolved, resolved]
+    args += [
         "--dir", str(ws),                 # 重建 workspace 挂载点
         "--bind", str(ws), str(ws),       # workspace 可读写
         "--chdir", sandbox_cwd,
@@ -68,7 +76,8 @@ def _bwrap(command: str, workspace: str, cwd: str) -> str:
 
 # 后端注册表：名称 → (可调用, 依赖检查函数)
 # 依赖检查函数返回 (available: bool, error_msg: str | None)
-_BACKENDS: dict[str, tuple[Callable[[str, str, str], str], Callable[[], tuple[bool, str | None]]]] = {
+# 后端函数签名: (command, workspace, cwd, extra_ro_bind=None) → str
+_BACKENDS: dict[str, tuple[Callable[..., str], Callable[[], tuple[bool, str | None]]]] = {
     "bwrap": (
         _bwrap,
         lambda: (
@@ -86,7 +95,13 @@ def _check_available(name: str) -> bool:
     return shutil.which(name) is not None
 
 
-def wrap_command(sandbox: str, command: str, workspace: str, cwd: str) -> str:
+def wrap_command(
+    sandbox: str,
+    command: str,
+    workspace: str,
+    cwd: str,
+    extra_ro_bind: list[str] | None = None,
+) -> str:
     """使用命名沙箱后端包裹命令。
 
     Args:
@@ -94,6 +109,7 @@ def wrap_command(sandbox: str, command: str, workspace: str, cwd: str) -> str:
         command: 原始 shell 命令
         workspace: 可读写的工作区根目录
         cwd: 当前工作目录
+        extra_ro_bind: 额外只读挂载路径列表（启用的实例技能目录）
 
     Returns:
         包裹后的命令字符串
@@ -113,7 +129,7 @@ def wrap_command(sandbox: str, command: str, workspace: str, cwd: str) -> str:
     if not available:
         raise RuntimeError(error_msg)
 
-    result = backend_fn(command, workspace, cwd)
+    result = backend_fn(command, workspace, cwd, extra_ro_bind=extra_ro_bind)
     logger.debug("沙箱包裹命令 (backend={}): {}", sandbox, result[:200])
     return result
 

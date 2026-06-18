@@ -109,6 +109,21 @@ class ToolsConfig(Base):
     ssrf_whitelist: list[str] = []
 
 
+class SkillsConfig(Base):
+    """技能配置 —— 部署方声明哪些实例技能需要注入。
+
+    三级技能机制（框架提供，部署方声明）：
+    - 内置技能（nanobee/skills/）：框架打包，始终注入
+    - 实例技能（<data_dir>/skills/）：管理员配属，由 enabled 列表控制
+    - 用户技能（<context_root>/skills/）：用户自主管理，始终注入
+
+    当 enabled 为空列表时，所有实例技能自动注入（向后兼容）。
+    当 enabled 非空时，仅注入列表中指定的实例技能。
+    """
+
+    enabled: list[str] = []
+
+
 class Config(BaseModel):
     """nanobee 顶层配置对象。
 
@@ -131,6 +146,7 @@ class Config(BaseModel):
     plugins: dict[str, dict[str, Any]] = {}
     logging: LoggingConfig = LoggingConfig()
     tools: ToolsConfig = ToolsConfig()
+    skills: SkillsConfig = SkillsConfig()
 
     def resolve_preset(self, name: str | None) -> ModelPresetConfig:
         """按名称解析模型预设，返回 None 时使用默认预设。"""

@@ -2,14 +2,22 @@
 
 Skill 是用户知识资产，不是代码插件。
 框架只做两件事：
-1. 发现技能（扫描 builtin + per-context 目录下的 SKILL.md）
+1. 发现技能（扫描 builtin + instance + per-context 目录下的 SKILL.md）
 2. 注入元数据（name + description → system prompt）
+
+三层技能架构：
+- L1 内置技能（nanobee/skills/）：框架打包，所有实例共享
+- L2 实例技能（<data_dir>/skills/）：管理员配属，实例内所有用户共享
+- L3 用户技能（<context_root>/skills/）：用户个人技能
+
+同名优先级：L3 > L2 > L1
 
 与旧版 SkillManager 的关键区别：
 - 去除了 CRUD（用户通过 write_file 自主管理）
 - 去除了全局用户技能扫描（~/.nanobee/skills/ 废弃）
 - 改用 per-context 技能扫描（context/<user_id>/skills/）
 - 新增内置技能扫描（nanobee/skills/）
+- 新增实例级技能扫描（<data_dir>/skills/）
 """
 
 from __future__ import annotations
@@ -73,12 +81,15 @@ class Skill:
 class SkillsLoader:
     """技能加载器
 
-    扫描两个来源并合并呈现：
+    扫描三个来源并合并呈现：
     1. 内置技能（nanobee/skills/）—— 框架打包，只读
-    2. 用户技能（<context_root>/skills/）—— 通过 scan_context_skills() 按 context 加载
+    2. 实例技能（<data_dir>/skills/）—— 管理员配属，实例内所有用户共享，只读
+    3. 用户技能（<context_root>/skills/）—— 通过 scan_context_skills() 按 context 加载
 
     注意：全局 `~/.nanobee/skills/` 路径已废弃，不再扫描。
     技能存放在每个用户的上下文目录下（`users/<user_id>/skills/`）。
+
+    同名优先级：用户 > 实例 > 内置
 
     缓存策略：基于 mtime 的文件系统缓存，TTL 2 秒。
     """
@@ -89,9 +100,14 @@ class SkillsLoader:
         self,
         user_skills_dir: str | Path | None = None,
         builtin_skills_dir: str | Path | None = None,
+        instance_skills_dir: str | Path | None = None,
+        enabled_instance_skills: list[str] | None = None,
     ) -> None:
         self._user_dir = Path(user_skills_dir).resolve() if user_skills_dir else None
         self._builtin_dir = Path(builtin_skills_dir).resolve() if builtin_skills_dir else None
+        self._instance_dir = Path(instance_skills_dir).resolve() if instance_skills_dir else None
+        # 部署方声明的实例技能白名单：None 或空列表=全部注入，非空=仅注入列表中的
+        self._enabled_instance = enabled_instance_skills or []
 
         # 缓存：key -> (skills 列表, mtime, 缓存时间)
         self._cache: dict[str, list[Skill]] = {}
@@ -102,6 +118,11 @@ class SkillsLoader:
     def builtin_dir(self) -> Path | None:
         """内置技能目录路径（只读，用于沙箱白名单）"""
         return self._builtin_dir
+
+    @property
+    def instance_dir(self) -> Path | None:
+        """实例级技能目录路径（只读，管理员配属，用于沙箱白名单）"""
+        return self._instance_dir
 
     # ---- 缓存管理 ----
 
@@ -186,12 +207,68 @@ class SkillsLoader:
             return []
         return self._scan_dir(skills_dir, source="user")
 
+    def scan_instance_skills(self) -> list[Skill]:
+        """扫描实例级技能目录下的所有技能。
+
+        实例技能由管理员配属，对实例内所有用户共享（只读）。
+        通过 ``instance_skills_dir`` 构造参数指定路径。
+
+        Returns:
+            技能列表，按技能名排序
+        """
+        if not self._instance_dir:
+            return []
+        key = "instance"
+        if self._is_cache_valid(key, self._instance_dir):
+            return self._cache[key]
+
+        skills = self._scan_dir(self._instance_dir, source="instance")
+        self._cache[key] = skills
+        self._cache_time[key] = time.time()
+        self._dir_mtime[key] = self._scan_dir_mtime(self._instance_dir)
+        return skills
+
+    def list_filtered_instance_skills(self) -> list[Skill]:
+        """列出实例技能，按 enabled_instance_skills 白名单过滤。
+
+        当 enabled_instance_skills 为空列表时，返回全部实例技能（向后兼容）。
+        当 enabled_instance_skills 非空时，仅返回列表中指定的技能。
+
+        Returns:
+            过滤后的实例技能列表
+        """
+        all_instance = self.scan_instance_skills()
+        if not self._enabled_instance:
+            return all_instance
+        enabled_set = set(self._enabled_instance)
+        return [s for s in all_instance if s.meta.name in enabled_set]
+
+    def get_enabled_instance_dirs(self) -> list[Path]:
+        """获取已启用的实例技能目录路径列表。
+
+        部署方声明了哪些技能，返回对应的目录绝对路径。
+        调用方（如进程沙箱）可将这些路径用于只读挂载等用途。
+
+        当 enabled_instance_skills 为空时，返回所有实例技能目录。
+        当 enabled_instance_skills 非空时，仅返回列表中指定的目录。
+
+        Returns:
+            已启用实例技能的目录绝对路径列表
+        """
+        if not self._instance_dir or not self._instance_dir.is_dir():
+            return []
+        skills = self.list_filtered_instance_skills()
+        return [s.file_path.parent.resolve() for s in skills]
+
     def list_all_skills(self) -> list[Skill]:
-        """列出所有技能（内置 + 用户），同名时双方都返回。"""
+        """列出所有技能（内置 + 实例 + 用户），同名时双方都返回。
+
+        优先级由调用方处理：用户 > 实例 > 内置
+        """
         builtin = self.list_builtin_skills()
+        instance = self.scan_instance_skills()
         user = self.list_user_skills()
-        # 同名时显示两个来源，LLM 自行判断
-        return builtin + user
+        return builtin + instance + user
 
     def get_skill(self, name: str) -> Skill | None:
         """按名称查找技能（先查用户，再查内置）。"""

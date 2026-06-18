@@ -830,16 +830,24 @@ class AgentLoop:
         from nanobee.kernel.sandbox import ContextSandbox
         try:
             user_ctx = await self.context_manager.get_or_create(user_id)
-            # 内置技能目录作为只读根加入沙箱，LLM 可读不可写
+            # 内置技能目录 + 实例技能目录作为只读根加入沙箱，LLM 可读不可写
             read_only: list[Path | str] | None = None
             prefix_map: dict[str, Path | str] | None = None
             if self.skill_manager is not None:
+                read_only = []
+                # 内置技能目录
                 builtin = self.skill_manager.builtin_dir
                 if builtin is not None:
-                    read_only = [builtin]
+                    read_only.append(builtin)
                     builtin_skills = builtin / "skills"
                     if builtin_skills.is_dir():
                         prefix_map = {"skills/": builtin_skills}
+                # 实例级技能目录（管理员配属，只读 —— 仅已启用的）
+                enabled_dirs = self.skill_manager.get_enabled_instance_dirs()
+                for d in enabled_dirs:
+                    read_only.append(d)
+                if not read_only:
+                    read_only = None
             return ContextSandbox(
                 user_ctx.context_root,
                 read_only_roots=read_only,
@@ -853,10 +861,12 @@ class AgentLoop:
         """运行 Agent 迭代循环。"""
         sandbox = await self._build_sandbox(ctx.context_id)
 
-        # 使用 ContextVar 绑定沙箱 + tmp + context_root + process_workspace，替代方法参数透传
+        # 使用 ContextVar 绑定沙箱 + tmp + context_root + process_workspace + bwrap_ro_bind
         from nanobee.kernel.context_sandbox_var import (
-            bind_context_root, bind_process_workspace, bind_sandbox, bind_tmp,
-            reset_context_root, reset_process_workspace, reset_sandbox, reset_tmp,
+            bind_bwrap_ro_bind, bind_context_root, bind_process_workspace,
+            bind_sandbox, bind_tmp,
+            reset_bwrap_ro_bind, reset_context_root, reset_process_workspace,
+            reset_sandbox, reset_tmp,
         )
         _sandbox_token = bind_sandbox(sandbox) if sandbox else None
 
@@ -865,6 +875,17 @@ class AgentLoop:
         _tmp_token = bind_tmp(user_ctx.tmp_dir)
         _ctx_root_token = bind_context_root(user_ctx.context_root)
         _process_ws_token = bind_process_workspace(user_ctx.work_dir)
+
+        # 根据部署方 skills.enabled 推导 bwrap 额外只读挂载路径
+        # 已启用实例技能目录在子进程（bwrap）中只读可见，
+        # 确保 LLM 通过 execute_shell 执行技能脚本时路径可达
+        _bwrap_ro_bind_token = None
+        if self.skill_manager is not None:
+            enabled_dirs = self.skill_manager.get_enabled_instance_dirs()
+            if enabled_dirs:
+                _bwrap_ro_bind_token = bind_bwrap_ro_bind(
+                    [str(d) for d in enabled_dirs]
+                )
 
         # 让插件修改工具列表（在 ToolCollector 过滤之前）
         plugin_modified_tool_names = self._collect_plugin_tools(
@@ -909,6 +930,8 @@ class AgentLoop:
             reset_tmp(_tmp_token)
             reset_context_root(_ctx_root_token)
             reset_process_workspace(_process_ws_token)
+            if _bwrap_ro_bind_token is not None:
+                reset_bwrap_ro_bind(_bwrap_ro_bind_token)
         final_content, tools_used, all_msgs, stop_reason, had_injections = result
         ctx.final_content = final_content
         ctx.tools_used = tools_used

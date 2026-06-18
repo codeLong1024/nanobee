@@ -186,6 +186,48 @@ def current_process_workspace() -> Path | None:
     return _CURRENT_PROCESS_WORKSPACE.get()
 
 
+# bwrap 额外只读挂载路径列表 —— 部署方通过 skills.enabled 声明后，
+# 框架自动推导 enabled 实例技能目录为 bwrap --ro-bind-try 目标。
+# tool_shell 插件在 _wrap_sandbox 中消费此 ContextVar。
+_CURRENT_BWRAP_RO_BIND: ContextVar[list[str] | None] = ContextVar(
+    "nanobee_bwrap_ro_bind",
+    default=None,
+)
+
+
+def bind_bwrap_ro_bind(paths: list[str]) -> Token[list[str] | None]:
+    """在当前异步任务中绑定 bwrap 额外只读挂载路径。
+
+    Args:
+        paths: 只读挂载路径列表（绝对路径字符串）
+
+    Returns:
+        Token 用于后续 reset_bwrap_ro_bind 恢复
+    """
+    return _CURRENT_BWRAP_RO_BIND.set(paths)
+
+
+def reset_bwrap_ro_bind(token: Token[list[str] | None]) -> None:
+    """恢复绑定的 bwrap ro-bind 到绑定前的状态。
+
+    Args:
+        token: bind_bwrap_ro_bind 返回的 Token
+    """
+    _CURRENT_BWRAP_RO_BIND.reset(token)
+
+
+def current_bwrap_ro_bind() -> list[str] | None:
+    """获取当前异步任务中绑定的 bwrap 额外只读挂载路径。
+
+    tool_shell 插件通过此 ContextVar 获取启用的实例技能目录，
+    追加为 bwrap --ro-bind-try 挂载点。
+
+    Returns:
+        只读挂载路径列表，未绑定时返回 None
+    """
+    return _CURRENT_BWRAP_RO_BIND.get()
+
+
 __all__ = [
     "bind_sandbox",
     "current_sandbox",
@@ -199,4 +241,7 @@ __all__ = [
     "bind_process_workspace",
     "current_process_workspace",
     "reset_process_workspace",
+    "bind_bwrap_ro_bind",
+    "current_bwrap_ro_bind",
+    "reset_bwrap_ro_bind",
 ]

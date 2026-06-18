@@ -596,11 +596,17 @@ class ToolShellPlugin(ToolPlugin):
             # 使用框架定义的子进程工作区边界（ProcessWorkspace），
             # 而非沙箱 context_root，确保子进程仅暴露 workspace/ 目录
             from nanobee.kernel.context_sandbox_var import (
+                current_bwrap_ro_bind,
                 current_process_workspace,
             )
             process_workspace = current_process_workspace()
             ws = str(process_workspace) if process_workspace else cwd
-            wrapped = _wrap_sandbox_command(sandbox_backend, command, ws, cwd)
+            # 读取部署方通过 skills.enabled 推导的额外只读挂载路径
+            extra_ro_bind = current_bwrap_ro_bind()
+            wrapped = _wrap_sandbox_command(
+                sandbox_backend, command, ws, cwd,
+                extra_ro_bind=extra_ro_bind,
+            )
             logger.info("命令已通过沙箱 '{}' 包裹 (ws={})", sandbox_backend, ws)
             return wrapped
         except (ValueError, RuntimeError) as e:

@@ -192,10 +192,10 @@ class SkillStage(PipelineStage):
     此 Stage 内置在框架中，不依赖 Plugin 生命周期。
     使用 kernel.skill_manager 统一实例，避免路径分裂。
 
-    技能加载优先级：
+    三层技能架构（同名优先级从高到低）：
     1. per-context 技能（users/<user_id>/skills/）— 用户自主管理
-    2. 内置技能（nanobee/skills/）— 框架打包
-    同名时 context 技能覆盖内置版。
+    2. 实例级技能（<data_dir>/skills/）— 管理员配属，实例内共享
+    3. 内置技能（nanobee/skills/）— 框架打包
 
     Phase 2 增强：加 [SKILL BEGIN/END] 边界标记，
     共享技能 body 每行使用 > 引用包裹。
@@ -216,7 +216,7 @@ class SkillStage(PipelineStage):
           - full_inject=true  → 元数据 + 完整 body（LLM 需要每次访问）
           - full_inject=false → 仅元数据（LLM 按需读取完整内容）
 
-        同名技能自动去重（用户版优先于内置版），框架不做策略决策。
+        同名技能自动去重（用户 > 实例 > 内置），框架不做策略决策。
 
         Args:
             context: PromptBuildContext 实例或兼容 dict
@@ -227,7 +227,11 @@ class SkillStage(PipelineStage):
         from_dict = isinstance(context, dict)
         ctx = PromptBuildContext._from_compat(context)  # type: ignore[arg-type]
 
-        all_skills = list(self._loader.list_all_skills())
+        all_skills: list[Any] = list(self._loader.list_builtin_skills())
+        # 实例技能按 enabled 白名单过滤（部署方声明）
+        all_skills.extend(self._loader.list_filtered_instance_skills())
+        # 用户技能（始终注入，用户自主管理）
+        all_skills.extend(self._loader.list_user_skills())
 
         # 如果有 user_context，额外扫描其 skills/ 目录
         user_ctx = ctx.user_context
@@ -235,7 +239,7 @@ class SkillStage(PipelineStage):
             context_root = getattr(user_ctx, "context_root", None)
             if context_root is not None:
                 context_skills = self._loader.scan_context_skills(context_root)
-                # context 技能优先：放在前面，同名时覆盖内置/旧用户版
+                # context 技能优先：放在最前面，同名时覆盖实例/内置版
                 all_skills = context_skills + all_skills
 
         if not all_skills:
@@ -246,10 +250,16 @@ class SkillStage(PipelineStage):
 
         for skill in all_skills:
             if skill.meta.name in seen_names:
-                continue  # 同名去重：用户版优先（list_all_skills 先内置后用户）
+                continue  # 同名去重：user > instance > builtin
             seen_names.add(skill.meta.name)
 
-            source_tag = "[builtin]" if skill.source == "builtin" else "[user]"
+            # 映射 source 到标签
+            source_tags = {
+                "builtin": "[builtin]",
+                "instance": "[instance]",
+                "user": "[user]",
+            }
+            source_tag = source_tags.get(skill.source, f"[{skill.source}]")
 
             if skill.meta.full_inject:
                 # 全量注入：元数据 + 完整 body（由 frontmatter 声明触发）
