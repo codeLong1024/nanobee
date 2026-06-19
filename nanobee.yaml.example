@@ -164,3 +164,13 @@ channels:
 #   compression: "gz"
 #   # 生产环境建议开启 JSON 格式（便于 Promtail/Filebeat 采集）
 #   json_format: false
+
+# 插件配置
+# plugins:
+#   tool_shell:
+#     # 沙箱后端（子进程隔离，需要系统安装 bwrap）
+#     # sandbox: "bwrap"
+#     # 虚拟环境 site-packages 路径（可选，由实例管理员根据实际 venv 位置填写）
+#     # 配置后沙箱自动挂载并注入 PYTHONPATH，使 shell 命令中直接 import 可用
+#     # 不配此选项则 LLM 使用系统 Python（或自己 pip install --target=）
+#     # venv: "/home/user/.venv/lib/python3.11/site-packages"

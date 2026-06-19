@@ -603,6 +603,25 @@ class ToolShellPlugin(ToolPlugin):
             ws = str(process_workspace) if process_workspace else cwd
             # 读取部署方通过 skills.enabled 推导的额外只读挂载路径
             extra_ro_bind = current_bwrap_ro_bind()
+
+            # 保存原始命令，异常降级时回退
+            original_command = command
+
+            # 从配置读取 venv 路径（可选），沙箱自动挂载 site-packages
+            # 并注入 PYTHONPATH，使 Python 能找到虚拟环境的包。
+            # 管理员配了此选项即代表同意 LLM 使用这些包，不配则不注入。
+            venv_site_pkgs = self.get_config("venv", "")
+            if venv_site_pkgs:
+                resolved = str(Path(venv_site_pkgs).expanduser().resolve())
+                if Path(resolved).is_dir():
+                    extra_ro_bind = list(extra_ro_bind or []) + [resolved]
+                    command = f"PYTHONPATH={resolved}:$PYTHONPATH {command}"
+                    logger.info("已挂载并注入 venv site-packages: {}", resolved)
+                else:
+                    logger.warning(
+                        "配置的 venv 路径不存在: {}", resolved,
+                    )
+
             wrapped = _wrap_sandbox_command(
                 sandbox_backend, command, ws, cwd,
                 extra_ro_bind=extra_ro_bind,
@@ -611,7 +630,7 @@ class ToolShellPlugin(ToolPlugin):
             return wrapped
         except (ValueError, RuntimeError) as e:
             logger.warning("沙箱 '{}' 不可用，在无沙箱状态下运行: {}", sandbox_backend, e)
-            return command
+            return original_command
 
     @staticmethod
     def _clamp_int(value: int | None, default: int, minimum: int, maximum: int) -> int:

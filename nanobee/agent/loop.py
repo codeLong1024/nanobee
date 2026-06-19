@@ -34,7 +34,6 @@ from nanobee.utils.document import extract_documents
 from nanobee.utils.helpers import (
     build_assistant_message,
     build_runtime_context,
-    estimate_message_tokens,
     estimate_prompt_tokens_chain,
     truncate_text,
 )
@@ -432,24 +431,13 @@ class AgentLoop:
         """待处理消息队列（委托给 MessageDispatcher，供 Kernel 访问）。"""
         return self._dispatcher.pending_queues
 
-    def _replay_token_budget(self) -> int:
-        """从上下文窗口大小推算历史重放的 token 预算。"""
-        if not self.context_window_tokens or self.context_window_tokens <= 0:
-            return 0
-        max_output = getattr(getattr(self.provider, "generation", None), "max_tokens", 4096)
-        try:
-            reserved_output = int(max_output)
-        except (TypeError, ValueError):
-            reserved_output = 4096
-        budget = self.context_window_tokens - max(1, reserved_output) - 1024
-        return budget if budget > 0 else max(128, self.context_window_tokens // 2)
-
     async def _build_initial_messages(
         self,
         msg: InboundMessage,
         history: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
         """构建 LLM 的初始消息列表。"""
+        _b0 = time.perf_counter()
         from nanobee.kernel.context_pipeline import PromptBuildContext
 
         # 使用 ContextPipeline 构建系统提示词（含插件 Hook 贡献）
@@ -461,10 +449,16 @@ class AgentLoop:
 
         # 获取用户上下文和已启用插件，用于 build_with_plugins()
         user_ctx = await self.context_manager.get_or_create(msg.context_id)
+        _b1 = time.perf_counter()
+        logger.debug("[BUILD-PROFILE] get_or_create(inner): {:.0f}ms", (_b1 - _b0) * 1000)
         plugins = self._get_enabled_plugins()
+        _b2 = time.perf_counter()
+        logger.debug("[BUILD-PROFILE] plugins_ready: {:.0f}ms", (_b2 - _b1) * 1000)
         system_prompt = await self.context_pipeline.build_with_plugins(
             pipeline_context, user_ctx, plugins,
         )
+        _b3 = time.perf_counter()
+        logger.debug("[BUILD-PROFILE] build_with_plugins: {:.0f}ms (total {:.0f}ms)", (_b3 - _b2) * 1000, (_b3 - _b0) * 1000)
 
         # 构建消息列表：system + history + current_message
         messages: list[dict[str, Any]] = []
@@ -793,21 +787,24 @@ class AgentLoop:
 
     async def _state_build(self, ctx: TurnContext) -> str:
         """构建初始消息列表。"""
+        _t0 = time.perf_counter()
         # 获取或创建上下文
         context = await self.context_manager.get_or_create(ctx.context_id)
+        _t1 = time.perf_counter()
+        logger.debug("[BUILD-PROFILE] get_or_create: {:.0f}ms", (_t1 - _t0) * 1000)
         ctx.history = context.get_messages()
 
-        # 受 token 预算限制的历史消息
-        max_tokens = self._replay_token_budget()
-        if max_tokens > 0:
-            system_prompt_len = 0  # 估算 system prompt token 数
-            ctx.history = self._trim_history_by_tokens(
-                ctx.history, max_tokens - system_prompt_len, self._max_messages,
-            )
-        else:
+        # 安全阀：按条数上限暴力截断，防止历史无限增长。
+        # LLM 通过 _memory skill + trim_history 工具自主管理记忆，
+        # 框架不介入"保留哪些、裁多少"的策略决策。
+        if len(ctx.history) > self._max_messages:
             ctx.history = ctx.history[-self._max_messages:]
 
+        _t2 = time.perf_counter()
+        logger.debug("[BUILD-PROFILE] history_trim: {:.0f}ms (total {:.0f}ms)", (_t2 - _t1) * 1000, (_t2 - _t0) * 1000)
         ctx.initial_messages = await self._build_initial_messages(ctx.msg, ctx.history)
+        _t3 = time.perf_counter()
+        logger.debug("[BUILD-PROFILE] build_initial_messages: {:.0f}ms (total {:.0f}ms)", (_t3 - _t2) * 1000, (_t3 - _t0) * 1000)
 
         # 持久化用户消息
         current_content = ctx.msg.content
@@ -1006,47 +1003,6 @@ class AgentLoop:
             media=combined_media,
             metadata=meta,
         )
-
-    @staticmethod
-    def _trim_history_by_tokens(
-        history: list[dict[str, Any]],
-        budget: int,
-        max_messages: int,
-    ) -> list[dict[str, Any]]:
-        """按 token 预算裁剪历史消息，从最早的消息开始移除。
-
-        策略：
-        1. 始终保留最近的 max_messages 条消息作为上限
-        2. 从最早的消息开始逐个移除，直到预估 token 总和 ≤ budget
-        3. 至少保留最后 2 条消息（无论如何不全部裁光）
-
-        Args:
-            history: 历史消息列表（按时间正序）
-            budget: 历史消息允许占用的最大 token 数
-            max_messages: 消息条数上限
-
-        Returns:
-            裁剪后的历史消息列表
-        """
-        if not history:
-            return history
-
-        # 先按条数上限裁剪
-        if len(history) > max_messages:
-            history = history[-max_messages:]
-
-        # 如果 budget 不足以承载最少上下文，取个保守值
-        effective_budget = max(budget, 256)
-
-        # 从最早的消息开始逐个估算，超出预算则移除
-        trimmed = list(history)
-        while len(trimmed) > 2:  # 保留至少 2 条
-            total = sum(estimate_message_tokens(m) for m in trimmed)
-            if total <= effective_budget:
-                break
-            trimmed.pop(0)  # 移除最早的一条
-
-        return trimmed
 
     # --- 模型预设管理 ---
 

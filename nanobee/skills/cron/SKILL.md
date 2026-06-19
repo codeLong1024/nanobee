@@ -1,6 +1,6 @@
 ---
 name: cron
-description: Schedule reminders and recurring tasks using the cron tool.
+description: Schedule reminders and recurring tasks.
 ---
 
 # Cron
@@ -54,4 +54,4 @@ cron(action="remove", job_id="abc123")
 
 ## Timezone
 
-Use `tz` with `cron_expr` to schedule in a specific IANA timezone. Without `tz`, the server's default timezone is used.
+Use `tz` with `cron_expr` to schedule in a specific IANA timezone. Without `tz`, the server's local timezone is used.

@@ -1,0 +1,9 @@
+[plugin]
+name = "tool_history"
+version = "1.0.0"
+description = "历史消息裁剪工具：保留最近 N 条消息，删除更早的。纯机制，LLM 自主决定何时调用及 N 值。"
+author = "nanobee-team"
+type = "tool"
+
+[config]
+enabled = true

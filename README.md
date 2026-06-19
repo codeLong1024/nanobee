@@ -19,7 +19,7 @@
 
 ## 项目状态
 
-**版本 v0.1.0** — 核心框架（微内核、Agent 引擎、LLM Provider、插件体系）已通过 **532 个单元测试**验证。
+**版本 v0.1.0** — 核心框架（微内核、Agent 引擎、LLM Provider、插件体系）已通过 **533 个单元测试**验证。
 
 ```
 Kernel 内核     ████████████████████████████████  95%
@@ -270,6 +270,7 @@ class MyPlugin(ToolPlugin):
 | `tool_shell` | Tool | ✅ 完整 | Shell 命令工具（execute_shell），双层安全守卫：deny 模式拦截危险命令 + bwrap 进程级沙箱（掩藏 $HOME 仅暴露 workspace/） |
 | `tool_web` | Tool | ✅ 完整 | Web 工具（web_search, web_fetch），含 HTML 清理、SSRF 保护 |
 | `tool_cron` | Tool | ✅ 完整 | Cron 定时任务（add, list, remove） |
+| `tool_history` | Tool | ✅ 完整 | 历史裁剪工具（trim_history），纯机制：LLM 自主决定保留条数 |
 | `tool_dingtalk` | Tool | ✅ 完整 | 钉钉工具（文档操作、多维表操作、数据管道 + MCP 客户端） |
 | `audit_logger` | Audit | ✅ 完整 | 参考：on_message_completed 审计日志 |
 
@@ -328,7 +329,7 @@ class MyPlugin(NanobeePlugin):
 # 安装开发依赖
 pip install -e ".[dev]"
 
-# 运行全部测试（532 个用例）
+# 运行全部测试（533 个用例）
 python -m pytest tests/ -v --tb=short
 
 # 查看覆盖率
@@ -393,6 +394,7 @@ nanobee/
 │   ├── tool_shell/       # Shell 命令工具
 │   ├── tool_web/         # Web 工具
 │   ├── tool_cron/        # Cron 定时任务
+│   ├── tool_history/     # 历史裁剪工具
 │   └── tool_echo/        # 回显测试
 ├── skills/               # 内置技能（只读，框架打包，沙箱只读根白名单）
 │   ├── _memory/SKILL.md          # 兜底记忆策略（full_inject: true）
@@ -441,10 +443,10 @@ nanobee 从 [nanobot](https://github.com/HKUDS/nanobot) 衍生开发，核心差
 | 架构哲学 | 大而全（内置记忆/梦境/人设） | 极简微内核（路由/隔离/拼装） |
 | CLI/Gateway 分离 | `agent` + `gateway` 双模式 | ✅ 已复刻：`run` 轻量 + `gateway` 完整服务栈 |
 | 优雅退出 | 无 SIGTERM handler（`KeyboardInterrupt` 兜底） | ✅ `run_signal_guard()` 注册 SIGINT/SIGTERM asyncio 处理器，`Kernel.shutdown()` 完整清理 |
-| 记忆策略 | 框架内置多种算法 | 内置 `_memory` Skill（LLM 自主管理），用户可覆盖自定义 |
-| 技能管理 | 框架内置 CRUD | 文件驱动 SkillsLoader（builtin/ + users/<user_id>/skills/），用户通过 write_file 自主管理 |
+| 记忆策略 | 框架内置 Consolidator + AutoCompact + Dream Agent 三层，框架替 LLM 决定何时压缩/摘要 | ✅ 框架不持有记忆策略：安全阀 `history[-max_messages:]` 防崩溃，`_memory` skill 引导 + `trim_history` 工具提供裁剪机制，LLM 自主管理，用户可覆盖 `skills/_memory/SKILL.md` 完全替换 |
+| 技能管理 | 框架内置 CRUD | 文件驱动 SkillsLoader（builtin/ + instance/ + user/），同名优先级 user > instance > builtin，用户通过 write_file 自主管理 |
 | 隔离机制 | 逻辑隔离 | 物理隔离 + 沙箱 + 锁 |
-| 插件系统 | 有限扩展点 | 5 个 Hook 契约 + 完整生命周期 |
+| 插件系统 | 有限扩展点 | 9 个 Hook 契约（5 迭代级 + 4 run-level） + 完整生命周期 |
 | 代码量 | 数万行 | 精简聚焦 |
 
 ## 被剥离 —— 留给插件生态
@@ -452,7 +454,8 @@ nanobee 从 [nanobot](https://github.com/HKUDS/nanobot) 衍生开发，核心差
 以下内容**不属于框架核心**，留给社区或应用层插件实现：
 
 - 高级记忆策略（向量检索、语义聚类等，由 `memory-vector` 等插件实现）
-- 梦境整理系统（由后台 Daemon 插件实现）
+- 自动压缩/摘要调度（框架不替 LLM 决定何时压缩，由 `_memory` skill + `trim_history` 工具 + LLM 自主完成）
+- 梦境整理系统（nanobot 的 Dream Agent 已被 LLM 自主模式替代，详见 `devdocs/nanobot_vs_nanobee_memory_comparison.md`）
 - 人设漂移检测（由 `drift-detector` 插件实现）
 - Subagent 委派工具（由 `tool-subagent` 插件实现）
 - 复杂的 facts.json / episodic.json 格式化

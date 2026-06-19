@@ -509,6 +509,18 @@ def estimate_prompt_tokens(
         return 0
 
 
+# 模块级 tiktoken 编码缓存，避免每次 estimate_message_tokens 重复加载
+_tiktoken_enc: Any = None
+
+
+def _get_tiktoken_encoding() -> Any:
+    """返回 tiktoken cl100k_base 编码器（模块级单例缓存）。"""
+    global _tiktoken_enc
+    if _tiktoken_enc is None:
+        _tiktoken_enc = tiktoken.get_encoding("cl100k_base")
+    return _tiktoken_enc
+
+
 def estimate_message_tokens(message: dict[str, Any]) -> int:
     """Estimate prompt tokens contributed by one persisted message."""
     content = message.get("content")
@@ -541,7 +553,7 @@ def estimate_message_tokens(message: dict[str, Any]) -> int:
     if not payload:
         return 4
     try:
-        enc = tiktoken.get_encoding("cl100k_base")
+        enc = _get_tiktoken_encoding()
         return max(4, len(enc.encode(payload)) + 4)
     except Exception:
         return max(4, len(payload) // 4 + 4)

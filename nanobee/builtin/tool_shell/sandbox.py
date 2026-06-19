@@ -53,7 +53,8 @@ def _bwrap(command: str, workspace: str, cwd: str, extra_ro_bind: list[str] | No
     for p in required:
         args += ["--ro-bind", p, p]
     for p in optional:
-        args += ["--ro-bind-try", p, p]
+        if Path(p).exists():
+            args += ["--ro-bind", p, p]
     args += [
         "--proc", "/proc",
         "--dev", "/dev",
@@ -62,9 +63,14 @@ def _bwrap(command: str, workspace: str, cwd: str, extra_ro_bind: list[str] | No
     ]
     # 额外只读挂载（启用的实例技能目录）—— 部署方通过 skills.enabled 声明
     # 必须在 --tmpfs $HOME 之后，否则被 tmpfs 掩藏覆盖
+    # 若目标路径在被 tmpfs 遮盖的 HOME 下，先建目录再绑定
     for p in (extra_ro_bind or []):
         resolved = str(Path(p).expanduser().resolve())
-        args += ["--ro-bind-try", resolved, resolved]
+        if not Path(resolved).exists():
+            continue
+        if resolved.startswith(str(home)):
+            args += ["--dir", resolved]
+        args += ["--ro-bind", resolved, resolved]
     args += [
         "--dir", str(ws),                 # 重建 workspace 挂载点
         "--bind", str(ws), str(ws),       # workspace 可读写

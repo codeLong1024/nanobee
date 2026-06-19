@@ -177,7 +177,8 @@ class ToolCronPlugin(ToolPlugin):
                     "name": "cron",
                     "description": (
                         "Schedule reminders and recurring tasks. Actions: add, list, remove."
-                        " See cron skill for usage guide."
+                        f" If tz is omitted, cron expressions and naive ISO times default to"
+                        f" {self._default_timezone}."
                     ),
                     "parameters": {
                         "type": "object",
@@ -185,40 +186,40 @@ class ToolCronPlugin(ToolPlugin):
                             "action": {
                                 "type": "string",
                                 "enum": ["add", "list", "remove"],
-                                "description": "要执行的操作。add=添加任务, list=列出所有任务, remove=移除任务",
+                                "description": "Action to perform",
                             },
                             "name": {
                                 "type": "string",
-                                "description": "可选的任务短标签（如 'weather-monitor'），默认取 message 前 30 字符",
+                                "description": "Optional short human-readable label for the job (e.g., 'weather-monitor', 'daily-standup'). Defaults to first 30 chars of message.",
                             },
                             "message": {
                                 "type": "string",
-                                "description": "action='add' 时必填。任务触发时 agent 执行的具体指令",
+                                "description": "REQUIRED when action='add'. Instruction for the agent to execute when the job triggers (e.g., 'Send a reminder to WeChat' or 'Check system status and report'). Not used for action='list' or action='remove'.",
                             },
                             "every_seconds": {
                                 "type": "integer",
-                                "description": "重复间隔（秒），用于周期性任务",
+                                "description": "Interval in seconds (for recurring tasks). Minimum: 1.",
                                 "minimum": 1,
                             },
                             "cron_expr": {
                                 "type": "string",
-                                "description": "Cron 表达式，如 '0 9 * * *'（每天 9:00）",
+                                "description": "Cron expression like '0 9 * * *' (for scheduled tasks). Use tz parameter for timezone.",
                             },
                             "tz": {
                                 "type": "string",
-                                "description": "可选 IANA 时区（仅用于 cron_expr），如 'Asia/Shanghai'",
+                                "description": "Optional IANA timezone for cron expressions (e.g. 'Asia/Shanghai'). When omitted with cron_expr, the tool's default timezone applies.",
                             },
                             "at": {
                                 "type": "string",
-                                "description": "一次性执行 ISO 时间，如 '2026-02-12T10:30:00'",
+                                "description": "ISO datetime for one-time execution (e.g. '2026-02-12T10:30:00'). Naive values use the tool's default timezone. To specify a different timezone, include offset (e.g. '2026-02-12T10:30:00+08:00').",
                             },
                             "deliver": {
                                 "type": "boolean",
-                                "description": "是否将执行结果投递到用户通道（默认 true）",
+                                "description": "Whether to deliver the execution result to the user channel (default true).",
                             },
                             "job_id": {
                                 "type": "string",
-                                "description": "action='remove' 时必填。通过 action='list' 获取的任务 ID",
+                                "description": "REQUIRED when action='remove'. Job ID to remove (obtain via action='list').",
                             },
                         },
                         "required": ["action"],
