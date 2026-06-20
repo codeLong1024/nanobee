@@ -502,13 +502,13 @@ def estimate_prompt_tokens(
 ) -> int:
     """估算 prompt token 数。
 
-    消息部分用 tiktoken 精确编码（消息数据量小、毫秒级）。
-    工具部分用字符长度快速估算（~2.5 字符/token），避免对 MB 级 JSON Schema
+    消息部分优先用 tiktoken 精确编码；tiktoken 未就绪时降级为字符估算。
+    工具部分始终用字符长度快速估算（~2.5 字符/token），避免对 MB 级 JSON Schema
     做 tiktoken 编码（~700ms/轮）。
-    不设缓存，每轮字符长度计算仅 1-2ms，收益不足道。
     """
     try:
-        enc = tiktoken.get_encoding("cl100k_base")
+        enc = _get_tiktoken_encoding()
+        raw_text = ""
         parts: list[str] = []
         for msg in messages:
             content = msg.get("content")
@@ -523,7 +523,8 @@ def estimate_prompt_tokens(
 
             tc = msg.get("tool_calls")
             if tc:
-                parts.append(json.dumps(tc, ensure_ascii=False))
+                ser = json.dumps(tc, ensure_ascii=False)
+                parts.append(ser)
 
             rc = msg.get("reasoning_content")
             if isinstance(rc, str) and rc:
@@ -534,8 +535,12 @@ def estimate_prompt_tokens(
                 if isinstance(value, str) and value:
                     parts.append(value)
 
-        # 消息部分：tiktoken 精确编码
-        messages_tokens = len(enc.encode("\n".join(parts))) if parts else 0
+        raw_text = "\n".join(parts) if parts else ""
+        # 消息部分：tiktoken 精确编码（就绪时）或字符估算（降级）
+        if enc is not None:
+            messages_tokens = len(enc.encode(raw_text)) if raw_text else 0
+        else:
+            messages_tokens = len(raw_text) // 4 if raw_text else 0
 
         # 工具部分：字符长度快速估算，2.5 是保守经验系数
         tools_tokens = 0
@@ -549,16 +554,42 @@ def estimate_prompt_tokens(
         return 0
 
 
-# 模块级 tiktoken 编码缓存，避免每次 estimate_message_tokens 重复加载
+# 模块级 tiktoken 编码缓存（后台线程惰性加载）
 _tiktoken_enc: Any = None
+_tiktoken_init_done = False
 
 
 def _get_tiktoken_encoding() -> Any:
-    """返回 tiktoken cl100k_base 编码器（模块级单例缓存）。"""
-    global _tiktoken_enc
-    if _tiktoken_enc is None:
+    """返回 tiktoken cl100k_base 编码器（模块级单例缓存）。
+
+    首次调用可能比较慢（CentOS 7 上 ~42s），通过后台线程预热避免阻塞
+    用户请求。首次调用时若后台线程未完成，降级返回 None。
+    """
+    global _tiktoken_enc, _tiktoken_init_done
+    if not _tiktoken_init_done and _tiktoken_enc is None:
+        return None
+    if _tiktoken_enc is not None:
+        return _tiktoken_enc
+    # 防御：标记完成但 enc 还是 None（初始化失败）→ 返回 None
+    return None
+
+
+def _init_tiktoken() -> None:
+    """后台线程：预热 tiktoken 编码器。"""
+    global _tiktoken_enc, _tiktoken_init_done
+    try:
         _tiktoken_enc = tiktoken.get_encoding("cl100k_base")
-    return _tiktoken_enc
+    except Exception:
+        import logging
+        logging.getLogger(__name__).warning("tiktoken 初始化失败，降级为字符估算", exc_info=True)
+    finally:
+        _tiktoken_init_done = True
+
+
+# 后台线程预热，不阻塞模块导入
+import threading as _threading
+_tiktoken_thread = _threading.Thread(target=_init_tiktoken, daemon=True)
+_tiktoken_thread.start()
 
 
 def estimate_message_tokens(message: dict[str, Any]) -> int:
@@ -594,7 +625,9 @@ def estimate_message_tokens(message: dict[str, Any]) -> int:
         return 4
     try:
         enc = _get_tiktoken_encoding()
-        return max(4, len(enc.encode(payload)) + 4)
+        if enc is not None:
+            return max(4, len(enc.encode(payload)) + 4)
+        return max(4, len(payload) // 4 + 4)
     except Exception:
         return max(4, len(payload) // 4 + 4)
 
