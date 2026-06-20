@@ -1465,12 +1465,28 @@ class AgentRunner:
         if budget <= 0:
             return messages
 
+        _t0 = time.perf_counter()
+        _tools_defs = spec.tools.get_definitions() if spec.tools else None
+        _t1 = time.perf_counter()
         estimate, _ = estimate_prompt_tokens_chain(
             self.provider,
             spec.model,
             messages,
-            spec.tools.get_definitions(),
+            _tools_defs,
         )
+        _t2 = time.perf_counter()
+        logger.debug(
+            "[SNIP-PERF] estimate_prompt_tokens_chain total={:.0f}ms "
+            "(get_defs={:.0f}ms, encode={:.0f}ms) msgs={} tools={} est={} budget={}",
+            (_t2 - _t0) * 1000,
+            (_t1 - _t0) * 1000,
+            (_t2 - _t1) * 1000,
+            len(messages),
+            len(_tools_defs) if _tools_defs else 0,
+            estimate,
+            budget,
+        )
+
         if estimate <= budget:
             return messages
 

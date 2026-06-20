@@ -58,6 +58,7 @@ CLI 命令        ████████████████████�
 - **实例级插件隔离** — 每个 Gateway 实例通过独立 `config.yaml` 的 `plugins.<name>.enabled` 控制加载的插件组合（config.yaml > plugin.toml > 默认 True），不同实例可配置不同的工具集
 - **运行时日志自管理** — `logging:` 配置段驱动 loguru 文件 sink，支持 rotation/retention/compression，程序自管理日志生命周期，无需外部 logrotate
 - **多实例部署编排** — `deploy/nanobee-gateway.sh` 单脚本管理 N 个 Gateway 实例：扫描 `/nanobee-data/<name>/config.yaml`、单实例/全部启停、systemd 托管（详见 `devdocs/多实例安装部署V3.md`）
+- **tiktoken 后台惰性预热** — `estimate_prompt_tokens` 的 `tiktoken.get_encoding()` 放在模块级 daemon 线程后台加载（解决 CentOS 7 上首次加载高达 42s 的极端延迟），未就绪时降级为字符估算（`len//4`），首消息不阻塞。后台完成后自动切入 tiktoken 精确编码（13ms）
 
 ### 尚不完整的功能
 
