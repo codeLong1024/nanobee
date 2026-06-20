@@ -11,6 +11,7 @@ import asyncio
 import inspect
 import json
 import os
+import time
 from contextlib import suppress
 from copy import deepcopy
 from dataclasses import dataclass, field
@@ -306,6 +307,7 @@ class AgentRunner:
         外层包裹 run-level hook（before_run / after_run / on_error / on_finally），
         迭代循环逻辑委托给 _run_core()。
         """
+        _t_run = time.perf_counter()
         hook = spec.hook or AgentHook()
         messages = list(spec.initial_messages)
         context = AgentRunHookContext(messages=deepcopy(messages))
@@ -314,8 +316,13 @@ class AgentRunner:
             await hook.before_run(context)
         except Exception:
             logger.exception("AgentHook.before_run failed")
+        _t_before_run = time.perf_counter()
 
         try:
+            logger.debug(
+                "[RUNNER] 进入 _run_core (messages={}, before_run耗时={:.0f}ms)",
+                len(messages), (_t_before_run - _t_run) * 1000,
+            )
             result = await self._run_core(spec, hook, messages)
         except asyncio.CancelledError:
             context.messages = deepcopy(messages)
@@ -362,6 +369,7 @@ class AgentRunner:
 
         核心流程：上下文治理 → LLM 调用 → 工具执行 → 结果处理 → 循环/终止。
         """
+        _t_core = time.perf_counter()
         final_content: str | None = None
         tools_used: list[str] = []
         usage: dict[str, int] = {"prompt_tokens": 0, "completion_tokens": 0}
@@ -378,15 +386,32 @@ class AgentRunner:
 
         for iteration in range(spec.max_iterations):
             try:
+                _t_iter = time.perf_counter()
                 # 保持持久化对话不变。上下文治理可能修复或压缩历史消息，
                 # 但这些合成编辑不得改变调用者保存新轮次时使用的追加边界。
+                _t_gov = time.perf_counter()
                 messages_for_model = self._drop_orphan_tool_results(messages)
+                _t1 = time.perf_counter()
                 messages_for_model = self._backfill_missing_tool_results(messages_for_model)
+                _t2 = time.perf_counter()
                 messages_for_model = self._apply_tool_result_budget(spec, messages_for_model)
+                _t3 = time.perf_counter()
                 messages_for_model = self._snip_history(spec, messages_for_model)
+                _t4 = time.perf_counter()
                 # 裁剪可能产生新的孤立结果，清理它们。
                 messages_for_model = self._drop_orphan_tool_results(messages_for_model)
+                _t5 = time.perf_counter()
                 messages_for_model = self._backfill_missing_tool_results(messages_for_model)
+                _t6 = time.perf_counter()
+                logger.debug(
+                    "[GOVERNANCE] 第 {} 轮上下文治理: drop_orphan={:.0f}ms backfill={:.0f}ms "
+                    "budget={:.0f}ms snip={:.0f}ms drop2={:.0f}ms backfill2={:.0f}ms total={:.0f}ms",
+                    iteration,
+                    (_t1 - _t_gov) * 1000, (_t2 - _t1) * 1000,
+                    (_t3 - _t2) * 1000, (_t4 - _t3) * 1000,
+                    (_t5 - _t4) * 1000, (_t6 - _t5) * 1000,
+                    (_t6 - _t_gov) * 1000,
+                )
             except Exception:
                 logger.exception(
                     "Context governance failed on turn {} for {}; applying minimal repair",
@@ -399,8 +424,26 @@ class AgentRunner:
                 except Exception:
                     messages_for_model = messages
             context = AgentHookContext(iteration=iteration, messages=messages)
+            _t_hook = time.perf_counter()
             await hook.before_iteration(context)
+            _elapsed_hook = (time.perf_counter() - _t_hook) * 1000
+            if _elapsed_hook > 100:
+                logger.debug("[GOVERNANCE] 第 {} 轮 before_iteration hook 耗时 {:.0f}ms", iteration, _elapsed_hook)
+
+            # LLM API 调用计时：覆盖从 HTTP 请求发出到首 token 返回的全过程
+            _t_llm_call = time.perf_counter()
+            _elapsed_gov = (_t_llm_call - _t_core) * 1000
+            logger.debug(
+                "[LLM-CALL] 第 {} 轮 API 调用开始 (messages={}, tools={}, goverance耗时={:.0f}ms)",
+                iteration, len(messages_for_model), len(spec.tools.get_definitions()), _elapsed_gov,
+            )
             response = await self._request_model(spec, messages_for_model, hook, context)
+            _elapsed_llm_call = (time.perf_counter() - _t_llm_call) * 1000
+            logger.debug(
+                "[LLM-CALL] 第 {} 轮 API 调用完成，耗时 {:.0f}ms (finish_reason={})",
+                iteration, _elapsed_llm_call, response.finish_reason,
+            )
+
             raw_usage = self._usage_dict(response.usage)
             context.response = response
             context.usage = dict(raw_usage)

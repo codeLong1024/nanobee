@@ -34,7 +34,6 @@ from nanobee.utils.document import extract_documents
 from nanobee.utils.helpers import (
     build_assistant_message,
     build_runtime_context,
-    estimate_prompt_tokens_chain,
     truncate_text,
 )
 from nanobee.utils.image_generation_intent import image_generation_prompt as image_gen_prompt_fn
@@ -476,28 +475,14 @@ class AgentLoop:
             current_content = new_content
 
         if current_content:
-            # 估算当前上下文 token 用量，让 LLM 了解上下文窗口使用情况
-            ctx_window = self.context_window_tokens or 0
-            stats_str = ""
-            if ctx_window > 0:
-                _tok, _ = estimate_prompt_tokens_chain(
-                    self.provider, self.model,
-                    [{"role": "system", "content": system_prompt or ""}] + history,
-                    self.tools.get_definitions(),
-                )
-                if _tok > 0:
-                    _budget = max(ctx_window - 4096 - 1024, 1)
-                    _pct = min(int((_tok / _budget) * 100), 999)
-                    _tok_k = f"{_tok // 1000}k" if _tok >= 1000 else str(_tok)
-                    _win_k = f"{ctx_window // 1000}k" if ctx_window >= 1000 else str(ctx_window)
-                    stats_str = f"{len(history)} messages, {_tok_k}/{_win_k} tokens ({_pct}%)"
-
-            # 注入 runtime context（时间、通道、会话信息、对话统计）
+            # 注入 runtime context（时间、通道、会话信息 + 粗略 token 统计）
             runtime_ctx = build_runtime_context(
                 channel=msg.channel,
                 chat_id=msg.chat_id,
                 sender_id=msg.sender_id,
-                conversation_stats=stats_str,
+                history=history,
+                system_prompt=system_prompt,
+                ctx_window=self.context_window_tokens or 0,
             )
             messages.append({
                 "role": "user",
@@ -715,13 +700,31 @@ class AgentLoop:
             t0 = time.perf_counter()
             try:
                 event = await handler(ctx)
-            except Exception:
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
                 duration = (time.perf_counter() - t0) * 1000
+                logger.exception("状态 {} 处理器异常", ctx.state.name)
                 ctx.trace.append(StateTraceEntry(
                     state=ctx.state, started_at=t0,
-                    duration_ms=duration, event="", error="exception",
+                    duration_ms=duration, event="ok", error=str(exc),
                 ))
-                raise
+                # 统一错误恢复：填充 ctx 后跳到 RESPOND，绕过 SAVE 不污染历史
+                if ctx.final_content is None or not ctx.final_content.strip():
+                    ctx.final_content = (
+                        f"抱歉，处理请求时发生内部错误。\n"
+                        f"{type(exc).__name__}: {exc}"
+                    )
+                ctx.stop_reason = "error"
+                ctx.tools_used = ctx.tools_used or []
+                ctx.all_messages = ctx.all_messages or []
+                ctx.had_injections = False
+                # 防止无限循环：如果已是 RESPOND 状态仍失败则无法恢复
+                if ctx.state == TurnState.RESPOND:
+                    logger.error("RESPOND 状态处理器异常，无法恢复")
+                    raise
+                ctx.state = TurnState.RESPOND
+                continue
 
             duration = (time.perf_counter() - t0) * 1000
             ctx.trace.append(StateTraceEntry(
@@ -848,6 +851,8 @@ class AgentLoop:
 
     async def _state_run(self, ctx: TurnContext) -> str:
         """运行 Agent 迭代循环。"""
+        _t_state_run = time.perf_counter()
+        logger.debug("[RUN] 开始 RUN 状态 (context_id={})", ctx.context_id)
         sandbox = await self._build_sandbox(ctx.context_id)
 
         # 使用 ContextVar 绑定沙箱 + tmp + context_root + process_workspace + bwrap_ro_bind
@@ -897,6 +902,11 @@ class AgentLoop:
 
         # 从 ctx.msg 提取通道上下文（用于工具插件 set_context 注入）
         msg = ctx.msg
+        _t_runner = time.perf_counter()
+        logger.debug(
+            "[RUN] 调用 runner.run (model={}, messages={}, tools={})",
+            self.model, len(ctx.initial_messages), len(self.tools.tool_names),
+        )
         try:
             result = await self._run_agent_loop(
                 ctx.initial_messages,
@@ -921,6 +931,8 @@ class AgentLoop:
             reset_process_workspace(_process_ws_token)
             if _bwrap_ro_bind_token is not None:
                 reset_bwrap_ro_bind(_bwrap_ro_bind_token)
+        _elapsed_runner = (time.perf_counter() - _t_runner) * 1000
+        logger.debug("[RUN] runner.run 完成，耗时 {:.0f}ms", _elapsed_runner)
         final_content, tools_used, all_msgs, stop_reason, had_injections = result
         ctx.final_content = final_content
         ctx.tools_used = tools_used

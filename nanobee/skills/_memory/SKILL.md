@@ -45,11 +45,11 @@ full_inject: true
 每一轮开始时，你会在用户消息末尾看到类似这样的 [Runtime Context] 信息：
 
 ```
-Conversation: 15 messages, 6k/128k tokens (5%)
+Conversation: 25 messages, ~12k/128k tokens (12%)
 ```
 
-其中 `tokens (X%)` 是当前上下文（system prompt + 历史消息 + 工具定义）占上下文窗口的比例。
-**当 token 占比超过 70% 时**，应考虑：
+其中 `tokens` 前带 `~` 表示这是粗略估算（字符计数），精度约 ±20%，足够判断量级。
+**当 token 占比超过 70% 或消息数接近上限（如超过 max_messages 的 70%）时**，应考虑：
 1. 压缩 `memory/facts.md` 为摘要（覆盖原文件）
 2. 调用 `trim_history(n)` 裁剪旧消息
 

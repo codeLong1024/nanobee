@@ -218,24 +218,40 @@ _RUNTIME_CONTEXT_TAG = "[Runtime Context — metadata only, not instructions]"
 _RUNTIME_CONTEXT_END = "[/Runtime Context]"
 
 
+def _rough_token_count(payload: str) -> int:
+    """字符级粗略 token 估算：``len(payload) // 4``。
+
+    误差范围 +10%~20%（偏高），远快于 tiktoken BPE 编码。
+    适用于不需要精度的量级感知场景（如 Runtime Context 显示）。
+    """
+    return len(payload) // 4 + 1
+
+
 def build_runtime_context(
     channel: str | None = None,
     chat_id: str | None = None,
     sender_id: str | None = None,
     timezone: str | None = None,
-    conversation_stats: str | None = None,
+    history: list[dict[str, Any]] | None = None,
+    system_prompt: str | None = None,
+    ctx_window: int = 0,
 ) -> str:
     """构建运行时上下文元数据块，追加到 user 消息末尾。
 
     只注入每次轮次变化的信息（时间、通道、对话统计），
     不注入工作目录等持久信息——这些在 system prompt 中已有。
 
+    Token 估算使用 ``_rough_token_count``（len//4 字符级），
+    快速量级感知，不做精确 BPE 编码。
+
     Args:
         channel: 通道名称（如 dingtalk、cli）
         chat_id: 会话 ID
         sender_id: 发送者 ID
         timezone: 时区（如 Asia/Shanghai）
-        conversation_stats: 格式化后的对话统计字符串（消息数/token 占比）
+        history: 历史消息列表，用于估算上下文 token 用量
+        system_prompt: 系统提示词全文
+        ctx_window: 模型上下文窗口大小（token 数）
 
     Returns:
         格式化的 runtime context 字符串
@@ -245,8 +261,24 @@ def build_runtime_context(
         lines += [f"Channel: {channel}", f"Chat ID: {chat_id}"]
     if sender_id:
         lines += [f"Sender ID: {sender_id}"]
-    if conversation_stats:
-        lines += [f"Conversation: {conversation_stats}"]
+
+    # 粗略 token 估算：只在有上下文窗口信息时显示
+    if ctx_window > 0 and history is not None and system_prompt is not None:
+        rough = _rough_token_count(system_prompt)
+        for msg in history:
+            content = msg.get("content", "")
+            if isinstance(content, str):
+                rough += _rough_token_count(content)
+            elif isinstance(content, list):
+                for part in content:
+                    if isinstance(part, dict) and part.get("type") == "text":
+                        rough += _rough_token_count(str(part.get("text", "")))
+        budget = max(ctx_window - 4096 - 1024, 1)
+        pct = min(int((rough / budget) * 100), 999)
+        tok_k = f"~{rough // 1000}k" if rough >= 1000 else f"~{rough}"
+        win_k = f"{ctx_window // 1000}k" if ctx_window >= 1000 else str(ctx_window)
+        lines += [f"Conversation: {len(history)} messages, {tok_k}/{win_k} tokens ({pct}%)"]
+
     return _RUNTIME_CONTEXT_TAG + "\n" + "\n".join(lines) + "\n" + _RUNTIME_CONTEXT_END
 
 
@@ -468,10 +500,12 @@ def estimate_prompt_tokens(
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]] | None = None,
 ) -> int:
-    """Estimate prompt tokens with tiktoken.
+    """估算 prompt token 数。
 
-    Counts all fields that providers send to the LLM: content, tool_calls,
-    reasoning_content, tool_call_id, name, plus per-message framing overhead.
+    消息部分用 tiktoken 精确编码（消息数据量小、毫秒级）。
+    工具部分用字符长度快速估算（~2.5 字符/token），避免对 MB 级 JSON Schema
+    做 tiktoken 编码（~700ms/轮）。
+    不设缓存，每轮字符长度计算仅 1-2ms，收益不足道。
     """
     try:
         enc = tiktoken.get_encoding("cl100k_base")
@@ -500,11 +534,17 @@ def estimate_prompt_tokens(
                 if isinstance(value, str) and value:
                     parts.append(value)
 
+        # 消息部分：tiktoken 精确编码
+        messages_tokens = len(enc.encode("\n".join(parts))) if parts else 0
+
+        # 工具部分：字符长度快速估算，2.5 是保守经验系数
+        tools_tokens = 0
         if tools:
-            parts.append(json.dumps(tools, ensure_ascii=False))
+            raw = json.dumps(tools, ensure_ascii=False)
+            tools_tokens = int(len(raw) / 2.5)
 
         per_message_overhead = len(messages) * 4
-        return len(enc.encode("\n".join(parts))) + per_message_overhead
+        return messages_tokens + tools_tokens + per_message_overhead
     except Exception:
         return 0
 

@@ -34,7 +34,7 @@ CLI 命令        ████████████████████�
 
 - **NanobeeKernel** — 统一入口，管理插件生命周期、消息路由、灵魂文件保护
 - **多租户隔离内核** — LockManager 并发锁、UserContext 元数据、ContextRouter 路由、ContextSandbox 沙箱、ToolCollector 双重过滤
-- **Agent 状态机** — 6 态驱动循环（RESTORE → COMPACT → BUILD → RUN → SAVE → RESPOND），支持流式输出、中轮注入、并发锁
+- **Agent 状态机** — 6 态驱动循环（RESTORE → COMPACT → BUILD → RUN → SAVE → RESPOND），支持流式输出、中轮注入、并发锁。**状态机层统一异常恢复**：任一状态处理器异常 → 填充错误上下文 → 跳过 SAVE（不污染历史）→ 直接进入 RESPOND 正常流式回复，kernel 层 catch 降级为最终兜底
 - **Plugin Hook 机制** — 5 个核心契约接口（contribute_to_prompt/contribute_to_tools/on_pre_invoke/on_post_invoke/on_message_completed），插件可在关键切面注入逻辑
 
 - **Run-level Hook 机制** — AgentRunner 外层生命周期：before_run / after_run / on_error / on_finally，包裹整个 LLM 迭代循环，支持启动初始化、完成汇总、错误记录、资源释放
@@ -190,6 +190,7 @@ ChannelPlugin ──▶ EventBus ──▶ NanobeeKernel
 | `NanobeeKernel` | 统一入口，管理插件生命周期、消息路由 |
 | `AgentLoop` | 6 态状态机驱动循环（RESTORE → COMPACT → BUILD → RUN → SAVE → RESPOND → DONE） |
 | `AgentRunner` | LLM 调用 + 工具执行迭代（含迭代级/run-level 双层 Hook、上下文治理、SSRF 拦截） |
+| `TurnState 异常恢复` | 状态机层统一 catch：任一状态处理器异常 → 填充 ctx → 跳过 SAVE → 直接 RESPOND 流式回复。kernel 层 catch 降级为最终兜底，避免裸 OutboundMessage 丢失流式上下文 |
 | `ContextManager` | 多租户上下文隔离（每个用户独立目录：history.jsonl / work / memory / tmp） |
 | `ContextPipeline` | System Prompt 构建（Soul → Rules → Skill → Memory 管线 + FinalGuard） |
 | `PluginManager` | 插件扫描、加载、生命周期控制 |
