@@ -170,7 +170,14 @@ channels:
 #   tool_shell:
 #     # 沙箱后端（子进程隔离，需要系统安装 bwrap）
 #     # sandbox: "bwrap"
-#     # 虚拟环境 site-packages 路径（可选，由实例管理员根据实际 venv 位置填写）
-#     # 配置后沙箱自动挂载并注入 PYTHONPATH，使 shell 命令中直接 import 可用
-#     # 不配此选项则 LLM 使用系统 Python（或自己 pip install --target=）
-#     # venv: "/home/user/.venv/lib/python3.11/site-packages"
+    #     # 额外只读挂载（source:target 格式，可选）
+    #     # 部署方声明需要映射到沙箱内的目录，如 venv site-packages 或 SDK 目录。
+    #     # 注意：必须整条挂载（如整个 .venv），bwrap 不支持在 --ro-bind 创建的
+    #     # 只读挂载点内部 mkdir 子挂载点，分拆子目录会导致所有命令失败。
+    #     # extra_mounts:
+    #     #   - "/home/user/.venv:/sandbox_venv"
+    #     #
+    #     # 沙箱内环境变量注入（可选，与 extra_mounts 配合使用）
+    #     # env:
+    #     #   PYTHONPATH: "/sandbox_venv/lib/python3.11/site-packages"
+    #     #   PATH: "/sandbox_venv/bin:$PATH"

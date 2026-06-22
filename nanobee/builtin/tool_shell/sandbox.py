@@ -27,7 +27,9 @@ def _bwrap(command: str, workspace: str, cwd: str, extra_ro_bind: list[str] | No
         command: 原始 shell 命令
         workspace: 可读写的工作区根目录（子进程唯一可写入的地方）
         cwd: 容器内的工作目录（通常与 workspace 相同或为其子目录）
-        extra_ro_bind: 额外只读挂载路径列表（如启用的实例技能目录）
+        extra_ro_bind: 额外只读挂载列表，支持两种格式：
+            - 纯路径: "/real/path" → 绑定到相同路径（向后兼容）
+            - source:target: "/real/path:/sandbox/path" → 绑定到容器内非 HOME 路径
 
     Returns:
         包裹后的 bwrap 命令字符串
@@ -35,10 +37,15 @@ def _bwrap(command: str, workspace: str, cwd: str, extra_ro_bind: list[str] | No
     ws = Path(workspace).resolve()
 
     # 计算容器内的 cwd（相对于 workspace）
+    # 如果 cwd 不在 workspace 内，直接报错，不做静默回退。
+    # 上层 _resolve_and_validate_working_dir 已确保 cwd 在可写范围内，
+    # 若此异常触发说明上层校验有 bug，应当暴露而非隐藏。
     try:
         sandbox_cwd = str(ws / Path(cwd).resolve().relative_to(ws))
     except ValueError:
-        sandbox_cwd = str(ws)
+        raise ValueError(
+            f"沙箱工作目录不在 workspace 内: cwd={cwd}, workspace={workspace}"
+        ) from None
 
     # 系统必须的可读目录
     required = ["/usr"]
@@ -59,16 +66,29 @@ def _bwrap(command: str, workspace: str, cwd: str, extra_ro_bind: list[str] | No
         "--proc", "/proc",
         "--dev", "/dev",
         "--tmpfs", "/tmp",
-        "--tmpfs", str(home),             # 掩藏整个 $HOME（阻止访问配置/SSH 密钥等）
+        "--tmpfs", str(home),
     ]
-    # 额外只读挂载（启用的实例技能目录）—— 部署方通过 skills.enabled 声明
-    # 必须在 --tmpfs $HOME 之后，否则被 tmpfs 掩藏覆盖
-    # 若目标路径在被 tmpfs 遮盖的 HOME 下，先建目录再绑定
     for p in (extra_ro_bind or []):
+        if ":" in p:
+            parts = p.split(":", 1)
+            source = str(Path(parts[0]).expanduser().resolve())
+            if Path(source).exists() and parts[1].startswith("/"):
+                target = parts[1]
+                for parent_part in reversed(Path(target).parents):
+                    if parent_part != Path("/"):
+                        args += ["--dir", str(parent_part)]
+                args += ["--ro-bind", source, target]
+                continue
+
         resolved = str(Path(p).expanduser().resolve())
         if not Path(resolved).exists():
             continue
         if resolved.startswith(str(home)):
+            rel = Path(resolved).relative_to(home)
+            current = home
+            for part in rel.parts[:-1]:  # 纯路径回退：HOME 下需逐级 --dir 穿透 tmpfs
+                current = current / part
+                args += ["--dir", str(current)]
             args += ["--dir", resolved]
         args += ["--ro-bind", resolved, resolved]
     args += [

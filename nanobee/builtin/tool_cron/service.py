@@ -108,8 +108,6 @@ class CronService:
         self._timer_active = False
         self.max_sleep_ms = max_sleep_ms
 
-    # ========== 存储 ==========
-
     def _load_jobs(self) -> tuple[list[CronJob], int] | None:
         """从磁盘加载任务列表。
 
@@ -271,8 +269,6 @@ class CronService:
             tmp_path.unlink(missing_ok=True)
             raise
 
-    # ========== 生命周期 ==========
-
     def start(self) -> None:
         """启动服务。"""
         self._running = True
@@ -294,8 +290,6 @@ class CronService:
         if self._timer_task:
             self._timer_task.cancel()
             self._timer_task = None
-
-    # ========== 定时器 ==========
 
     def _recompute_next_runs(self) -> None:
         """重新计算所有已启用任务的下次运行时间。"""
@@ -408,8 +402,6 @@ class CronService:
                 job.state.next_run_at_ms = None
         else:
             job.state.next_run_at_ms = _compute_next_run(job.schedule, _now_ms())
-
-    # ========== 公共 API ==========
 
     def list_jobs(self, include_disabled: bool = False) -> list[CronJob]:
         """列出所有任务（默认仅启用的任务）。"""
