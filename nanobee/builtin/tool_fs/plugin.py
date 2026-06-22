@@ -1,11 +1,5 @@
 """
 Tool FS 插件 - 文件系统工具（read_file, write_file, edit_file, list_dir）
-基于 nanobot/agent/tools/filesystem.py 适配 nanobee 插件架构
-
-防御纵深设计：
-- L1（runner.py）：ContextSandbox 在工具执行前清洗参数
-- L2（本插件）：插件内部路径校验，作为第二道防线
-两层使用同一个 context_root（通过 ContextVar 在当前异步任务中注入），确保一致性。
 """
 
 from __future__ import annotations
@@ -20,14 +14,8 @@ from nanobee.plugins.tool import ToolPlugin
 from nanobee.utils.logger import logger
 
 
-
 class ToolFileSystemPlugin(ToolPlugin):
-    """文件系统工具插件
-
-    防御纵深 L2 层：插件内部路径校验。
-    sandbox 通过 execute_tool 的请求级参数传递（线程安全）。
-    如果没有传递，回退到 Path.cwd() 作为默认工作目录。
-    """
+    """文件系统工具插件"""
 
     name = "tool_fs"
     version = "1.0.0"
@@ -37,11 +25,7 @@ class ToolFileSystemPlugin(ToolPlugin):
         super().__init__(metadata)
 
     def get_tools(self) -> list[dict[str, Any]]:
-        """获取工具定义列表（OpenAI function schema 格式）
-
-        Returns:
-            工具定义列表，包含 read_file, write_file, edit_file, list_dir
-        """
+        """获取工具定义列表（OpenAI function schema 格式）"""
         return [
             {
                 "type": "function",
@@ -144,7 +128,6 @@ class ToolFileSystemPlugin(ToolPlugin):
         ]
 
     def _read_file_desc(self) -> str:
-        """读取文件工具描述"""
         return (
             "读取文件（文本）。文本输出格式：LINE_NUM|CONTENT。"
             "对大文件使用 offset 和 limit 分页读取。"
@@ -154,19 +137,8 @@ class ToolFileSystemPlugin(ToolPlugin):
             "读取内容超过 100K 字符会被截断，可使用 offset 缩小范围。"
         )
 
-    async def execute_tool(self, tool_name: str, **kwargs: Any) -> Any:
-        """执行指定工具
-
-        Args:
-            tool_name: 工具名称
-            **kwargs: 工具参数（沙箱通过 ContextVar 注入，无需额外传递）
-
-        Returns:
-            工具执行结果
-
-        Raises:
-            ValueError: 工具不存在或参数无效
-        """
+    async def execute_tool(self, tool_name: str, **kwargs: Any) -> str:
+        """执行指定工具"""
         if tool_name == "read_file":
             return await self._execute_read_file(**kwargs)
         elif tool_name == "write_file":
@@ -178,10 +150,6 @@ class ToolFileSystemPlugin(ToolPlugin):
         else:
             raise ValueError(f"未知工具: {tool_name}")
 
-    # ------------------------------------------------------------------
-    # read_file 实现
-    # ------------------------------------------------------------------
-
     async def _execute_read_file(
         self,
         path: str | None = None,
@@ -189,7 +157,7 @@ class ToolFileSystemPlugin(ToolPlugin):
         limit: int | None = None,
         **kwargs: Any,
     ) -> str:
-        """读取文件内容（沙箱通过 ContextVar 注入）
+        """读取文件内容
 
         Args:
             path: 文件路径
@@ -234,7 +202,7 @@ class ToolFileSystemPlugin(ToolPlugin):
             numbered = [f"{start + i + 1}| {line}" for i, line in enumerate(all_lines[start:end])]
             result = "\n".join(numbered)
 
-            # 上游风格：按字符截断，防止单行极长时结果过大触发持久化
+            # 按字符截断，防止单行极长时结果过大触发持久化
             _MAX_READ_CHARS = 100_000
             if len(result) > _MAX_READ_CHARS:
                 trimmed, chars = [], 0
@@ -260,19 +228,13 @@ class ToolFileSystemPlugin(ToolPlugin):
         except Exception as e:
             return f"读取文件失败: {e}"
 
-    # ------------------------------------------------------------------
-    # write_file 实现
-    # ------------------------------------------------------------------
-
     async def _execute_write_file(
         self,
         path: str | None = None,
         content: str | None = None,
         **kwargs: Any,
     ) -> str:
-        """写入文件内容（沙箱通过 ContextVar 注入）
-
-        写操作走 _resolve_write_path，确保只在可写根内操作。
+        """写入文件内容
 
         Args:
             path: 文件路径
@@ -330,10 +292,6 @@ class ToolFileSystemPlugin(ToolPlugin):
         except Exception as e:
             return f"写入文件失败: {e}"
 
-    # ------------------------------------------------------------------
-    # edit_file 实现
-    # ------------------------------------------------------------------
-
     async def _execute_edit_file(
         self,
         path: str | None = None,
@@ -342,9 +300,7 @@ class ToolFileSystemPlugin(ToolPlugin):
         replace_all: bool = False,
         **kwargs: Any,
     ) -> str:
-        """编辑文件（精确替换文本）（沙箱通过 ContextVar 注入）
-
-        写操作走 _resolve_write_path，确保只在可写根内操作。
+        """编辑文件（精确替换文本）
 
         Args:
             path: 文件路径
@@ -365,7 +321,7 @@ class ToolFileSystemPlugin(ToolPlugin):
 
             fp = self._resolve_write_path(path)
 
-            # 创建文件语义：old_text='' 且文件不存在 → 创建
+            # 创建文件语义：old_text='' 且文件不存在时创建
             if not fp.exists():
                 if old_text == "":
                     fp.parent.mkdir(parents=True, exist_ok=True)
@@ -409,17 +365,13 @@ class ToolFileSystemPlugin(ToolPlugin):
         except Exception as e:
             return f"编辑文件失败: {e}"
 
-    # ------------------------------------------------------------------
-    # list_dir 实现
-    # ------------------------------------------------------------------
-
     async def _execute_list_dir(
         self,
         path: str | None = None,
         recursive: bool = False,
         **kwargs: Any,
     ) -> str:
-        """列出目录内容（沙箱通过 ContextVar 注入）
+        """列出目录内容
 
         Args:
             path: 目录路径
@@ -469,18 +421,11 @@ class ToolFileSystemPlugin(ToolPlugin):
         except Exception as e:
             return f"列出目录失败: {e}"
 
-    # ------------------------------------------------------------------
-    # 工具方法
-    # ------------------------------------------------------------------
-
     def _resolve_path(self, path: str) -> Path:
-        """解析文件路径，支持 L2 沙箱校验 + overlay 回退
+        """解析文件路径，支持沙箱校验 + overlay 回退
 
-        防御纵深 L2 层：通过 ContextVar 获取当前任务的沙箱实例进行路径边界校验。
+        通过 ContextVar 获取当前任务的沙箱实例进行路径边界校验。
         如果当前任务未绑定沙箱，回退到 Path.cwd() 作为默认工作目录。
-
-        Overlay 回退（如 skills/ → 内置技能目录）由沙箱的 resolve_with_fallback
-        统一处理，取代了此前分散在插件中的 _overlay_dirs 逻辑。
 
         Args:
             path: 文件路径（可以是相对或绝对路径）
@@ -498,7 +443,7 @@ class ToolFileSystemPlugin(ToolPlugin):
         if sandbox is not None:
             return sandbox.resolve_with_fallback(path)
 
-        # 无沙箱回退
+        # 无沙箱时回退到普通路径解析
         p = Path(path)
         if not p.is_absolute():
             p = (Path.cwd() / p).resolve()
@@ -507,10 +452,7 @@ class ToolFileSystemPlugin(ToolPlugin):
         return p
 
     def _resolve_write_path(self, path: str) -> Path:
-        """解析写操作文件路径，仅允许可写根（写操作专用）
-
-        写操作（write_file, edit_file）只能写入 context_root 内，
-        禁止向只读根（如内置技能目录）写入。
+        """解析写操作文件路径，仅允许可写根
 
         Args:
             path: 文件路径（可以是相对或绝对路径）
@@ -528,7 +470,7 @@ class ToolFileSystemPlugin(ToolPlugin):
         if sandbox is not None:
             return sandbox.resolve_safe_writable(path)
 
-        # 无沙箱时回退：普通路径解析
+        # 无沙箱时回退到普通路径解析
         p = Path(path)
         if not p.is_absolute():
             p = (Path.cwd() / p).resolve()

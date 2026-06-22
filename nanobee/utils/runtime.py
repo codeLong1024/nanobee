@@ -198,5 +198,5 @@ def repeated_workspace_violation_error(
         "or base64 piping will NOT change the answer. Stop retrying. "
         "If the user genuinely needs this resource, tell them you cannot "
         "access it and ask how they want to proceed (e.g. copy the file "
-        "into the workspace, or disable restrict_to_workspace for this run)."
+        "into the workspace directory)."
     )

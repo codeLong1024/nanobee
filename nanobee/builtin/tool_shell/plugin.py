@@ -18,7 +18,11 @@ from pathlib import Path
 from typing import Any
 
 from nanobee.builtin.tool_shell.sandbox import wrap_command as _wrap_sandbox_command
-from nanobee.kernel.context_sandbox_var import current_sandbox as _current_sandbox
+from nanobee.kernel.context_sandbox_var import (
+    current_bwrap_ro_bind,
+    current_process_workspace,
+    current_sandbox as _current_sandbox,
+)
 from nanobee.plugins.tool import ToolPlugin
 from nanobee.security.network import contains_internal_url
 
@@ -27,33 +31,35 @@ from nanobee.utils.logger import logger
 
 _IS_WINDOWS = sys.platform == "win32"
 
-# 策略提示：追加到可恢复的工作区边界守卫错误后
-_WORKSPACE_BOUNDARY_NOTE = (
-    "\n\n注意：这是硬性策略边界，非临时故障。"
-    "不要使用 shell 技巧（符号链接、base64 管道、替代工具、working_dir 覆盖）重试。"
-    "如果用户确实需要访问该资源，告知在当前 restrict_to_workspace 策略下无法访问，询问如何处理。"
-)
 
-# 危险命令 deny 模式（不区分大小写匹配）
-_DENY_PATTERNS: list[str] = [
-    r"\brm\s+-[rf]{1,2}\b",            # rm -r, rm -rf, rm -fr
-    r"\bdel\s+/[fq]\b",                # del /f, del /q
-    r"\brmdir\s+/s\b",                 # rmdir /s
-    r"(?:^|[;&|]\s*)format(?!=)\b",    # format（作为独立命令）
-    r"\b(mkfs|diskpart)\b",            # 磁盘操作
-    r"\bdd\s+if=",                     # dd
-    r">\s*/dev/sd",                    # 写入磁盘设备
-    r"\b(shutdown|reboot|poweroff)\b", # 系统电源
-    r":\(\)\s*\{.*\};\s*:",            # fork 炸弹
+
+# 安装/卸载类 deny 模式 — 沙箱环境应保持洁净，禁止运行时变更依赖
+_INSTALL_DENY_PATTERNS: list[str] = [
+    r"\bpip[23]?\s+install\b",
+    r"\bpython3?\s+-m\s+pip\s+install\b",
+    r"\bnpm\s+(install|i|add)\b",
+    r"\byarn\s+(add|install)\b",
+    r"\bpnpm\s+(install|add)\b",
+    r"\bconda\s+install\b",
+    r"\bapt-get\s+install\b",
+    r"\bapt\s+install\b",
+    r"\bbrew\s+install\b",
 ]
 
-# 内核设备文件 — 安全的重定向目标
-_BENIGN_DEVICE_PATHS: frozenset[str] = frozenset({
-    "/dev/null", "/dev/zero", "/dev/full",
-    "/dev/random", "/dev/urandom",
-    "/dev/stdin", "/dev/stdout", "/dev/stderr",
-    "/dev/tty",
-})
+# 危险系统操作 deny 模式
+_DANGER_DENY_PATTERNS: list[str] = [
+    r"\brm\s+-[rf]{1,2}\b",
+    r"\bdel\s+/[fq]\b",
+    r"\brmdir\s+/s\b",
+    r"(?:^|[;&|]\s*)format(?!=)\b",
+    r"\b(mkfs|diskpart)\b",
+    r"\bdd\s+if=",
+    r">\s*/dev/sd",
+    r"\b(shutdown|reboot|poweroff)\b",
+    r":\(\)\s*\{.*\};\s*:",
+]
+
+
 
 
 @dataclass(slots=True)
@@ -68,12 +74,7 @@ class _PreparedCommand:
 
 
 class ToolShellPlugin(ToolPlugin):
-    """Shell 工具插件 — 提供 execute_shell 和 write_stdin 工具
-
-    支持双层沙箱校验：
-    - L1: restrict_to_workspace 启用时，以 _workspace 为边界校验路径
-    - L2: ContextVar 注入的 ContextSandbox 优先，实现防御纵深
-    """
+    """Shell 工具插件 — 提供 execute_shell 和 write_stdin 工具"""
 
     name = "tool_shell"
     version = "1.0.0"
@@ -85,12 +86,8 @@ class ToolShellPlugin(ToolPlugin):
     def __init__(
         self,
         metadata: Any = None,
-        workspace: str | None = None,
-        restrict_to_workspace: bool = False,
     ):
         super().__init__(metadata)
-        self._workspace = str(Path(workspace).resolve()) if workspace else os.getcwd()
-        self.restrict_to_workspace = restrict_to_workspace
         self._default_timeout = 60
 
     # ------------------------------------------------------------------
@@ -118,7 +115,11 @@ class ToolShellPlugin(ToolPlugin):
                             },
                             "working_dir": {
                                 "type": "string",
-                                "description": "命令的工作目录（可选，默认使用工作区根目录）",
+                                "description": (
+                                    "命令的工作目录（可选，不提供时默认可写工作目录）。"
+                                    "不要用 cd 切换目录。"
+                                    "沙箱仅允许在此目录及其子目录中写入文件。"
+                                ),
                             },
                             "timeout": {
                                 "type": "integer",
@@ -166,6 +167,11 @@ class ToolShellPlugin(ToolPlugin):
             "优先使用 read_file 和工具 API 进行文件操作，而非 shell 命令。"
             "使用 -y 或 --yes 标志避免交互式提示。"
             "输出截断至 10,000 字符；超时默认为 60 秒。"
+            "注意：运行时安装或卸载软件包（pip/npm/apt/brew 等）已被安全策略禁止。"
+            "缺少模块时，请告知用户联系管理员安装。"
+            "【沙箱约束】命令在隔离沙箱中运行，文件写入必须使用相对路径。"
+            "绝对路径（如 --dump /home/xxx/reports）指向的目录在沙箱中不存在。"
+            "所有文件输出到 CWD 或其子目录，如 --dump ./reports。"
         )
 
     # ------------------------------------------------------------------
@@ -221,7 +227,7 @@ class ToolShellPlugin(ToolPlugin):
                 await self._kill_process(process)
                 raise
 
-            output_parts: list[str] = []
+            output_parts: list[str] = [f"[CWD: {prepared.cwd}]"]
 
             if stdout:
                 output_parts.append(stdout.decode("utf-8", errors="replace"))
@@ -237,11 +243,13 @@ class ToolShellPlugin(ToolPlugin):
 
             max_len = self._clamp_int(timeout or self._MAX_OUTPUT, self._MAX_OUTPUT, 1000, self._MAX_OUTPUT)
             if len(result) > max_len:
-                half = max_len // 2
+                # 末尾优先：保留头部 20% 和尾部 80%，确保错误信息不被截断
+                head_len = max_len // 5
+                tail_len = max_len - head_len
                 result = (
-                    result[:half]
-                    + f"\n\n...（{len(result) - max_len:,} 字符已截断）...\n\n"
-                    + result[-half:]
+                    result[:head_len]
+                    + f"\n\n...（{len(result) - max_len:,} 字符已截断，保留头部 {head_len} + 尾部 {tail_len}）...\n\n"
+                    + result[-tail_len:]
                 )
 
             return result
@@ -253,6 +261,72 @@ class ToolShellPlugin(ToolPlugin):
     # 命令准备与安全守卫
     # ------------------------------------------------------------------
 
+    def _resolve_and_validate_working_dir(
+        self, working_dir: str | None
+    ) -> tuple[str, str | None]:
+        """解析并校验工作目录（统一入口，单点决策）。
+
+        优先级：
+        1. working_dir 显式传入 → 校验边界后使用
+        2. 回退到 process_workspace（必须有）
+
+        Args:
+            working_dir: 用户指定的工作目录（可选）
+
+        Returns:
+            (resolved_cwd, error_message)
+            - 成功: (path_str, None)
+            - 失败: ("", error_str)
+        """
+        if working_dir:
+            return self._validate_explicit_cwd(working_dir)
+
+        # 默认值：process_workspace
+        process_ws = current_process_workspace()
+        if process_ws is None:
+            return "", "错误：未设置 process_workspace，无法确定工作目录"
+        return str(process_ws), None
+
+    def _validate_explicit_cwd(self, cwd: str) -> tuple[str, str | None]:
+        """校验显式传入的 working_dir
+
+        Args:
+            cwd: 用户指定的工作目录路径
+
+        Returns:
+            (resolved_cwd, error_message)
+            - 成功: (path_str, None)
+            - 失败: ("", error_str)
+        """
+        try:
+            requested = Path(cwd).expanduser().resolve()
+        except Exception:
+            return "", "错误：working_dir 无法解析为有效路径"
+
+        # L1：process_workspace 边界校验
+        process_ws = current_process_workspace()
+        if process_ws is not None:
+            ws_root = process_ws.resolve()
+            if requested != ws_root and ws_root not in requested.parents:
+                return "", (
+                    "错误：working_dir 超出可写工作目录\n"
+                    f"  你指定的路径: {requested}\n"
+                    f"  可写工作目录: {ws_root}\n"
+                    "  请将 working_dir 设为工作目录或其子目录，"
+                    "或不传 working_dir 使用默认值"
+                )
+
+        # L2：ContextVar 沙箱校验
+        sandbox = _current_sandbox()
+        if sandbox is not None:
+            try:
+                sandbox.resolve_safe(cwd)
+            except Exception as e:
+                logger.warning("L2 沙箱拦截: {}", e)
+                return "", f"错误：沙箱拦截 - {e}"
+
+        return str(requested), None
+
     def _prepare_command(
         self,
         command: str,
@@ -262,8 +336,6 @@ class ToolShellPlugin(ToolPlugin):
         login: bool | None = None,
     ) -> _PreparedCommand | str:
         """准备命令：解析工作目录、执行安全校验、构建环境变量
-
-        沙箱通过 ContextVar 注入（L2 防线），restrict_to_workspace 为 L1 防线。
 
         Args:
             command: 命令字符串
@@ -275,48 +347,15 @@ class ToolShellPlugin(ToolPlugin):
         Returns:
             _PreparedCommand 或错误字符串
         """
-        # 确定工作目录：优先使用 LLM 指定的 working_dir，
-        # 未指定时使用 ContextVar 沙箱的 context_root（用户上下文），
-        # 最后回退到 _workspace 或 CWD
-        if working_dir:
-            cwd = working_dir
-        else:
-            sandbox = _current_sandbox()
-            if sandbox is not None:
-                cwd = str(sandbox.context_root)
-            elif self._workspace:
-                cwd = self._workspace
-            else:
-                cwd = os.getcwd()
+        # 统一入口：解析并校验工作目录
+        cwd, error = self._resolve_and_validate_working_dir(working_dir)
+        if error:
+            return error
 
-        # L2 防线：通过 ContextVar 获取当前任务沙箱校验（线程安全）
-        sandbox_error = self._check_sandbox_path(cwd)
-        if sandbox_error:
-            return sandbox_error
-
-        # L1 防线：当 restrict_to_workspace 启用时，
-        # 阻止 LLM 提供的 working_dir 逃逸（防御降级）
-        # 注意：如果已使用 ContextVar 沙箱（L2），L1 作为额外防护仍然生效
-        if self.restrict_to_workspace and self._workspace:
-            try:
-                requested = Path(cwd).expanduser().resolve()
-                workspace_root = Path(self._workspace).expanduser().resolve()
-            except Exception:
-                return (
-                    "错误：working_dir 无法解析"
-                    + _WORKSPACE_BOUNDARY_NOTE
-                )
-            if requested != workspace_root and workspace_root not in requested.parents:
-                return (
-                    "错误：working_dir 超出配置的工作区"
-                    + _WORKSPACE_BOUNDARY_NOTE
-                )
-
-        guard_error = self._guard_command(command, cwd)
+        guard_error = self._guard_command(command)
         if guard_error:
             return guard_error
 
-        # 进程级沙箱包裹：如果配置了 sandbox 后端，将原始命令嵌入沙箱命令
         command = self._wrap_sandbox(command, cwd)
 
         effective_timeout = self._resolve_timeout(timeout)
@@ -343,12 +382,11 @@ class ToolShellPlugin(ToolPlugin):
             return self._default_timeout
         return None
 
-    def _guard_command(self, command: str, cwd: str) -> str | None:
+    def _guard_command(self, command: str) -> str | None:
         """安全守卫：阻止危险命令和内网 URL
 
         Args:
             command: 命令字符串
-            cwd: 当前工作目录
 
         Returns:
             错误字符串或 None（安全）
@@ -356,63 +394,19 @@ class ToolShellPlugin(ToolPlugin):
         cmd = command.strip()
         lower = cmd.lower()
 
-        for pattern in _DENY_PATTERNS:
+        for pattern in _INSTALL_DENY_PATTERNS:
             if re.search(pattern, lower):
-                return "错误：命令被 deny 模式过滤器阻止"
+                return "运行时安装或卸载软件包已被安全策略禁止。缺失依赖请联系管理员处理。"
+
+        for pattern in _DANGER_DENY_PATTERNS:
+            if re.search(pattern, lower):
+                return "危险系统操作（rm -rf / dd / shutdown 等）已被安全策略禁止。"
 
         # SSRF 守卫：检测命令中的内网 URL（如 curl http://169.254.169.254/）
         if contains_internal_url(cmd):
-            return (
-                "错误：命令被 SSRF 守卫阻止（检测到内网 URL）"
-                + _WORKSPACE_BOUNDARY_NOTE
-            )
-
-        if self.restrict_to_workspace:
-            if "..\\" in cmd or "../" in cmd:
-                return (
-                    "错误：命令被安全守卫阻止（检测到路径遍历）"
-                    + _WORKSPACE_BOUNDARY_NOTE
-                )
-
-            cwd_path = Path(cwd).resolve()
-
-            for raw in self._extract_absolute_paths(cmd):
-                try:
-                    expanded = os.path.expandvars(raw.strip())
-                    if self._is_benign_device_path(expanded):
-                        continue
-                    p = Path(expanded).expanduser().resolve()
-                except Exception:
-                    continue
-
-                if self._is_benign_device_path(str(p)):
-                    continue
-
-                if (
-                    p.is_absolute()
-                    and cwd_path not in p.parents
-                    and p != cwd_path
-                ):
-                    return (
-                        "错误：命令被安全守卫阻止（路径超出工作目录）"
-                        + _WORKSPACE_BOUNDARY_NOTE
-                    )
+            return "错误：命令被 SSRF 守卫阻止（检测到内网 URL）"
 
         return None
-
-    @classmethod
-    def _is_benign_device_path(cls, path: str) -> bool:
-        """检查是否为内核设备文件路径"""
-        if path in _BENIGN_DEVICE_PATHS:
-            return True
-        return path.startswith("/dev/fd/")
-
-    @staticmethod
-    def _extract_absolute_paths(command: str) -> list[str]:
-        """提取命令中的绝对路径"""
-        posix_paths = re.findall(r"(?:^|[\s|>'\"])(/[^\s\"'>;|<]+)", command)
-        home_paths = re.findall(r"(?:^|[\s>'\"])(~[^\s\"'>;|<]*)", command)
-        return posix_paths + home_paths
 
     # ------------------------------------------------------------------
     # 进程管理
@@ -496,11 +490,7 @@ class ToolShellPlugin(ToolPlugin):
     # ------------------------------------------------------------------
 
     def _build_env(self) -> dict[str, str]:
-        """构建最小化子进程环境
-
-        Unix: 仅传递 HOME/LANG/TERM；bash -l 会加载用户 profile 提供 PATH 等。
-        Windows: 传递一组关键系统变量。
-        """
+        """构建最小化子进程环境"""
         if _IS_WINDOWS:
             sr = os.environ.get("SYSTEMROOT", r"C:\Windows")
             env = {
@@ -531,56 +521,8 @@ class ToolShellPlugin(ToolPlugin):
         }
         return env
 
-    def _check_sandbox_path(self, path: str) -> str | None:
-        """检查路径是否在 ContextVar 沙箱内（L2 防线）
-
-        通过 ContextVar 获取当前任务沙箱，实现线程安全。
-        如果当前任务未绑定沙箱，则跳过 L2 校验。
-
-        Args:
-            path: 待校验的路径
-
-        Returns:
-            错误字符串或 None（安全）
-        """
-        sandbox = _current_sandbox()
-        if sandbox is None:
-            return None
-
-        # 尝试调用 sandbox 的 resolve_safe 或 assert_allowed
-        try:
-            if hasattr(sandbox, "resolve_safe"):
-                sandbox.resolve_safe(path)
-            elif hasattr(sandbox, "assert_allowed"):
-                sandbox.assert_allowed(path)
-            else:
-                # 如果 sandbox 没有已知方法，跳过 L2 校验
-                logger.debug("请求级 sandbox 没有 resolve_safe 或 assert_allowed 方法")
-                return None
-        except Exception as e:
-            logger.warning("L2 沙箱拦截: {}", e)
-            return f"错误：沙箱拦截 - {e}" + _WORKSPACE_BOUNDARY_NOTE
-
-        return None
-
     def _wrap_sandbox(self, command: str, cwd: str) -> str:
-        """如果配置了进程级沙箱后端，将命令包裹在沙箱中执行。
-
-        沙箱后端通过 plugins.tool_shell.sandbox 配置（nanobee.yaml）。
-        当前支持：
-        - "bwrap"：使用 bubblewrap 的 mount namespace 隔离
-        - ""（空字符串）：不启用（默认）
-
-        注意：沙箱后端的可用性取决于系统是否安装了对应命令。
-        （例如 bwrap 需要 apt install bubblewrap）
-
-        Args:
-            command: 原始命令
-            cwd: 当前工作目录（用作沙箱 workdir）
-
-        Returns:
-            包裹后的命令，或原始命令（未配置或不可用时）
-        """
+        """如果配置了进程级沙箱后端，将命令包裹在沙箱中执行。"""
         sandbox_backend = self.get_config("sandbox", "")
         if not sandbox_backend:
             return command
@@ -593,34 +535,29 @@ class ToolShellPlugin(ToolPlugin):
             return command
 
         try:
-            # 使用框架定义的子进程工作区边界（ProcessWorkspace），
-            # 而非沙箱 context_root，确保子进程仅暴露 workspace/ 目录
-            from nanobee.kernel.context_sandbox_var import (
-                current_bwrap_ro_bind,
-                current_process_workspace,
-            )
             process_workspace = current_process_workspace()
             ws = str(process_workspace) if process_workspace else cwd
-            # 读取部署方通过 skills.enabled 推导的额外只读挂载路径
-            extra_ro_bind = current_bwrap_ro_bind()
+            extra_ro_bind = list(current_bwrap_ro_bind() or [])
 
-            # 保存原始命令，异常降级时回退
             original_command = command
 
-            # 从配置读取 venv 路径（可选），沙箱自动挂载 site-packages
-            # 并注入 PYTHONPATH，使 Python 能找到虚拟环境的包。
-            # 管理员配了此选项即代表同意 LLM 使用这些包，不配则不注入。
-            venv_site_pkgs = self.get_config("venv", "")
-            if venv_site_pkgs:
-                resolved = str(Path(venv_site_pkgs).expanduser().resolve())
-                if Path(resolved).is_dir():
-                    extra_ro_bind = list(extra_ro_bind or []) + [resolved]
-                    command = f"PYTHONPATH={resolved}:$PYTHONPATH {command}"
-                    logger.info("已挂载并注入 venv site-packages: {}", resolved)
-                else:
-                    logger.warning(
-                        "配置的 venv 路径不存在: {}", resolved,
-                    )
+            # 配置声明的额外只读挂载（source:target 格式，如 venv 或 SDK 目录）
+            # 由部署方在 nanobee.yaml plugins.tool_shell.extra_mounts 中指定
+            extra_mounts = self.get_config("extra_mounts", [])
+            if isinstance(extra_mounts, list) and extra_mounts:
+                extra_ro_bind.extend(extra_mounts)
+                logger.info("沙箱额外挂载: {}", extra_mounts)
+
+            # 配置声明的环境变量注入（部署方通过 plugins.tool_shell.env 指定）
+            # 注意：必须用 export 而非 KEY=val cmd 前置，否则 env var 只作用于第一个命令
+            # （如 "PYTHONPATH=/x cd dir && python3 ..." 中 python3 拿不到 PYTHONPATH）
+            env_overrides = self.get_config("env", {})
+            if isinstance(env_overrides, dict) and env_overrides:
+                set_env = "; ".join(
+                    f"export {k}={v}" for k, v in env_overrides.items()
+                )
+                command = f"{set_env}; {command}"
+                logger.info("沙箱环境变量注入: {}", env_overrides)
 
             wrapped = _wrap_sandbox_command(
                 sandbox_backend, command, ws, cwd,

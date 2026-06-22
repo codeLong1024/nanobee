@@ -18,7 +18,6 @@ from nanobee.plugins.tool import ToolPlugin
 from nanobee.utils.logger import logger
 
 
-
 class ToolCronPlugin(ToolPlugin):
     """Cron 定时任务工具插件。
 
@@ -40,10 +39,6 @@ class ToolCronPlugin(ToolPlugin):
         self._user_id: str = ""
         self._context_metadata: dict[str, Any] = {}
         self._session_key: str = ""
-
-    # ------------------------------------------------------------------
-    # 生命周期
-    # ------------------------------------------------------------------
 
     def initialize(self, kernel: Any) -> None:
         """初始化插件：创建 CronService 实例。"""
@@ -102,10 +97,6 @@ class ToolCronPlugin(ToolPlugin):
             self._cron.stop()
         super().on_disable()
 
-    # ------------------------------------------------------------------
-    # 上下文注入（由外部 runner 在每次 execute_tool 前调用）
-    # ------------------------------------------------------------------
-
     def set_context(
         self,
         channel: str = "",
@@ -133,19 +124,15 @@ class ToolCronPlugin(ToolPlugin):
         # cron 数据需要持久化，放在 <context_root>/cron/ 下（与 skills/ 平级）
         if user_id:
             if self.context_root is not None:
-                # 框架提供的 basedir，插件自己创建子目录
                 self._current_store_path = self.context_root / "cron" / "jobs.json"
                 self._current_store_path.parent.mkdir(parents=True, exist_ok=True)
             else:
-                # 回退：boot 阶段或非请求上下文
                 if self._cron_base_dir is None:
                     data_dir = Path(self._kernel.data_dir) if self._kernel and hasattr(self._kernel, "data_dir") else Path.cwd()
                     self._cron_base_dir = data_dir / "cron"
                     self._cron_base_dir.mkdir(parents=True, exist_ok=True)
                 self._current_store_path = self._cron_base_dir / f"jobs_{user_id}.json"
-            # 如果 user_id 变化或 _cron 未初始化，创建新的 CronService 实例
             if self._cron is None or getattr(self._cron, "store_path", None) != self._current_store_path:
-                # 停止旧实例
                 if self._cron is not None:
                     self._cron.stop()
                 self._cron = CronService(
@@ -159,10 +146,6 @@ class ToolCronPlugin(ToolPlugin):
             if self._cron is not None:
                 self._cron.stop()
                 self._cron = None
-
-    # ------------------------------------------------------------------
-    # ToolPlugin 接口
-    # ------------------------------------------------------------------
 
     def get_tools(self) -> list[dict[str, Any]]:
         """获取工具定义列表。
@@ -250,10 +233,6 @@ class ToolCronPlugin(ToolPlugin):
             return self._remove_job(**kwargs)
         return f"未知操作: {action}"
 
-    # ------------------------------------------------------------------
-    # 静态工具方法
-    # ------------------------------------------------------------------
-
     @staticmethod
     def _validate_timezone(tz: str) -> str | None:
         """校验 IANA 时区，无效时返回错误信息。"""
@@ -268,10 +247,6 @@ class ToolCronPlugin(ToolPlugin):
         """格式化时间戳为可读字符串。"""
         dt = datetime.fromtimestamp(ms / 1000, tz=ZoneInfo(tz_name))
         return f"{dt.isoformat()} ({tz_name})"
-
-    # ------------------------------------------------------------------
-    # 操作实现
-    # ------------------------------------------------------------------
 
     def _add_job(self, **kwargs: Any) -> str:
         """添加定时任务。"""
@@ -435,10 +410,6 @@ class ToolCronPlugin(ToolPlugin):
                 )
             return f"无法移除任务 `{job_id}`。这是受保护的系统内部任务。"
         return f"任务 {job_id} 未找到"
-
-    # ------------------------------------------------------------------
-    # 任务触发回调
-    # ------------------------------------------------------------------
 
     async def _on_job_execute(self, job: CronJob) -> str | None:
         """Cron 任务触发时的回调：通过 Agent Loop 执行任务消息。
