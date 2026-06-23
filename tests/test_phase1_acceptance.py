@@ -72,9 +72,11 @@ def test_unknown_route_rejected():
 
 
 def test_known_route_resolved():
-    """已知路由正常返回 user_id"""
+    """已知路由正常返回 (user_id, session_id)"""
     router = ContextRouter({"cli:default": "user-alice"})
-    assert router.resolve("cli", "default") == "user-alice"
+    user_id, session_id = router.resolve("cli", "default")
+    assert user_id == "user-alice"
+    assert session_id == "cli:default"
 
 
 # ====== ContextSandbox 验收 ======
@@ -152,22 +154,33 @@ class _FakeKernel:
 
 @pytest.mark.asyncio
 async def test_user_context_isolation(tmp_path: Path):
-    """多个用户上下文目录隔离，数据不交叉"""
+    """多个用户会话隔离，数据不交叉"""
+    from nanobee.session.session_manager import SessionManager
+
     kernel = _FakeKernel(str(tmp_path))
     cm = ContextManager(kernel)
 
-    alice = await cm.get_or_create("alice")
-    bob = await cm.get_or_create("bob")
+    await cm.get_or_create("alice")
+    await cm.get_or_create("bob")
 
-    alice.add_message("user", "我是 Alice")
-    bob.add_message("user", "我是 Bob")
+    session_mgr = SessionManager(tmp_path / "users")
 
-    assert len(alice.get_messages()) == 1
-    assert len(bob.get_messages()) == 1
-    assert alice.get_messages()[0]["content"] == "我是 Alice"
-    assert bob.get_messages()[0]["content"] == "我是 Bob"
+    s_alice = session_mgr.get_or_create("alice", "dingtalk:chat-a")
+    s_alice.add_message("user", "我是 Alice")
+    session_mgr.save(s_alice)
+
+    s_bob = session_mgr.get_or_create("bob", "dingtalk:chat-b")
+    s_bob.add_message("user", "我是 Bob")
+    session_mgr.save(s_bob)
+
+    assert len(s_alice.messages) == 1
+    assert len(s_bob.messages) == 1
+    assert s_alice.messages[0]["content"] == "我是 Alice"
+    assert s_bob.messages[0]["content"] == "我是 Bob"
 
     # 目录隔离验证
+    alice = await cm.get_or_create("alice")
+    bob = await cm.get_or_create("bob")
     assert alice.base_dir != bob.base_dir
     assert "alice" in str(alice.base_dir)
     assert "bob" in str(bob.base_dir)
@@ -182,6 +195,5 @@ async def test_context_metadata_lazy(tmp_path: Path):
     meta = await cm.get_metadata("test-user")
     assert meta["user_id"] == "test-user"
 
-    # 元数据加载不应触发历史加载（UserContext 内部 _conversation 未调用 get_messages）
     ctx = await cm.get_or_create("test-user")
     assert ctx._metadata is not None  # 已加载

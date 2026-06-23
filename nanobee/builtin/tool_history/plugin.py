@@ -16,7 +16,7 @@ class ToolHistoryPlugin(ToolPlugin):
     """历史消息裁剪工具插件。
 
     暴露 trim_history(n) 工具：
-    - 内部调用 UserContext.trim_to_last_n(n)
+    - 内部调用 Session.trim_to_last_n(n)
     - LLM 自主决定 n 值（基于对话上下文、token 占比等信息密度判断）
     - 框架只提供裁剪机制，不持有策略
     """
@@ -28,6 +28,7 @@ class ToolHistoryPlugin(ToolPlugin):
     def __init__(self, metadata: Any = None):
         super().__init__(metadata)
         self._user_id: str = ""
+        self._session_id: str = "default"
 
     # ------------------------------------------------------------------
     # 上下文注入
@@ -39,16 +40,20 @@ class ToolHistoryPlugin(ToolPlugin):
         chat_id: str = "",
         user_id: str = "",
         metadata: dict[str, Any] | None = None,
+        session_key: str = "",
     ) -> None:
-        """注入当前会话上下文（用于定位用户历史记录）。
+        """注入当前会话上下文（用于定位会话历史记录）。
 
         Args:
             channel: 通道名称
             chat_id: 会话 ID
             user_id: 用户 ID（用作 context_id）
             metadata: 通道附加元数据
+            session_key: 会话键（用于定位 session）
         """
         self._user_id = user_id
+        if session_key:
+            self._session_id = session_key
 
     # ------------------------------------------------------------------
     # 工具定义
@@ -109,20 +114,22 @@ class ToolHistoryPlugin(ToolPlugin):
         if not self._user_id:
             return "错误: 无法获取当前用户上下文，trim_history 未能执行"
 
-        if not self.kernel or not self.kernel.context_manager:
-            return "错误: context_manager 不可用，trim_history 未能执行"
+        if not self.kernel or not self.kernel.session_manager:
+            return "错误: session_manager 不可用，trim_history 未能执行"
 
         try:
-            user_ctx = await self.kernel.context_manager.get_or_create(self._user_id)
-            before = len(user_ctx.get_messages())
+            session_manager = self.kernel.session_manager
+            session = session_manager.get_or_create(self._user_id, self._session_id)
+            before = len(session.messages)
             if before <= n:
                 return f"历史共 {before} 条消息，未超过保留数 {n}，无需裁剪"
 
-            user_ctx.trim_to_last_n(n)
-            after = len(user_ctx.get_messages())
+            session.trim_to_last_n(n)
+            session_manager.save(session)
+            after = len(session.messages)
             logger.info(
-                "trim_history: 用户 {} 历史裁剪 {} → {} 条",
-                self._user_id, before, after,
+                "trim_history: 用户 {} (session={}) 历史裁剪 {} → {} 条",
+                self._user_id, self._session_id, before, after,
             )
             return f"历史裁剪完成：{before} → {after} 条消息"
 

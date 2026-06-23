@@ -19,10 +19,11 @@ class InboundMessage:
     media: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
     context_id_override: str | None = None
+    session_id_override: str | None = None
 
     @property
     def context_id(self) -> str:
-        """获取上下文 ID。
+        """获取上下文 ID（用户 ID）。
 
         优先级:
         1. context_id_override 显式指定
@@ -37,6 +38,23 @@ class InboundMessage:
         if self.sender_id:
             return self.sender_id
         return f"{self.channel}:{self.chat_id}"
+
+    @property
+    def session_id(self) -> str:
+        """获取会话 ID。
+
+        优先级:
+        1. session_id_override 显式指定
+        2. channel:chat_id（chat_id 非 "direct" 时）
+        3. "default"（兜底）
+
+        Session 在 UserContext 之下，一个用户可有多个独立会话。
+        """
+        if self.session_id_override:
+            return self.session_id_override
+        if self.chat_id and self.chat_id != "direct":
+            return f"{self.channel}:{self.chat_id}"
+        return "default"
 
 
 @dataclass

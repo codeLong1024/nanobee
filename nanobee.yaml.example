@@ -22,6 +22,8 @@ agents:
     # max_iterations: 10
     # 历史消息条数上限（超过此值×1.5 时压缩，回放时也受此限制）
     # max_messages: 120
+    # 最大并发子代理数（超出时需等待已有子代理完成后才能创建新的）
+    # max_concurrent_subagents: 4
 
 # Provider 配置
 providers:

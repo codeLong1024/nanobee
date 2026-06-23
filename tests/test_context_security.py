@@ -6,14 +6,16 @@ import os
 import pytest
 
 from nanobee.kernel.context_manager import ContextManager
-from nanobee.kernel.user_context import ConversationContext
+from nanobee.kernel.user_context import UserContext
 from nanobee.kernel.soul_guard import SoulGuard, SoulViolationError
 from nanobee.kernel.core_parser import CoreMDParser
 
 
 @pytest.mark.asyncio
 async def test_context_isolation(tmp_path):
-    """测试上下文隔离"""
+    """测试上下文隔离（基于 SessionManager）"""
+    from nanobee.session.session_manager import SessionManager
+
     # 模拟 kernel
     class MockKernel:
         def __init__(self):
@@ -23,28 +25,33 @@ async def test_context_isolation(tmp_path):
 
     kernel = MockKernel()
     manager = ContextManager(kernel)
+    session_manager = SessionManager(tmp_path / "users")
 
     # 创建两个上下文
-    ctx1 = await manager.get_or_create("user-a")
-    ctx2 = await manager.get_or_create("user-b")
+    await manager.get_or_create("user-a")
+    await manager.get_or_create("user-b")
 
-    # 添加消息
-    ctx1.add_message("user", "Hello from A")
-    ctx2.add_message("user", "Hello from B")
+    # 通过 SessionManager 添加消息（多 session 隔离）
+    s_a = session_manager.get_or_create("user-a", "dingtalk:chat-a")
+    s_a.add_message("user", "Hello from A")
+    session_manager.save(s_a)
+
+    s_b = session_manager.get_or_create("user-b", "dingtalk:chat-b")
+    s_b.add_message("user", "Hello from B")
+    session_manager.save(s_b)
 
     # 验证隔离
-    messages1 = ctx1.get_messages()
-    messages2 = ctx2.get_messages()
+    loaded_a = session_manager.get_or_create("user-a", "dingtalk:chat-a")
+    loaded_b = session_manager.get_or_create("user-b", "dingtalk:chat-b")
 
-    assert len(messages1) == 1
-    assert len(messages2) == 1
-    assert messages1[0]["content"] == "Hello from A"
-    assert messages2[0]["content"] == "Hello from B"
+    assert len(loaded_a.messages) == 1
+    assert len(loaded_b.messages) == 1
+    assert loaded_a.messages[0]["content"] == "Hello from A"
+    assert loaded_b.messages[0]["content"] == "Hello from B"
 
-    # 验证目录隔离
-    assert ctx1.base_dir != ctx2.base_dir
-    assert (ctx1.base_dir / ".history" / "default.jsonl").exists()
-    assert (ctx2.base_dir / ".history" / "default.jsonl").exists()
+    # 验证 sessions 目录隔离
+    assert (tmp_path / "users" / "user-a" / "sessions" / "dingtalk__chat-a.jsonl").exists()
+    assert (tmp_path / "users" / "user-b" / "sessions" / "dingtalk__chat-b.jsonl").exists()
 
 
 @pytest.mark.asyncio
@@ -79,8 +86,8 @@ async def test_soul_guard_intercept_write(tmp_path):
     core_md = tmp_path / "core.md"
     core_md.write_text("# Test\n", encoding="utf-8")
 
-    from nanobee.kernel.event_bus import EventBus
-    from nanobee.kernel.runtime_events import RuntimeEventBus
+    from nanobee.events.event_bus import EventBus
+    from nanobee.events.runtime_events import RuntimeEventBus
 
     class MockKernel:
         def __init__(self):
@@ -118,6 +125,5 @@ async def test_soul_guard_auto_create_core_md(tmp_path):
     # 验证文件内容包含 Soul 和 Rules 段
     parser = CoreMDParser(tmp_path / "core.md")
     sections = parser.parse()
-    # section 名称可能是 "Soul（人格）" 或 "Soul"，检查包含 Soul 的键
     assert any("Soul" in k for k in sections)
     assert any("Rules" in k for k in sections)

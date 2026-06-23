@@ -154,7 +154,7 @@ def _run_gateway(
         logger.debug("健康端口: {} (来自: config={}, CLI arg={})", health_port, _resolve_health_port(cfg), port)
         health_tasks = []
         if health_port:
-            health_tasks.append(_health_server("127.0.0.1", health_port))
+            health_tasks.append(_safe_health_server("127.0.0.1", health_port))
             click.echo(f"  健康端点: http://127.0.0.1:{health_port}/health")
 
         click.echo("")
@@ -183,6 +183,16 @@ def _run_gateway(
             click.echo("👋 Gateway 已停止")
 
     asyncio.run(_run())
+
+
+async def _safe_health_server(host: str, health_port: int) -> None:
+    """安全版本的健康端点，端口被占时不崩 Gateway。"""
+    try:
+        await _health_server(host, health_port)
+    except Exception:
+        logger.exception("健康服务器启动失败（端口 {} 可能已被占用），Gateway 继续运行", health_port)
+        # 持续阻塞，确保 asyncio.wait 不会因为此任务完成而退出
+        await asyncio.Event().wait()
 
 
 async def _health_server(host: str, health_port: int) -> None:

@@ -22,7 +22,8 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from nanobee.utils.logger import logger
 
-
+from nanobee.agent.subagent import SubagentManager
+from nanobee.agent.tools.subagent import ListSubagentsTool, SpawnSubagentTool
 from nanobee.exceptions import LoopStateError
 from nanobee.agent.hook import AgentHook, CompositeHook
 from nanobee.agent.runner import _MAX_INJECTIONS_PER_TURN, AgentRunner, AgentRunSpec, PluginHooks
@@ -43,7 +44,7 @@ if TYPE_CHECKING:
     from nanobee.config.schema import AgentDefaults, Config, ModelPresetConfig
     from nanobee.kernel.context_manager import ContextManager
     from nanobee.kernel.context_pipeline import ContextPipeline
-    from nanobee.kernel.event_bus import EventBus
+    from nanobee.events.event_bus import EventBus
     from nanobee.kernel.plugin_manager import PluginManager
     from nanobee.kernel.skill_manager import SkillsLoader
 
@@ -74,10 +75,11 @@ class TurnContext:
     """单次 Turn 的运行时上下文。"""
     msg: InboundMessage
     context_id: str
+    session_id: str
     state: TurnState
     turn_id: str
 
-    # 对话历史（从 ContextManager 获取）
+    # 对话历史（从 SessionManager 获取）
     history: list[dict[str, Any]] = field(default_factory=list)
     initial_messages: list[dict[str, Any]] = field(default_factory=list)
 
@@ -144,6 +146,7 @@ class AgentLoop:
         *,
         context_manager: ContextManager,
         context_pipeline: ContextPipeline,
+        session_manager: Any = None,
         event_bus: EventBus | None = None,
         plugin_manager: PluginManager | None = None,
         skill_manager: SkillManager | None = None,
@@ -162,11 +165,14 @@ class AgentLoop:
         max_messages: int = 120,
         preset_snapshot_loader: Callable[..., ProviderSnapshot] | None = None,
         provider_snapshot_loader: Callable[..., ProviderSnapshot] | None = None,
+        _kernel: Any = None,
     ) -> None:
         self.provider = provider
         self.workspace = workspace
+        self._kernel = _kernel  # Kernel 引用（供子代理 _injector 调用 inject_message）
         self.context_manager = context_manager
         self.context_pipeline = context_pipeline
+        self.session_manager = session_manager
         self.event_bus = event_bus
         self.plugin_manager = plugin_manager
         self.skill_manager = skill_manager
@@ -203,18 +209,22 @@ class AgentLoop:
         from nanobee.kernel.lock_manager import LockManager
         self._lock_manager = LockManager(max_concurrent=_max)
 
-        # 消息分发器（延迟导入避免循环依赖）
-        from nanobee.agent.dispatcher import MessageDispatcher
-        self._dispatcher = MessageDispatcher(
-            lock_manager=self._lock_manager,
-            event_bus=self.event_bus,
-            router=self._router,
-            process_message_cb=self._process_message,
-        )
+        # 待处理消息队列（context_id -> asyncio.Queue），AgentLoop 直接持有
+        # Kernel.handle_message 和 inject_message 均使用此字典进行中轮注入
+        self._pending_queues: dict[str, asyncio.Queue] = {}
 
+        # 子代理待注入结果缓存（context_id -> [content, ...]）
+        self._pending_subagent_results: dict[str, list[str]] = {}
+
+        # 先注册工具到 self.tools（注册顺序无关，self.tools 是同一个对象引用）
         self._register_message_tool()
         self._register_plugin_tools()
         self._register_skill_tools()
+
+        # 初始化 SubagentManager（在工具注册之后，确保 tools_registry 已填充）
+        self._subagent_manager = self._build_subagent_manager()
+
+        self._register_subagent_tools()
         self._current_iteration: int = 0
 
     @classmethod
@@ -226,9 +236,11 @@ class AgentLoop:
         context_pipeline: Any,
         event_bus: Any,
         plugin_manager: Any,
+        session_manager: Any = None,
         skill_manager: Any = None,
         router: Any = None,
         config: Config | dict | None = None,
+        kernel_ref: Any = None,
         **extra: Any,
     ) -> AgentLoop:
         """从 Kernel 子组件创建 AgentLoop。
@@ -243,6 +255,7 @@ class AgentLoop:
             context_pipeline: 上下文管线
             event_bus: 事件总线
             plugin_manager: 插件管理器
+            session_manager: 会话管理器（可选）
             skill_manager: 技能管理器
             router: 路由器（可选）
             config: 配置对象（Config 实例，用于读取 agents.defaults）
@@ -275,10 +288,12 @@ class AgentLoop:
             workspace=workspace,
             context_manager=context_manager,
             context_pipeline=context_pipeline,
+            session_manager=session_manager,
             event_bus=event_bus,
             plugin_manager=plugin_manager,
             skill_manager=skill_manager,
             router=router,
+            _kernel=kernel_ref,
             **extra,
         )
 
@@ -350,6 +365,67 @@ class AgentLoop:
         from nanobee.agent.tools.skill_manager import ListSkillsTool
         self.tools.register(ListSkillsTool(skill_loader))
         logger.info("技能管理工具已注册")
+
+    def _register_subagent_tools(self) -> None:
+        """注册 subagent 相关工具给 LLM。"""
+        if self._subagent_manager is None:
+            logger.debug("SubagentManager 未初始化，跳过 subagent 工具注册")
+            return
+        self.tools.register(SpawnSubagentTool(self._subagent_manager))
+        self.tools.register(ListSubagentsTool(self._subagent_manager))
+        logger.info("subagent 工具已注册")
+
+    def _build_subagent_manager(self) -> SubagentManager:
+        """创建 SubagentManager 实例（在 __init__ 末尾调用）。"""
+        from nanobee.config.schema import AgentDefaults
+        defaults = AgentDefaults()
+
+        # 技能摘要构建器：使用 skill_manager 列出可用技能
+        def _skills_summary(workspace: Path | None) -> str:
+            if self.skill_manager is None:
+                return ""
+            all_skills = self.skill_manager.list_all_skills()
+            return "\n".join(
+                f"- {s.meta.name}: {s.meta.description}"
+                for s in all_skills
+            ) if all_skills else ""
+
+        # 结果注入器：写入待注入缓存 + 主动触发新 turn
+        # 对齐 nanobot bus.publish_inbound 模式：子代理完成时立即注入合成消息，
+        # 触发新 Agent turn 处理结果，而非等待用户下一条消息。
+        # 通过 kernel.inject_message() 统一入口，中轮注入时 put_nowait 非阻塞，
+        # 新 turn 时 create_task 后台处理并通过 EventBus 发布结果。
+        async def _injector(content: str, ctx_id: str, metadata: dict) -> None:
+            # 写入待注入缓存（状态 BUILD 时排空，注入子代理结果到 LLM 上下文）
+            self._pending_subagent_results.setdefault(ctx_id, []).append(content)
+            # 创建合成消息主动触发新 Agent turn（对齐 nanobot 模式）
+            channel = metadata.get("origin_channel", "system")
+            chat_id = metadata.get("origin_chat_id", ctx_id)
+            session_id = metadata.get("origin_session_id")
+            trigger_msg = InboundMessage(
+                channel=channel,
+                sender_id=ctx_id,
+                chat_id=chat_id,
+                content="",  # 空内容，子代理结果由 _state_build 注入
+                session_id_override=session_id,
+                metadata={"_subagent_auto_trigger": True},
+            )
+            if self._kernel is not None:
+                self._kernel.inject_message(trigger_msg)
+            else:
+                logger.error("_injector: kernel 引用未设置，无法注入子代理结果")
+
+        return SubagentManager(
+            provider=self.provider,
+            workspace=self.workspace,
+            model=self.model,
+            tools_registry=self.tools,
+            max_iterations=self.max_iterations,
+            max_concurrent_subagents=defaults.max_concurrent_subagents,
+            result_injector=_injector,
+            skills_summary_builder=_skills_summary,
+            event_bus=self.event_bus,
+        )
 
     def _get_enabled_plugins(self) -> list[Any]:
         """获取所有已启用的插件。"""
@@ -425,11 +501,6 @@ class AgentLoop:
         """连接配置的 MCP 服务器（委托给 MCPManager）。"""
         await self.mcp.connect(self.tools, default_cwd=str(self.workspace))
 
-    @property
-    def _pending_queues(self) -> dict[str, asyncio.Queue]:
-        """待处理消息队列（委托给 MessageDispatcher，供 Kernel 访问）。"""
-        return self._dispatcher.pending_queues
-
     async def _build_initial_messages(
         self,
         msg: InboundMessage,
@@ -496,6 +567,7 @@ class AgentLoop:
         initial_messages: list[dict],
         *,
         context_id: str,
+        session_id: str = "default",
         channel: str = "",
         chat_id: str = "",
         sender_id: str = "",
@@ -569,6 +641,7 @@ class AgentLoop:
             concurrent_tools=True,
             workspace=self.workspace,
             context_id=context_id,
+            session_id=session_id,
             channel=channel,
             chat_id=chat_id,
             sender_id=sender_id,
@@ -611,29 +684,12 @@ class AgentLoop:
 
         return result.final_content, result.tools_used, result.messages, result.stop_reason, result.had_injections
 
-    async def run(self) -> None:
-        """启动 Agent Loop（委托给 MessageDispatcher）。"""
-        await self._dispatcher.run(self._consume_inbound, self._connect_mcp)
-
-    async def _consume_inbound(self) -> InboundMessage:
-        """消费入站消息（由通道插件调用）。"""
-        raise NotImplementedError("子类或集成层需要实现此方法")
-
-    async def _dispatch(self, msg: InboundMessage) -> None:
-        """分发消息（委托给 MessageDispatcher）。"""
-        await self._dispatcher._dispatch(msg)
-
-    async def _publish_outbound(self, msg: OutboundMessage) -> None:
-        """发布出站消息（委托给 MessageDispatcher）。"""
-        await self._dispatcher._publish_outbound(msg)
-
     async def close_mcp(self) -> None:
         """关闭 MCP 连接（委托给 MCPManager）。"""
         await self.mcp.close()
 
     def stop(self) -> None:
-        """停止 Agent Loop（委托给 MessageDispatcher）。"""
-        self._dispatcher.stop()
+        """停止 Agent Loop。"""
         logger.info("Agent loop 正在停止")
 
     async def process_direct(
@@ -676,9 +732,11 @@ class AgentLoop:
         self._refresh_provider_snapshot()
 
         key = context_id or msg.context_id
+        session_id = msg.session_id
         ctx = TurnContext(
             msg=msg,
             context_id=key,
+            session_id=session_id,
             state=TurnState.RESTORE,
             turn_id=f"{key}:{time.time_ns()}",
             on_progress=on_progress,
@@ -770,32 +828,29 @@ class AgentLoop:
         return "ok"
 
     async def _state_compact(self, ctx: TurnContext) -> str:
-        """压缩/合并上下文 —— 裁剪过长的持久化历史。
+        """压缩/合并上下文 —— 裁剪过长的会话历史。
 
-        当持久化历史超过阈值时，裁剪至最大保留条数，
-        防止历史无限增长导致 history.jsonl 膨胀。
+        当会话历史超过阈值时，裁剪至最大保留条数，
+        防止历史无限增长导致 JSONL 文件膨胀。
         """
-        user_ctx = await self.context_manager.get_or_create(ctx.context_id)
-        messages = user_ctx.get_messages()
-
+        session = self.session_manager.get_or_create(ctx.context_id, ctx.session_id)
         trim_threshold = int(self._max_messages * 1.5)
-        if len(messages) > trim_threshold:
-            user_ctx.trim_to_last_n(self._max_messages)
+        msg_count = len(session.messages)
+        if msg_count > trim_threshold:
+            session.trim_to_last_n(self._max_messages)
+            self.session_manager.save(session)
             logger.info(
-                "COMPACT: 裁剪持久化历史 %d → %d 条（用户 %s）",
-                len(messages), self._max_messages, ctx.context_id,
+                "COMPACT: 裁剪会话历史 %d → %d 条（用户 %s，会话 %s）",
+                msg_count, self._max_messages, ctx.context_id, ctx.session_id,
             )
 
         return "ok"
 
     async def _state_build(self, ctx: TurnContext) -> str:
         """构建初始消息列表。"""
-        _t0 = time.perf_counter()
-        # 获取或创建上下文
-        context = await self.context_manager.get_or_create(ctx.context_id)
-        _t1 = time.perf_counter()
-        logger.debug("[BUILD-PROFILE] get_or_create: {:.0f}ms", (_t1 - _t0) * 1000)
-        ctx.history = context.get_messages()
+        # 从 SessionManager 加载历史
+        session = self.session_manager.get_or_create(ctx.context_id, ctx.session_id)
+        ctx.history = session.messages
 
         # 安全阀：按条数上限暴力截断，防止历史无限增长。
         # LLM 通过 _memory skill + trim_history 工具自主管理记忆，
@@ -803,16 +858,21 @@ class AgentLoop:
         if len(ctx.history) > self._max_messages:
             ctx.history = ctx.history[-self._max_messages:]
 
-        _t2 = time.perf_counter()
-        logger.debug("[BUILD-PROFILE] history_trim: {:.0f}ms (total {:.0f}ms)", (_t2 - _t1) * 1000, (_t2 - _t0) * 1000)
-        ctx.initial_messages = await self._build_initial_messages(ctx.msg, ctx.history)
-        _t3 = time.perf_counter()
-        logger.debug("[BUILD-PROFILE] build_initial_messages: {:.0f}ms (total {:.0f}ms)", (_t3 - _t2) * 1000, (_t3 - _t0) * 1000)
+        # 注入待处理的子代理结果到历史开头
+        pending_results = self._pending_subagent_results.pop(ctx.context_id, [])
+        if pending_results:
+            for result in pending_results:
+                ctx.history.append({"role": "user", "content": result})
+            logger.info("注入了 {} 条待处理的子代理结果", len(pending_results))
 
-        # 持久化用户消息
+        ctx.initial_messages = await self._build_initial_messages(ctx.msg, ctx.history)
+
+        # 持久化用户消息到 session
         current_content = ctx.msg.content
         if current_content and current_content.strip():
-            context.add_message("user", current_content)
+            session = self.session_manager.get_or_create(ctx.context_id, ctx.session_id)
+            session.add_message("user", current_content)
+            self.session_manager.save(session)
             ctx.user_persisted_early = True
 
         return "ok"
@@ -855,20 +915,30 @@ class AgentLoop:
         logger.debug("[RUN] 开始 RUN 状态 (context_id={})", ctx.context_id)
         sandbox = await self._build_sandbox(ctx.context_id)
 
-        # 使用 ContextVar 绑定沙箱 + tmp + context_root + process_workspace + bwrap_ro_bind
+        # 使用 ContextVar 绑定沙箱 + tmp + context_root + process_workspace + bwrap_ro_bind + request_context
         from nanobee.kernel.context_sandbox_var import (
-            bind_bwrap_ro_bind, bind_context_root, bind_process_workspace,
+            RequestContext,
+            bind_bwrap_ro_bind, bind_context_root,
+            bind_process_workspace, bind_request_context,
             bind_sandbox, bind_tmp,
-            reset_bwrap_ro_bind, reset_context_root, reset_process_workspace,
+            reset_bwrap_ro_bind, reset_context_root,
+            reset_process_workspace, reset_request_context,
             reset_sandbox, reset_tmp,
         )
         _sandbox_token = bind_sandbox(sandbox) if sandbox else None
 
-        # 绑定 per-request tmp 路径和 context_root（在获取 user_ctx 之后）
+        # 绑定 per-request tmp 路径、context_root、进程工作区
         user_ctx = await self.context_manager.get_or_create(ctx.context_id)
         _tmp_token = bind_tmp(user_ctx.tmp_dir)
         _ctx_root_token = bind_context_root(user_ctx.context_root)
         _process_ws_token = bind_process_workspace(user_ctx.work_dir)
+        # 统一绑定 per-turn 路由上下文（对齐 nanobot RequestContext 模式）
+        _rctx_token = bind_request_context(RequestContext(
+            channel=ctx.msg.channel,
+            chat_id=ctx.msg.chat_id,
+            context_id=ctx.context_id,
+            session_id=ctx.session_id,
+        ))
 
         # 根据部署方 skills.enabled 推导 bwrap 额外只读挂载路径
         # 已启用实例技能目录在子进程（bwrap）中只读可见，
@@ -911,6 +981,7 @@ class AgentLoop:
             result = await self._run_agent_loop(
                 ctx.initial_messages,
                 context_id=ctx.context_id,
+                session_id=ctx.session_id,
                 channel=msg.channel,
                 chat_id=msg.chat_id,
                 sender_id=msg.sender_id,
@@ -929,6 +1000,7 @@ class AgentLoop:
             reset_tmp(_tmp_token)
             reset_context_root(_ctx_root_token)
             reset_process_workspace(_process_ws_token)
+            reset_request_context(_rctx_token)
             if _bwrap_ro_bind_token is not None:
                 reset_bwrap_ro_bind(_bwrap_ro_bind_token)
         _elapsed_runner = (time.perf_counter() - _t_runner) * 1000
@@ -942,16 +1014,22 @@ class AgentLoop:
         return "ok"
 
     async def _state_save(self, ctx: TurnContext) -> str:
-        """保存轮次结果到上下文。"""
+        """保存轮次结果到会话。"""
+        # 跳过子代理主动触发的合成消息（_subagent_auto_trigger），
+        # 这类消息仅用于触发新 turn，不应保存到会话历史。
+        if ctx.msg.metadata.get("_subagent_auto_trigger"):
+            return "ok"
+
         if ctx.final_content is None or not ctx.final_content.strip():
             ctx.final_content = EMPTY_FINAL_RESPONSE_MESSAGE
 
         ctx.turn_latency_ms = max(0, int((time.time() - ctx.turn_wall_started_at) * 1000))
 
-        # 保存 assistant 消息到上下文
-        context = await self.context_manager.get_or_create(ctx.context_id)
+        # 保存 assistant 消息到 session
+        session = self.session_manager.get_or_create(ctx.context_id, ctx.session_id)
         if ctx.final_content and ctx.final_content != EMPTY_FINAL_RESPONSE_MESSAGE:
-            context.add_message("assistant", ctx.final_content)
+            session.add_message("assistant", ctx.final_content)
+            self.session_manager.save(session)
 
         # 发射保存事件
         if self.event_bus:

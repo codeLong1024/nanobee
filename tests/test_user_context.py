@@ -92,35 +92,15 @@ def test_metadata_lazy_load(tmp_path: Path):
     assert ctx._metadata is not None
 
 
-def test_load_existing_user(tmp_path: Path):
-    """加载已有用户上下文"""
-    base_dir = tmp_path / "users" / "user-alice"
-    ctx1 = UserContext("user-alice", base_dir)
-    ctx1._ensure_identity_file()
-    ctx1.add_message("user", "你好")
-    ctx1.add_message("assistant", "你好！我是助手")
-
-    # 重新加载
-    ctx2 = UserContext("user-alice", base_dir)
-    msgs = ctx2.get_messages()
-    assert len(msgs) == 2
-    assert msgs[0]["role"] == "user"
-    assert msgs[1]["role"] == "assistant"
-
-
-def test_metadata_only_no_history(tmp_path: Path):
-    """get_metadata 不触发历史加载"""
+def test_user_directories_created(tmp_path: Path):
+    """UserContext 创建时自动创建子目录"""
     base_dir = tmp_path / "users" / "user-alice"
     ctx = UserContext("user-alice", base_dir)
-    ctx._ensure_identity_file()
 
-    # 添加一条历史
-    ctx.add_message("user", "test")
-
-    # 获取元数据（模拟 ContextManager.get_metadata）
-    meta = ctx.metadata
-    assert meta.user_id == "user-alice"
-    assert ctx._conversation is not None
+    # 子目录已创建
+    assert ctx.work_dir.exists()
+    assert ctx.memory_dir.exists()
+    assert ctx.tmp_dir.exists()
 
 
 @pytest.mark.asyncio
@@ -136,7 +116,7 @@ async def test_context_manager_create(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_context_manager_get_metadata(tmp_path: Path):
-    """get_metadata 不加载历史"""
+    """get_metadata 加载元数据"""
     kernel = _FakeKernel(str(tmp_path))
     cm = ContextManager(kernel)
 
@@ -144,11 +124,7 @@ async def test_context_manager_get_metadata(tmp_path: Path):
     assert "user_id" in meta
     assert meta["user_id"] == "user-bob"
 
-    # 添加消息
-    ctx = await cm.get_or_create("user-bob")
-    ctx.add_message("user", "test")
-
-    # 再次获取元数据 - 不加载历史
+    # 再次获取元数据
     meta2 = await cm.get_metadata("user-bob")
     assert meta2["user_id"] == "user-bob"
 
@@ -186,13 +162,12 @@ async def test_context_manager_list(tmp_path: Path):
 # ====== tmp 目录测试 ======
 
 
-def test_conversation_context_creates_tmp_dir(tmp_path: Path):
-    """ConversationContext 创建 .tmp/ 目录"""
-    from nanobee.kernel.user_context import ConversationContext
-    ctx = ConversationContext("test", tmp_path)
-    assert ctx.tmp_dir == tmp_path / ".tmp"
-    assert ctx.tmp_dir.exists()
-    assert ctx.tmp_dir.is_dir()
+def test_user_context_creates_tmp_dir(tmp_path: Path):
+    """UserContext 创建 .tmp/ 目录"""
+    user_ctx = UserContext("test", tmp_path)
+    assert user_ctx.tmp_dir == tmp_path / ".tmp"
+    assert user_ctx.tmp_dir.exists()
+    assert user_ctx.tmp_dir.is_dir()
 
 
 def test_user_context_exposes_tmp_dir(tmp_path: Path):
@@ -220,7 +195,6 @@ async def test_plugin_tmp_with_context_var(tmp_path: Path):
     try:
         result = plugin.tmp
         assert result is not None
-        # 应返回 tmp/<plugin_name>/
         assert result == tmp_path / "base"
         assert result.exists()
     finally:

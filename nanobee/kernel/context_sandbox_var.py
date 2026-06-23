@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 from contextvars import ContextVar, Token
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -228,6 +229,66 @@ def current_bwrap_ro_bind() -> list[str] | None:
     return _CURRENT_BWRAP_RO_BIND.get()
 
 
+# ── Per-turn 路由上下文（对齐 nanobot 的 RequestContext 概念） ──────────────────
+#
+# 每个 Agent turn 开始时绑定一个 RequestContext，包含该 turn 的所有路由信息：
+#   - channel:  来源通道名（如 channel_dingtalk）
+#   - chat_id:  通道内会话标识（如用户 staff_id）
+#   - context_id: 用户上下文 ID（用于目录隔离）
+#   - session_id: 会话持久化 ID（用于 SessionManager 存储）
+#
+# 所有 ContextAware 工具通过 current_request_context() 一次性获取完整路由信息，
+# 避免散落的单个 ContextVar 导致字段遗漏（如子代理结果注入丢失 session_id）。
+#
+# 对齐 nanobot 的设计：RequestContext 统一注入，SpawnTool 通过 set_context() 接收。
+
+
+@dataclass(frozen=True)
+class RequestContext:
+    """Per-turn 路由上下文，对齐 nanobot 的 RequestContext 概念。"""
+
+    channel: str      # 来源通道名（如 channel_dingtalk）
+    chat_id: str      # 通道内会话标识（如用户 staff_id）
+    context_id: str   # 用户上下文 ID，用于目录隔离和结果路由
+    session_id: str   # 会话持久化 ID，用于 SessionManager 存储
+
+
+_CURRENT_REQUEST_CONTEXT: ContextVar[RequestContext | None] = ContextVar(
+    "nanobee_request_context",
+    default=None,
+)
+
+
+def bind_request_context(ctx: RequestContext) -> Token[RequestContext | None]:
+    """在当前异步任务中绑定 per-turn 路由上下文。
+
+    Args:
+        ctx: RequestContext 实例，包含 channel/chat_id/context_id/session_id
+
+    Returns:
+        Token 用于后续 reset_request_context 恢复
+    """
+    return _CURRENT_REQUEST_CONTEXT.set(ctx)
+
+
+def reset_request_context(token: Token[RequestContext | None]) -> None:
+    """恢复绑定的路由上下文到绑定前的状态。
+
+    Args:
+        token: bind_request_context 返回的 Token
+    """
+    _CURRENT_REQUEST_CONTEXT.reset(token)
+
+
+def current_request_context() -> RequestContext | None:
+    """获取当前异步任务中绑定的 per-turn 路由上下文。
+
+    Returns:
+        RequestContext 实例，未绑定时返回 None
+    """
+    return _CURRENT_REQUEST_CONTEXT.get()
+
+
 __all__ = [
     "bind_sandbox",
     "current_sandbox",
@@ -244,4 +305,8 @@ __all__ = [
     "bind_bwrap_ro_bind",
     "current_bwrap_ro_bind",
     "reset_bwrap_ro_bind",
+    "RequestContext",
+    "bind_request_context",
+    "current_request_context",
+    "reset_request_context",
 ]
