@@ -303,18 +303,22 @@ class SubagentManager:
 
         bg_task.add_done_callback(_cleanup)
 
-        # 发布 EventBus 事件
+        # 发布 EventBus 事件 — 通知 loop 立即发送用户可见通知
         if self._event_bus is not None:
             await self._event_bus.publish("subagent.spawned", {
                 "task_id": task_id,
                 "label": display_label,
+                "task": task[:200],
                 "context_id": context_id,
+                "channel": origin_channel,
+                "chat_id": origin_chat_id,
             })
 
         logger.info("Spawned subagent [{}]: {}", task_id, display_label)
         return (
-            f"Subagent [{display_label}] started (id: {task_id}). "
-            f"I'll notify you when it completes."
+            f"Subagent [{display_label}] spawned (id: {task_id}). "
+            f"(A notification has already been sent to the user. "
+            f"No need to repeat or confirm — continue with your next step.)"
         )
 
     async def _run_subagent(

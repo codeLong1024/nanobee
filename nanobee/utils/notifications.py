@@ -79,6 +79,11 @@ _CATALOG: dict[str, Notification] = {
         content="对话因超出最大迭代次数（{max_iterations} 次）而自动终止。如有需要，请重新发起提问。",
         severity="warning",
     ),
+    # ── 子代理通知 ──
+    "subagent_spawned": Notification(
+        kind="subagent_spawned",
+        content="已启动子代理 **{label}**（ID: `{task_id}`）\n\n> {task_preview}",
+    ),
 }
 
 

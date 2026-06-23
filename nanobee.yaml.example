@@ -6,6 +6,20 @@
 # 实例级技能自动从 <data_dir>/skills/ 加载（管理员在此配属共享技能）
 data_dir: "~/.nanobee"
 
+# 网关配置（端口与多实例运行时管理）
+# gateway:
+#   port: 8080
+#   # SIGTERM 后等待超时秒数
+#   stop_timeout: 20.0
+#   # 健康检查总超时秒数
+#   health_check_timeout: 10.0
+#   # 健康检查轮询间隔秒数
+#   health_check_interval: 1.0
+#   # PID 文件目录，空则自动推导为 <data_dir>/.pid/
+#   pid_dir: ""
+#   # restart 时 stop 与 start 之间的等待秒数
+#   restart_delay: 2.0
+
 agents:
   defaults:
     # 模型名称，格式：provider/model-name

@@ -227,6 +227,10 @@ class AgentLoop:
         self._register_subagent_tools()
         self._current_iteration: int = 0
 
+        # 订阅子代理启动事件：立即通知用户，不经 LLM
+        if self.event_bus:
+            self.event_bus.subscribe("subagent.spawned", self._on_subagent_spawned)
+
     @classmethod
     def from_kernel(
         cls,
@@ -374,6 +378,43 @@ class AgentLoop:
         self.tools.register(SpawnSubagentTool(self._subagent_manager))
         self.tools.register(ListSubagentsTool(self._subagent_manager))
         logger.info("subagent 工具已注册")
+
+    async def _on_subagent_spawned(self, data: dict) -> None:
+        """子代理启动事件处理：构建模板通知并立即推送给用户。
+
+        不经 LLM 生成确认消息，直接通过 agent.outbound 事件发送。
+        通道侧 on_enable 时已订阅 agent.outbound，此事件会自动路由。
+
+        Args:
+            data: subagent.spawned 事件载荷，包含 channel/chat_id/label/task/task_id。
+        """
+        from nanobee.utils.notifications import get_notification_content
+
+        if not isinstance(data, dict):
+            return
+
+        channel = data.get("channel", "cli")
+        chat_id = data.get("chat_id", "direct")
+        if not channel or not chat_id:
+            return
+
+        content = get_notification_content(
+            "subagent_spawned",
+            label=data.get("label", "unknown"),
+            task_id=data.get("task_id", ""),
+            task_preview=data.get("task", "")[:100],
+        )
+
+        await self.event_bus.publish("agent.outbound", {
+            "channel": channel,
+            "chat_id": chat_id,
+            "content": content,
+            "metadata": {
+                "notification_type": "system",
+                "notification_kind": "subagent_spawned",
+                "severity": "info",
+            },
+        })
 
     def _build_subagent_manager(self) -> SubagentManager:
         """创建 SubagentManager 实例（在 __init__ 末尾调用）。"""

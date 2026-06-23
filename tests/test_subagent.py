@@ -129,7 +129,7 @@ class TestSubagentManager:
             label="test-task",
             context_id="user-a",
         )
-        assert "Subagent [test-task] started" in result
+        assert "Subagent [test-task] spawned" in result
         assert "(id:" in result
 
     @pytest.mark.asyncio
@@ -399,7 +399,7 @@ class TestSubagentTools:
         """执行 spawn_subagent 返回启动确认。"""
         tool = SpawnSubagentTool(manager)
         result = await tool.execute(task="test task")
-        assert "started" in result.lower()
+        assert "spawned" in result.lower()
 
     @pytest.mark.asyncio
     async def test_list_execute_empty(self, manager: SubagentManager) -> None:
