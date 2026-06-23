@@ -45,8 +45,8 @@ class ContextRouter:
         chat_id: str,
         *,
         override: str | None = None,
-    ) -> str:
-        """将 channel 消息解析为用户 ID
+    ) -> tuple[str, str]:
+        """将 channel 消息解析为 (user_id, session_id) 元组。
 
         优先级：
         1. override（由 InboundMessage.context_id_override 传入）
@@ -60,24 +60,24 @@ class ContextRouter:
             override: 显式覆盖的 user_id
 
         Returns:
-            用户标识 (user_id)
+            (用户标识, 会话 ID) 元组
 
         Raises:
             UnknownRouteError: 无法路由
         """
         # 1. 显式覆盖
         if override:
-            return override
+            return override, f"{channel}:{chat_id}"
 
         # 2. 精确匹配
         key = f"{channel}:{chat_id}"
         if key in self._routing:
-            return self._routing[key]
+            return self._routing[key], key
 
         # 3. 通配匹配 channel:*
         wildcard_key = f"{channel}:*"
         if wildcard_key in self._routing:
-            return self._routing[wildcard_key]
+            return self._routing[wildcard_key], key
 
         # 4. 未知路由
         raise UnknownRouteError(channel, chat_id)

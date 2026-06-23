@@ -15,12 +15,13 @@ from nanobee.config.schema import Config
 from nanobee.exceptions import ContextError
 from nanobee.kernel.context_manager import ContextManager
 from nanobee.kernel.context_pipeline import ContextPipeline
-from nanobee.kernel.event_bus import EventBus
+from nanobee.events.event_bus import EventBus
 from nanobee.kernel.lock_manager import LockManager
 from nanobee.kernel.plugin_manager import PluginManager
 from nanobee.kernel.router import ContextRouter, UnknownRouteError
-from nanobee.kernel.runtime_events import KernelBooted, RuntimeEventBus
+from nanobee.events.runtime_events import KernelBooted, RuntimeEventBus
 from nanobee.kernel.sandbox import ContextSandbox
+from nanobee.session.session_manager import SessionManager
 from nanobee.kernel.soul_guard import SoulGuard
 from nanobee.kernel.tool_collector import ToolCollector
 from nanobee.kernel.user_context import UserContext, UserMetadata
@@ -67,6 +68,8 @@ class NanobeeKernel:
         resolved_plugin_dirs = plugin_dirs or self.config.plugin_dirs or [_package_builtin]
         self.plugin_manager = PluginManager(self, resolved_plugin_dirs)
         self.context_manager = ContextManager(self)
+        # Session 管理器（管理多会话，存储于 <data_dir>/users/<user_id>/sessions/）
+        self.session_manager = SessionManager(self.data_dir / "users")
         # 内置技能目录：nanobee/skills/
         _builtin_skills = Path(__file__).resolve().parent.parent / "skills"
         # 实例级技能目录：<data_dir>/skills/（管理员配属，实例内所有用户共享）
@@ -199,7 +202,9 @@ class NanobeeKernel:
         media: list[str] | None = None,
         on_stream: Any = None,
         on_stream_end: Any = None,
+        on_progress: Any = None,
         sender_id: str = "user",
+        session_id: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> OutboundMessage | None:
         """处理用户消息。
@@ -207,15 +212,18 @@ class NanobeeKernel:
         支持可选媒体附件和流式回调。
         流式文本块通过 on_stream(delta) 逐段回调，流结束通过
         on_stream_end(resuming=False) 通知。
+        on_progress(delta, *, tool_hint, tool_events) 用于工具执行进度通知。
 
         Args:
             message: 用户消息文本
-            context_id: 上下文 ID
+            context_id: 上下文 ID（通常为用户 ID）
             channel: 来源通道名（如 channel_dingtalk），默认 "direct"
             media: 媒体附件路径列表（图片、文件等）
             on_stream: 每段文本增量回调，签名 async (delta: str) -> None
             on_stream_end: 流结束回调，签名 async (*, resuming: bool) -> None
+            on_progress: 进度回调，签名 async (delta, *, tool_hint, tool_events) -> None
             sender_id: 发送者 ID，作为 context 目录标识
+            session_id: 会话 ID（格式 channel:chat_id，None 时自动派生）
             metadata: 通道特定的元数据（如 sender_staff_id、sender_name 等）
 
         Returns:
@@ -225,7 +233,9 @@ class NanobeeKernel:
         hook = StreamBridgeHook(on_stream=on_stream, on_stream_end=on_stream_end) if on_stream else None
         return await self._handle_message_impl(
             message, context_id, channel=channel, media=media,
-            extra_hook=hook, sender_id=sender_id, metadata=metadata,
+            extra_hook=hook, on_progress=on_progress,
+            sender_id=sender_id, session_id=session_id,
+            metadata=metadata,
         )
 
     async def _handle_message_impl(
@@ -236,7 +246,9 @@ class NanobeeKernel:
         channel: str = "direct",
         media: list[str] | None = None,
         extra_hook: Any = None,
+        on_progress: Any = None,
         sender_id: str = "user",
+        session_id: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> OutboundMessage | None:
         """处理用户消息的公共实现。
@@ -278,52 +290,108 @@ class NanobeeKernel:
             chat_id=context_id,
             content=message,
             media=media or [],
+            session_id_override=session_id,
             metadata=metadata or {},
         )
 
         agent = self._agent_loop
+        # 串行锁 + 待处理队列：同用户互斥，跨用户并行
+        key = msg.context_id
+        pending = asyncio.Queue(maxsize=20)
+        agent._pending_queues[key] = pending
+
         try:
-            # 使用串行锁 + 待处理队列，同 _dispatch 设计
-            key = msg.context_id
-            pending = asyncio.Queue(maxsize=20)
-            agent._pending_queues[key] = pending
-
-            try:
-                async with agent._lock_manager.acquire(key):
-                    try:
-                        response = await agent._process_message(
-                            msg,
-                            pending_queue=pending,
-                            extra_hook=extra_hook,
-                        )
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception:
-                        logger.exception("处理上下文 {} 的消息出错", key)
-                        response = OutboundMessage(
-                            channel=msg.channel,
-                            chat_id=msg.chat_id,
-                            content="抱歉，处理消息时发生内部错误。",
-                        )
-            finally:
-                # 排空待处理队列（同 _dispatch）
-                queue = agent._pending_queues.pop(key, None)
-                if queue is not None:
-                    leftover = 0
-                    while True:
-                        try:
-                            queue.get_nowait()
-                            leftover += 1
-                        except asyncio.QueueEmpty:
-                            break
-                    if leftover:
-                        logger.info("上下文 {} 有 {} 条剩余消息被丢弃", key, leftover)
-
-            return response
+            async with agent._lock_manager.acquire(key):
+                try:
+                    response = await agent._process_message(
+                        msg,
+                        pending_queue=pending,
+                        extra_hook=extra_hook,
+                        on_progress=on_progress,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.exception("处理上下文 {} 的消息出错", key)
+                    response = OutboundMessage(
+                        channel=msg.channel,
+                        chat_id=msg.chat_id,
+                        content="抱歉，处理消息时发生内部错误。",
+                    )
         finally:
-            pass
+            # 排空待处理队列，丢弃未处理的中轮注入消息
+            queue = agent._pending_queues.pop(key, None)
+            if queue is not None:
+                leftover = 0
+                while True:
+                    try:
+                        queue.get_nowait()
+                        leftover += 1
+                    except asyncio.QueueEmpty:
+                        break
+                if leftover:
+                    logger.info("上下文 {} 有 {} 条剩余消息被丢弃", key, leftover)
 
+        return response
 
+    # ── 统一消息注入入口（替代 dispatcher.enqueue_message） ───────────
+
+    def inject_message(self, msg: "InboundMessage") -> None:
+        """注入消息到处理管道（供子代理结果等异步通知使用）。
+
+        统一入口：对齐 nanobot bus.publish_inbound 模式。
+        - 当前上下文有活跃 turn 时，中轮注入（put_nowait，非阻塞）
+        - 无活跃 turn 时，创建后台任务触发新 turn（通过 handle_message）
+
+        Args:
+            msg: 待注入的入站消息（含 _subagent_auto_trigger 等元数据标记）
+        """
+        from nanobee.agent.messages import InboundMessage as _IBM
+
+        agent = self._agent_loop
+        if agent is None:
+            logger.warning("inject_message: AgentLoop 未初始化，丢弃消息")
+            return
+
+        key = msg.context_id
+        if key in agent._pending_queues:
+            # 中轮注入：当前 turn 正在运行，非阻塞放入队列
+            try:
+                agent._pending_queues[key].put_nowait(msg)
+            except asyncio.QueueFull:
+                logger.warning("上下文 {} 待处理队列已满，丢弃注入消息", key)
+            else:
+                logger.debug("消息已中轮注入到上下文 {}", key)
+            return
+
+        # 新轮触发：创建后台任务，不阻塞调用者
+        asyncio.create_task(self._handle_injected_message(msg))
+        logger.debug("已创建新 turn 后台任务处理注入消息，上下文 {}", key)
+
+    async def _handle_injected_message(self, msg: "InboundMessage") -> None:
+        """处理注入消息：调用 handle_message 并通过 EventBus 发布结果。
+
+        后台任务入口，不阻塞子代理 _announce_result 回调。
+        """
+        try:
+            response = await self.handle_message(
+                message=msg.content,
+                context_id=msg.context_id,
+                channel=msg.channel,
+                media=msg.media,
+                sender_id=msg.sender_id,
+                session_id=msg.session_id_override,
+                metadata=msg.metadata,
+            )
+            if response is not None and response.content:
+                await self.event_bus.publish("agent.outbound", {
+                    "channel": response.channel,
+                    "chat_id": response.chat_id,
+                    "content": response.content,
+                    "metadata": response.metadata,
+                })
+        except Exception:
+            logger.exception("处理注入消息时出错，上下文 {}", msg.context_id)
 
     def set_agent_loop(self, agent_loop: AgentLoop) -> None:
         """设置 Agent Loop 实例。
@@ -362,12 +430,14 @@ class NanobeeKernel:
             workspace=self.data_dir,
             context_manager=self.context_manager,
             context_pipeline=self.context_pipeline,
+            session_manager=self.session_manager,
             event_bus=self.event_bus,
             plugin_manager=self.plugin_manager,
             skill_manager=self.skill_manager,
             router=self.router,
             config=self.config,
             model=model,
+            kernel_ref=self,
             **extra,
         )
 

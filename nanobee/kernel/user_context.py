@@ -7,13 +7,12 @@
     workspace/     # LLM 工作文件（工具写文件的目标目录）
     memory/        # 记忆目录
     skills/        # 技能目录
-    .history/      # 会话历史（框架管理，LLM 不可写）
-      default.jsonl
+    sessions/      # 会话历史（SessionManager 管理）
     .tmp/          # 插件临时目录（框架创建，插件自管清理）
 
 注意：沙箱根就是 base_dir（users/{user_id}/），
 所有相对路径（memory/xxx、skills/xxx）都基于此解析。
-identity.yaml、.history/ 和 .tmp/ 受沙箱写保护，LLM 无法修改。
+identity.yaml 和 .tmp/ 受沙箱写保护，LLM 无法修改。
 """
 
 from __future__ import annotations
@@ -54,103 +53,17 @@ class UserMetadata:
         }
 
 
-class ConversationContext:
-    """对话上下文（UserContext 内部实现）
-
-    每个上下文对应一个独立的对话会话，拥有独立的：
-    - 消息历史（.history/default.jsonl）— 框架管理
-    - 记忆目录（memory/）— LLM 自主管理
-    - 临时目录（.tmp/）— 框架管理，按请求清理
-    """
-
-    def __init__(self, context_id: str, base_dir: Path):
-        """初始化上下文
-
-        Args:
-            context_id: 上下文唯一 ID
-            base_dir: 用户根目录（users/<user_id>/）
-        """
-        self.context_id = context_id
-        self.base_dir = base_dir
-        self.memory_dir = base_dir / "memory"
-        self.tmp_dir = base_dir / ".tmp"
-        self.history_file = base_dir / ".history" / "default.jsonl"
-
-        # 创建目录结构（base_dir 由调用方确保存在）
-        base_dir.mkdir(parents=True, exist_ok=True)
-        self.memory_dir.mkdir(parents=True, exist_ok=True)
-        self.tmp_dir.mkdir(parents=True, exist_ok=True)
-        # 创建 .history/ 目录
-        self.history_file.parent.mkdir(parents=True, exist_ok=True)
-
-        self._messages: list[dict[str, Any]] = []
-        self._load_history()
-
-    def _load_history(self) -> None:
-        """从 history.jsonl 加载历史消息"""
-        if not self.history_file.exists():
-            return
-        with open(self.history_file, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    self._messages.append(json.loads(line))
-
-    def add_message(self, role: str, content: str) -> None:
-        """添加消息到历史
-
-        Args:
-            role: 角色（user / assistant / system）
-            content: 消息内容
-        """
-        message = {"role": role, "content": content}
-        self._messages.append(message)
-        self._persist_message(message)
-
-    def _persist_message(self, message: dict[str, Any]) -> None:
-        """持久化消息到 history.jsonl"""
-        with open(self.history_file, "a", encoding="utf-8") as f:
-            f.write(json.dumps(message, ensure_ascii=False) + "\n")
-
-    def get_messages(self) -> list[dict[str, Any]]:
-        """获取所有消息"""
-        return self._messages.copy()
-
-    def trim_to_last_n(self, n: int) -> None:
-        """裁剪历史，仅保留最近 n 条消息（同步更新 history.jsonl）。
-
-        Args:
-            n: 保留的最新消息条数。n <= 0 时清空。
-        """
-        if n <= 0:
-            self.clear()
-            return
-        if len(self._messages) <= n:
-            return
-        self._messages = self._messages[-n:]
-        self._rewrite_history()
-
-    def _rewrite_history(self) -> None:
-        """将当前 _messages 覆写到 history.jsonl。"""
-        with open(self.history_file, "w", encoding="utf-8") as f:
-            for msg in self._messages:
-                f.write(json.dumps(msg, ensure_ascii=False) + "\n")
-
-    def clear(self) -> None:
-        """清空上下文（保留目录结构）"""
-        self._messages.clear()
-        if self.history_file.exists():
-            self.history_file.unlink()
-        logger.info("上下文 {} 已清空", self.context_id)
-
-
 class UserContext:
     """用户上下文 — 多租户隔离的基本单元
 
     每个 User 一个目录，封装了：
-    - identity.yaml：元数据（仅加载元数据，不加载历史）
-    - ConversationContext：历史消息、记忆、临时目录
+    - identity.yaml：元数据
     - workspace/：LLM 工作文件目录
+    - memory/：记忆目录
+    - .tmp/：插件临时目录
+
+    历史管理已完全迁移到 SessionManager（sessions/ 目录），
+    此类不再持有任何历史相关的方法。
     """
 
     def __init__(self, user_id: str, base_dir: Path) -> None:
@@ -166,8 +79,11 @@ class UserContext:
         # identity.yaml 路径
         self.meta_file = self.base_dir / "identity.yaml"
 
-        # 内部 ConversationContext（历史消息、记忆、临时目录）
-        self._conversation = ConversationContext(user_id, base_dir)
+        # 确保子目录存在
+        self.base_dir.mkdir(parents=True, exist_ok=True)
+        (self.base_dir / "workspace").mkdir(parents=True, exist_ok=True)
+        (self.base_dir / "memory").mkdir(parents=True, exist_ok=True)
+        (self.base_dir / ".tmp").mkdir(parents=True, exist_ok=True)
 
         # 元数据
         self._metadata: UserMetadata | None = None
@@ -220,7 +136,7 @@ class UserContext:
             yaml.dump(default, f, allow_unicode=True, default_flow_style=False)
         logger.info("已创建默认元数据: {}", self.meta_file)
 
-    # ---- 对话历史代理 ----
+    # ---- 目录路径 ----
 
     @property
     def work_dir(self) -> Path:
@@ -232,33 +148,12 @@ class UserContext:
     @property
     def memory_dir(self) -> Path:
         """记忆目录"""
-        return self._conversation.memory_dir
+        return self.base_dir / "memory"
 
     @property
     def tmp_dir(self) -> Path:
         """插件临时目录"""
-        return self._conversation.tmp_dir
-
-    @property
-    def history_file(self) -> Path:
-        """历史文件路径"""
-        return self._conversation.history_file
-
-    def get_messages(self) -> list[dict[str, Any]]:
-        """获取所有历史消息"""
-        return self._conversation.get_messages()
-
-    def add_message(self, role: str, content: str) -> None:
-        """添加消息到历史"""
-        self._conversation.add_message(role, content)
-
-    def clear(self) -> None:
-        """清空历史（保留目录结构）"""
-        self._conversation.clear()
-
-    def trim_to_last_n(self, n: int) -> None:
-        """裁剪历史，仅保留最近 n 条消息。"""
-        self._conversation.trim_to_last_n(n)
+        return self.base_dir / ".tmp"
 
     # ---- 白/黑名单 ----
 
@@ -284,5 +179,4 @@ class UserContext:
 __all__ = [
     "UserContext",
     "UserMetadata",
-    "ConversationContext",
 ]

@@ -100,9 +100,16 @@ class ChannelCLIPlugin(ChannelPlugin):
             return []
 
         if self.kernel is not None:
+            async def _on_progress(delta: str, *, tool_hint: bool = False,
+                                   tool_events: list[dict] | None = None) -> None:
+                if tool_hint:
+                    print("\n🔧 正在调用工具...", flush=True)
+
             response = await self.kernel.handle_message(
                 content, message.context_id,
                 channel=self.metadata.name,
+                session_id="cli:direct",
+                on_progress=_on_progress,
             )
             content_text = response.content if response else ""
             return [

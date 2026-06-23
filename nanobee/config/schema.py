@@ -77,6 +77,7 @@ class AgentDefaults(Base):
     max_messages: int = 120
     memory_store_threshold: int = 20
     max_iterations: int = 10
+    max_concurrent_subagents: int = 4
 
 
 class AgentsConfig(Base):

@@ -346,6 +346,7 @@ class HTTPChannelPlugin(ChannelPlugin):
 
         stream = bool(body.get("stream", False))
         conversation_id = body.get("conversation_id") or body.get("thread_id") or str(uuid.uuid4())
+        session_id = body.get("session_id") or f"http:{conversation_id}"
         model = body.get("model", self._model)
 
         # ---- 解析用户消息 ----
@@ -396,6 +397,14 @@ class HTTPChannelPlugin(ChannelPlugin):
                     chunk = _build_sse_chunk(delta, model=model, completion_id=completion_id)
                     await response.write(chunk.encode())
 
+                # on_progress 回调：工具执行时发送 SSE 事件
+                async def _on_progress(delta: str, *, tool_hint: bool = False,
+                                       tool_events: list[dict] | None = None) -> None:
+                    if tool_hint and tool_events:
+                        event = json.dumps({"type": "tool_start", "tool_events": tool_events},
+                                           ensure_ascii=False)
+                        await response.write(f"data: {event}\n\n".encode())
+
                 # 调用内核处理消息
                 await self.kernel.handle_message(
                     text,
@@ -403,7 +412,9 @@ class HTTPChannelPlugin(ChannelPlugin):
                     channel=self.metadata.name,
                     media=media_urls or None,
                     on_stream=_on_stream,
+                    on_progress=_on_progress,
                     sender_id=conversation_id,
+                    session_id=session_id,
                 )
 
                 # 发送结束块（finish_reason=stop）
@@ -440,6 +451,7 @@ class HTTPChannelPlugin(ChannelPlugin):
                 channel=self.metadata.name,
                 media=media_urls or None,
                 sender_id=conversation_id,
+                session_id=session_id,
             )
             content = result.content if result else ""
         except Exception:

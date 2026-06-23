@@ -46,7 +46,9 @@ from nanobee.utils.helpers import (
     truncate_text,
 )
 from nanobee.utils.progress_events import (
+    build_tool_event_start_payload,
     invoke_file_edit_progress,
+    invoke_on_progress,
     on_progress_accepts_file_edit_events,
 )
 from nanobee.utils.prompt_templates import render_template
@@ -116,6 +118,7 @@ def _inject_context_to_tool(tool: Any, spec: AgentRunSpec) -> None:
                 chat_id=spec.chat_id,
                 user_id=spec.sender_id,
                 metadata=spec.metadata,
+                session_key=spec.session_id,
             )
         except Exception:
             logger.debug("调用工具插件 set_context 失败: {}", type(plugin).__name__)
@@ -156,6 +159,7 @@ class AgentRunSpec:
     channel: str = ""
     chat_id: str = ""
     sender_id: str = ""
+    session_id: str = "default"
     metadata: dict[str, Any] = field(default_factory=dict)
     # 需要节流的外部查询工具名集合，从插件 metadata.throttle_group 构建
     throttled_tool_names: dict[str, str] = field(default_factory=dict)
@@ -1093,6 +1097,14 @@ class AgentRunner:
                 except Exception as e:
                     logger.exception("on_pre_invoke hook 执行出错: {}", e)
                     # 不阻止工具执行，仅记录日志
+
+        # 通知通道：工具开始执行（tool_hint=True 触发通道展示 🔧 等视觉反馈）
+        if spec.progress_callback is not None:
+            await invoke_on_progress(
+                spec.progress_callback, "",
+                tool_hint=True,
+                tool_events=[build_tool_event_start_payload(tool_call)],
+            )
 
         try:
             if tool is not None:

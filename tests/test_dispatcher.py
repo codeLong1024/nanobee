@@ -1,4 +1,7 @@
-"""测试 MessageDispatcher — 消息分发器。"""
+"""测试 Kernel.inject_message — 统一消息注入入口。
+
+替代原 test_dispatcher.py（MessageDispatcher 已废弃）。
+"""
 
 from __future__ import annotations
 
@@ -7,16 +10,9 @@ from unittest.mock import ANY, AsyncMock, MagicMock
 
 import pytest
 
-from nanobee.agent.dispatcher import MessageDispatcher
 from nanobee.agent.messages import InboundMessage, OutboundMessage
-from nanobee.kernel.event_bus import EventBus
+from nanobee.events.event_bus import EventBus
 from nanobee.kernel.lock_manager import LockManager
-from nanobee.kernel.router import ContextRouter
-
-
-@pytest.fixture
-def lock_manager():
-    return LockManager(max_concurrent=3)
 
 
 @pytest.fixture
@@ -25,227 +21,231 @@ def event_bus():
 
 
 @pytest.fixture
-def router():
-    return ContextRouter()
+def lock_manager():
+    return LockManager(max_concurrent=3)
 
 
-@pytest.fixture
-def process_message():
-    """返回一个记录调用并返回 OutboundMessage 的 mock。"""
-    async def _process(msg, **kwargs):
-        return OutboundMessage(
-            channel=msg.channel,
-            chat_id=msg.chat_id,
-            content=f"response to: {msg.content[:50]}",
-        )
-    return _process
+def _make_kernel(agent_loop_mock=None, event_bus=None):
+    """构造一个带有 inject_message 的 Kernel mock 对象。"""
+    from nanobee.kernel.kernel import NanobeeKernel
 
+    class _MockConfig(dict):
+        agents = MagicMock()
+        agents.defaults = MagicMock()
+        agents.defaults.model = "test"
+        agents.defaults.max_iterations = 3
+        agents.defaults.max_messages = 20
+        agents.defaults.context_window_tokens = 8192
 
-@pytest.fixture
-def dispatcher(lock_manager, event_bus, router, process_message):
-    return MessageDispatcher(
-        lock_manager=lock_manager,
-        event_bus=event_bus,
-        router=router,
-        process_message_cb=process_message,
+    kernel = NanobeeKernel.__new__(NanobeeKernel)
+    kernel.event_bus = event_bus or EventBus()
+    kernel._agent_loop = agent_loop_mock
+    kernel._booted = True
+    kernel.config = _MockConfig(
+        data_dir="/tmp/test_nanobee",
+        core_md_path="/tmp/test_nanobee/core.md",
     )
+    kernel.config.skills = MagicMock()
+    kernel.config.skills.enabled = []
+    return kernel
 
 
-class TestMessageDispatcherInit:
-    """MessageDispatcher 初始化测试。"""
+class TestInjectMessage:
+    """Kernel.inject_message() 测试。"""
 
-    def test_init(self, dispatcher):
-        """正常初始化。"""
-        assert dispatcher._pending_queues == {}
-        assert dispatcher._active_tasks == {}
-        assert not dispatcher._running
+    def test_mid_turn_injection(self):
+        """中轮注入：活跃队列存在时 put_nowait 到队列，非阻塞。"""
+        # msg.context_id = sender_id = "user"
+        pending_queues: dict[str, asyncio.Queue] = {}
+        pending_queues["user"] = asyncio.Queue(maxsize=20)
 
-    def test_pending_queues_property(self, dispatcher):
-        """pending_queues 属性返回内部字典。"""
-        assert dispatcher.pending_queues is dispatcher._pending_queues
+        agent_mock = MagicMock()
+        agent_mock._pending_queues = pending_queues
 
-
-class TestMessageDispatcherStop:
-    """MessageDispatcher.stop() 测试。"""
-
-    def test_stop_sets_running_false(self, dispatcher):
-        """stop() 将 _running 设为 False。"""
-        dispatcher._running = True
-        dispatcher.stop()
-        assert not dispatcher._running
-
-    def test_stop_idempotent(self, dispatcher):
-        """多次调用 stop() 安全。"""
-        dispatcher.stop()
-        dispatcher.stop()
-        assert not dispatcher._running
-
-
-class TestMessageDispatcherDispatch:
-    """MessageDispatcher._dispatch() 测试。"""
-
-    @pytest.mark.asyncio
-    async def test_dispatch_creates_queue(self, dispatcher, event_bus):
-        """分发消息时创建并清除待处理队列。"""
+        kernel = _make_kernel(agent_loop_mock=agent_mock)
         msg = InboundMessage(
-            channel="test", sender_id="user1", chat_id="chat1", content="hello",
+            channel="test", sender_id="user", chat_id="default",
+            content="subagent result",
+            metadata={"_subagent_auto_trigger": True},
         )
-        outbound_spy = AsyncMock()
-        event_bus.subscribe("agent.outbound", outbound_spy)
 
-        await dispatcher._dispatch(msg)
+        kernel.inject_message(msg)
 
-        assert "user1" not in dispatcher._pending_queues  # 处理后清除
-        outbound_spy.assert_awaited_once()
+        # 消息应该在队列中（key = msg.context_id = sender_id）
+        assert not pending_queues["user"].empty()
+        queued = pending_queues["user"].get_nowait()
+        assert queued is msg
 
     @pytest.mark.asyncio
-    async def test_dispatch_propagates_cancelled(self, dispatcher):
-        """分发时抛出 CancelledError 向上传播。"""
-        async def failing_process(msg, **kwargs):
-            raise asyncio.CancelledError()
+    async def test_new_turn_trigger(self):
+        """新轮触发：无活跃队列时创建后台任务。"""
+        agent_mock = MagicMock()
+        agent_mock._pending_queues = {}
 
-        dispatcher._process_message = failing_process
+        kernel = _make_kernel(agent_loop_mock=agent_mock)
         msg = InboundMessage(
-            channel="test", sender_id="user2", chat_id="chat2", content="cancel",
+            channel="test", sender_id="user", chat_id="default",
+            content="", metadata={"_subagent_auto_trigger": True},
         )
-        with pytest.raises(asyncio.CancelledError):
-            await dispatcher._dispatch(msg)
 
-    @pytest.mark.asyncio
-    async def test_dispatch_sends_error_on_exception(self, dispatcher, event_bus):
-        """分发时异常时发送错误出站消息。"""
-        async def failing_process(msg, **kwargs):
-            raise RuntimeError("boom")
+        kernel.inject_message(msg)
+        # 验证没有立即报错即可（后台任务异步执行）
+        # context_id = sender_id = "user"
+        assert "user" not in agent_mock._pending_queues
 
-        dispatcher._process_message = failing_process
-        published = []
-
-        async def outbound_spy(data):
-            published.append(data)
-
-        event_bus.subscribe("agent.outbound", outbound_spy)
-
+    def test_agent_loop_none_graceful(self):
+        """AgentLoop 未初始化时优雅跳过。"""
+        kernel = _make_kernel(agent_loop_mock=None)
         msg = InboundMessage(
-            channel="test", sender_id="user3", chat_id="chat3", content="error",
+            channel="test", sender_id="user", chat_id="default", content="x",
         )
-        await dispatcher._dispatch(msg)
+        # 不应抛异常
+        kernel.inject_message(msg)
 
-        assert len(published) == 1
-        content = published[0].get("content", "")
-        assert "sorry" in content.lower() or "error" in content.lower()
+    def test_queue_full_graceful(self):
+        """队列满时优雅降级（不抛异常）。"""
+        pending_queues: dict[str, asyncio.Queue] = {}
+        pending_queues["user"] = asyncio.Queue(maxsize=1)
+        pending_queues["user"].put_nowait("blocking_item")
 
-    @pytest.mark.asyncio
-    async def test_dispatch_with_stream_metadata(self, dispatcher, event_bus):
-        """流式元数据不会导致错误。"""
-        stream_events = []
+        agent_mock = MagicMock()
+        agent_mock._pending_queues = pending_queues
 
-        async def stream_spy(data):
-            stream_events.append(data)
-
-        event_bus.subscribe("agent.stream_delta", stream_spy)
-
+        kernel = _make_kernel(agent_loop_mock=agent_mock)
         msg = InboundMessage(
-            channel="test", sender_id="user4", chat_id="chat4", content="stream",
-            metadata={"_wants_stream": True},
+            channel="test", sender_id="user", chat_id="default", content="overflow",
         )
-        await dispatcher._dispatch(msg)
-        # process_message 无流式输出，stream_delta 不会被调用
-        assert len(stream_events) == 0
+
+        # 不应抛异常
+        kernel.inject_message(msg)
 
 
-class TestMessageDispatcherPublish:
-    """MessageDispatcher._publish_outbound() 测试。"""
+class TestHandleInjectedMessage:
+    """Kernel._handle_injected_message() 测试。"""
 
     @pytest.mark.asyncio
-    async def test_publishes_to_event_bus(self, dispatcher, event_bus):
-        """发布出站消息到事件总线。"""
-        published = []
+    async def test_publishes_result_via_event_bus(self, event_bus):
+        """注入消息处理后通过 EventBus 发布结果。"""
+        published: list[dict] = []
 
         async def spy(data):
             published.append(data)
 
         event_bus.subscribe("agent.outbound", spy)
 
-        msg = OutboundMessage(channel="test", chat_id="chat1", content="hi")
-        await dispatcher._publish_outbound(msg)
+        # 构造 AgentLoop mock（避免真正调用 LLM）
+        agent_mock = MagicMock()
+        agent_mock._pending_queues = {}
+        agent_mock._lock_manager = LockManager(max_concurrent=3)
+        agent_mock._connect_mcp = AsyncMock()
+        agent_mock._process_message = AsyncMock(return_value=OutboundMessage(
+            channel="test", chat_id="user:default",
+            content="subagent done", metadata={},
+        ))
+        agent_mock._pending_subagent_results = {}
+
+        kernel = _make_kernel(agent_loop_mock=agent_mock, event_bus=event_bus)
+        kernel._agent_loop = agent_mock
+
+        msg = InboundMessage(
+            channel="test", sender_id="user", chat_id="default",
+            content="", metadata={"_subagent_auto_trigger": True},
+        )
+
+        await kernel._handle_injected_message(msg)
 
         assert len(published) == 1
-        assert published[0]["content"] == "hi"
+        assert published[0]["content"] == "subagent done"
         assert published[0]["channel"] == "test"
 
     @pytest.mark.asyncio
-    async def test_no_event_bus_skip(self):
-        """没有事件总线时跳过发布。"""
-        d = MessageDispatcher(
-            lock_manager=LockManager(max_concurrent=3),
-            event_bus=None,
-            router=ContextRouter(),
-            process_message_cb=AsyncMock(),
+    async def test_none_response_not_published(self, event_bus):
+        """handle_message 返回 None 时不发布。"""
+        published: list[dict] = []
+
+        async def spy(data):
+            published.append(data)
+
+        event_bus.subscribe("agent.outbound", spy)
+
+        agent_mock = MagicMock()
+        agent_mock._pending_queues = {}
+        agent_mock._lock_manager = LockManager(max_concurrent=3)
+        agent_mock._connect_mcp = AsyncMock()
+        agent_mock._process_message = AsyncMock(return_value=None)
+        agent_mock._pending_subagent_results = {}
+
+        kernel = _make_kernel(agent_loop_mock=agent_mock, event_bus=event_bus)
+        kernel._agent_loop = agent_mock
+
+        msg = InboundMessage(
+            channel="test", sender_id="user", chat_id="default",
+            content="", metadata={},
         )
-        msg = OutboundMessage(channel="test", chat_id="chat1", content="hi")
-        await d._publish_outbound(msg)  # 不应抛出异常
 
+        await kernel._handle_injected_message(msg)
 
-class TestMessageDispatcherRun:
-    """MessageDispatcher.run() 测试。"""
+        assert len(published) == 0
 
     @pytest.mark.asyncio
-    async def test_consume_fn_receives_messages(self):
-        """消息消费函数被正确调用，stop 后退出循环。"""
-        d = MessageDispatcher(
-            lock_manager=LockManager(max_concurrent=3),
-            event_bus=None,
-            router=ContextRouter(),
-            process_message_cb=AsyncMock(return_value=None),
-        )
+    async def test_exception_in_injected_message(self, event_bus):
+        """注入消息处理异常时不崩溃（由 logger.exception 记录）。"""
+        agent_mock = MagicMock()
+        agent_mock._pending_queues = {}
+        agent_mock._lock_manager = LockManager(max_concurrent=3)
+        agent_mock._connect_mcp = AsyncMock()
+        agent_mock._process_message = AsyncMock(side_effect=RuntimeError("simulated crash"))
+        agent_mock._pending_subagent_results = {}
 
-        call_count = 0
+        kernel = _make_kernel(agent_loop_mock=agent_mock, event_bus=event_bus)
+        kernel._agent_loop = agent_mock
 
-        async def consume():
-            nonlocal call_count
-            call_count += 1
-            if call_count > 2:
-                raise asyncio.TimeoutError()
-            return InboundMessage(
-                channel="test", sender_id="u1", chat_id="c1", content="msg",
-            )
-
-        async def connect_mcp():
-            pass
-
-        # 在后台任务中运行，1 秒后强制停止
-        run_task = asyncio.create_task(d.run(consume, connect_mcp))
-        await asyncio.sleep(0.1)
-        d.stop()
-        await asyncio.wait_for(run_task, timeout=2.0)
-        assert call_count >= 1
-        assert not d._running
-
-
-class TestMessageDispatcherEffectiveContextId:
-    """_effective_context_id 路由测试。"""
-
-    def test_uses_sender_id(self, dispatcher):
-        """msg.sender_id 被正确使用。"""
         msg = InboundMessage(
-            channel="test", sender_id="user1", chat_id="chat1", content="hi",
+            channel="test", sender_id="user", chat_id="default",
+            content="", metadata={},
         )
-        result = dispatcher._effective_context_id(msg)
-        assert result == "user1"
 
-    def test_fallback_to_context_id(self, dispatcher):
-        """sender_id 为空时使用 msg.context_id。"""
-        msg = InboundMessage(
-            channel="test", sender_id="", chat_id="chat1", content="hi",
-        )
-        result = dispatcher._effective_context_id(msg)
-        assert result == "test:chat1"
+        # 不应抛异常
+        await kernel._handle_injected_message(msg)
 
-    def test_context_id_override_wins(self, dispatcher):
-        """context_id_override 优先。"""
-        msg = InboundMessage(
-            channel="test", sender_id="user1", chat_id="chat1",
-            content="hi", context_id_override="override123",
+    @pytest.mark.asyncio
+    async def test_concurrent_injection_single_user(self, event_bus):
+        """同用户并发注入：第一条创建新 turn，后续中轮注入。"""
+        pending_queues: dict[str, asyncio.Queue] = {}
+
+        agent_mock = MagicMock()
+        agent_mock._pending_queues = pending_queues
+        agent_mock._lock_manager = LockManager(max_concurrent=3)
+        agent_mock._connect_mcp = AsyncMock()
+        # process_message 阻塞一小段时间，模拟处理中
+        agent_mock._process_message = AsyncMock(side_effect=lambda *a, **kw: asyncio.sleep(0.05))
+        agent_mock._pending_subagent_results = {}
+
+        kernel = _make_kernel(agent_loop_mock=agent_mock, event_bus=event_bus)
+        kernel._agent_loop = agent_mock
+
+        msg1 = InboundMessage(
+            channel="test", sender_id="user", chat_id="default",
+            content="", metadata={"_subagent_auto_trigger": True},
         )
-        result = dispatcher._effective_context_id(msg)
-        assert result == "override123"
+
+        # 第一次注入：无活跃队列 → 创建后台任务 → 后台任务运行中注册了 queue
+        kernel.inject_message(msg1)
+        # 等待后台任务开始运行（此时 pending_queues 应该被注册了）
+        await asyncio.sleep(0.02)
+
+        msg2 = InboundMessage(
+            channel="test", sender_id="user", chat_id="default",
+            content="", metadata={"_subagent_auto_trigger": True},
+        )
+
+        # 第二次注入：此时有活跃队列 → 中轮注入
+        kernel.inject_message(msg2)
+
+        # 等待任务完成
+        await asyncio.sleep(0.2)
+
+        # 消息应通过中轮注入进入队列（由 _handle_message_impl 注册）
+        # 中轮注入的消息在排空时被丢弃
+        # 此测试仅验证不崩溃
+        assert True

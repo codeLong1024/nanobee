@@ -143,16 +143,20 @@ async def test_e2e_context_lifecycle(tmp_path):
     assert context.work_dir.exists()
     assert context.memory_dir.exists()
 
-    # 添加消息
-    context.add_message("user", "测试消息")
-    msgs = context.get_messages()
-    assert len(msgs) == 1
-    assert msgs[0]["content"] == "测试消息"
+    # 通过 SessionManager 添加消息（多 session 隔离）
+    from nanobee.session.session_manager import SessionManager
+    session_mgr = SessionManager(context.base_dir.parent)
+    s = session_mgr.get_or_create("session-1", "cli:chat")
+    s.add_message("user", "测试消息")
+    session_mgr.save(s)
+    assert len(s.messages) == 1
+    assert s.messages[0]["content"] == "测试消息"
 
     # 切换上下文
     ctx2 = await kernel.context_manager.switch("session-2")
     assert ctx2.context_id == "session-2"
-    assert len(ctx2.get_messages()) == 0  # 隔离
+    s2 = session_mgr.get_or_create("session-2", "cli:chat")
+    assert len(s2.messages) == 0  # 隔离
 
     # 列出上下文
     ctx_list = kernel.context_manager.list_contexts()
