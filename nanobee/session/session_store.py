@@ -47,6 +47,78 @@ class SessionStore:
         safe = session_id.replace(":", "__")
         return self.sessions_base_dir / user_id / "sessions" / f"{safe}.jsonl"
 
+    def _consolidation_path(self, user_id: str, session_id: str) -> Path:
+        """返回 consolidation 归档文件的完整路径。
+
+        与 session .jsonl 同目录，后缀为 .consolidation.jsonl。
+
+        Args:
+            user_id: 用户 ID。
+            session_id: 会话 ID（含冒号）。
+
+        Returns:
+            归档文件的绝对路径。
+        """
+        safe = session_id.replace(":", "__")
+        return self.sessions_base_dir / user_id / "sessions" / f"{safe}.consolidation.jsonl"
+
+    # ---- 归档 ----
+
+    def append_consolidation(
+        self,
+        user_id: str,
+        session_id: str,
+        summary: str,
+        archived_count: int,
+    ) -> int:
+        """追加一条压缩归档记录到 .consolidation.jsonl 文件。
+
+        每次调用追加一行 JSON，记录序号、摘要、归档消息数、时间戳。
+        序号从已有行数自动推导（从 0 开始）。
+
+        Args:
+            user_id: 用户 ID。
+            session_id: 会话 ID。
+            summary: LLM 生成的摘要文本。
+            archived_count: 本次归档的消息条数。
+
+        Returns:
+            本次归档记录的序号（从 0 开始）。
+        """
+        from datetime import datetime
+
+        path = self._consolidation_path(user_id, session_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        # 计算已有行数作为序号
+        index = 0
+        if path.exists():
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    index = sum(1 for _ in f)
+            except OSError:
+                logger.exception("读取 consolidation 归档文件失败: {}", path)
+
+        record = {
+            "index": index,
+            "summary": summary,
+            "archived_count": archived_count,
+            "timestamp": datetime.now().isoformat(),
+        }
+
+        try:
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        except OSError:
+            logger.exception("追加 consolidation 归档记录失败: {}", path)
+            raise
+
+        logger.info(
+            "consolidation 归档 #{}: session={} 归档 {} 条消息",
+            index, session_id, archived_count,
+        )
+        return index
+
     # ---- 读取 ----
 
     def load(self, user_id: str, session_id: str) -> Session | None:

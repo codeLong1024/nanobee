@@ -137,6 +137,107 @@ class SessionManager:
         key = (user_id, session_id)
         self._cache.pop(key, None)
 
+    # ---- Consolidation ----
+
+    def consolidate(
+        self,
+        user_id: str,
+        session_id: str,
+        summary: str,
+        keep_last_n: int = 8,
+    ) -> dict[str, Any]:
+        """执行历史压缩：归档摘要 → 裁剪消息 → 注入摘要。
+
+        将保留范围之外的消息归档到 .consolidation.jsonl，
+        裁剪 session 到 keep_last_n 条，并在消息列表开头注入
+        system 消息（含历史摘要），供后续 LLM 上下文参考。
+
+        这是纯机制：摘要质量由 LLM 负责，框架只做 I/O 和裁剪。
+
+        Args:
+            user_id: 用户 ID。
+            session_id: 会话 ID。
+            summary: LLM 生成的摘要文本（不含角色前缀）。
+            keep_last_n: 保留的最近消息条数（默认 8）。
+
+        Returns:
+            操作结果字典：{"archived_count": int, "archived_index": int,
+            "before_count": int, "after_count": int}
+
+        Raises:
+            ValueError: 参数无效时。
+        """
+        if keep_last_n < 1:
+            raise ValueError(f"keep_last_n 必须 ≥ 1，当前为 {keep_last_n}")
+
+        session = self.get_or_create(user_id, session_id)
+        before_count = len(session.messages)
+
+        # 裁剪行数不足时无需压缩
+        if before_count <= keep_last_n:
+            logger.debug(
+                "无需压缩: session={} 仅 {} 条消息 (keep_last_n={})",
+                session_id, before_count, keep_last_n,
+            )
+            return {
+                "archived_count": 0,
+                "archived_index": -1,
+                "before_count": before_count,
+                "after_count": before_count,
+            }
+
+        # 提取待归档的消息
+        archived_messages = session.messages[: -keep_last_n]
+        archived_count = len(archived_messages)
+
+        # 摘要为空时降级为 raw archive（保留前 500 字符）
+        safe_summary = summary.strip() if summary else ""
+        if not safe_summary:
+            raw_preview = " ".join(
+                str(m.get("content", ""))[:500] for m in archived_messages[:20]
+            )
+            safe_summary = f"[raw archive] {raw_preview}"
+            logger.warning(
+                "LLM 摘要为空，降级为 raw archive: session={}", session_id,
+            )
+
+        # 写入压缩归档
+        archived_index = self.store.append_consolidation(
+            user_id, session_id, safe_summary, archived_count,
+        )
+
+        # 裁剪到 keep_last_n 条
+        session.trim_to_last_n(keep_last_n)
+
+        # 更新 last_consolidated 累积计数
+        session.last_consolidated += archived_count
+
+        # 在消息列表开头注入摘要 system 消息
+        # 注意：摘要注入在裁剪之后，所以是第一条消息
+        system_msg = {
+            "role": "system",
+            "content": f"[历史摘要 #{archived_index}] 以下对话的早期部分摘要（"
+                       f"共 {archived_count} 条消息已归档）：\n{safe_summary}",
+        }
+        session.messages.insert(0, system_msg)
+        session.updated_at = datetime.now()
+
+        # 持久化
+        self.save(session)
+        after_count = len(session.messages)
+
+        logger.info(
+            "consolidate: session={} 压缩 {} → {} 条 (归档 #{} 共 {} 条)",
+            session_id, before_count, after_count, archived_index, archived_count,
+        )
+
+        return {
+            "archived_count": archived_count,
+            "archived_index": archived_index,
+            "before_count": before_count,
+            "after_count": after_count,
+        }
+
     # ---- Fork ----
 
     def fork(

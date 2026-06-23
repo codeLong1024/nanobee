@@ -1,0 +1,34 @@
+[plugin]
+name = "channel_dingtalk"
+version = "1.0.0"
+description = "钉钉机器人通道（Stream SDK + AI Card 流式输出）"
+author = "nanobee-team"
+type = "channel"
+
+[config]
+# ==== 钉钉应用凭证 ====
+# client_id = ""
+# client_secret = ""
+
+# ==== 流式输出 ====
+# streaming = true
+
+# ==== 代理 ====
+# proxy_url = ""
+
+# ==== 媒体 ====
+# enable_media_upload = true
+# media_max_mb = 20
+# enable_chunk_upload = true
+# chunk_size_kb = 5120
+
+# ==== 文件解析 ====
+# enable_file_parsing = false
+# max_file_parse_chars = 2000
+
+# ==== AI Agent 标记处理 ====
+# enable_marker_processing = true
+# enable_video_thumbnail = true
+
+# ==== 消息标题 ====
+# markdown_title = "智能体回复"

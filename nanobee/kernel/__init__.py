@@ -10,6 +10,7 @@ from nanobee.exceptions import (
     SoulViolationError,
     UnknownRouteError,
 )
+from nanobee.kernel.command_router import CommandContext, CommandRouter
 from nanobee.kernel.context_manager import ContextManager
 from nanobee.kernel.context_pipeline import ContextPipeline
 from nanobee.kernel.kernel import NanobeeKernel
@@ -40,4 +41,6 @@ __all__ = [
     "SandboxViolationError",
     "SoulViolationError",
     "ContextError",
+    "CommandRouter",
+    "CommandContext",
 ]

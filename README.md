@@ -19,48 +19,75 @@
 
 ## 项目状态
 
-**版本 v0.1.0** — 核心框架（微内核、Agent 引擎、LLM Provider、插件体系）已通过 **533 个单元测试**验证。
+**版本 v0.1.0** — 核心框架（微内核、Agent 引擎、LLM Provider、插件体系、会话管理）已通过 **649 个单元测试**验证（1 skipped）。
 
 ```
 Kernel 内核     ████████████████████████████████  95%
 Agent 引擎      ████████████████████████████████ 100%
 LLM Providers   ████████████████████████████████ 100%
 内置插件        ████████████████████████████████ 100%
-CLI 命令        ████████████████████████████████  75%
+CLI 命令        ████████████████████████████████  85%
 测试覆盖        ████████████████████████████████ 100%
 ```
 
 ### 已完成功能
 
-- **NanobeeKernel** — 统一入口，管理插件生命周期、消息路由、灵魂文件保护
+#### 内核与隔离
+
+- **NanobeeKernel** — 统一入口，管理插件生命周期、消息路由、灵魂文件保护。内置 **CommandRouter** 拦截 `/` 开头命令（`/stop`/`/new`/`/status`/`/help`），零 token 消耗。插件可通过 `kernel.command_router.register()` 注册自定义命令
 - **多租户隔离内核** — LockManager 并发锁、UserContext 元数据、ContextRouter 路由、ContextSandbox 沙箱、ToolCollector 双重过滤
 - **Agent 状态机** — 6 态驱动循环（RESTORE → COMPACT → BUILD → RUN → SAVE → RESPOND），支持流式输出、中轮注入、并发锁。**状态机层统一异常恢复**：任一状态处理器异常 → 填充错误上下文 → 跳过 SAVE（不污染历史）→ 直接进入 RESPOND 正常流式回复，kernel 层 catch 降级为最终兜底
 - **Plugin Hook 机制** — 5 个核心契约接口（contribute_to_prompt/contribute_to_tools/on_pre_invoke/on_post_invoke/on_message_completed），插件可在关键切面注入逻辑
 
 - **Run-level Hook 机制** — AgentRunner 外层生命周期：before_run / after_run / on_error / on_finally，包裹整个 LLM 迭代循环，支持启动初始化、完成汇总、错误记录、资源释放
+
+#### 技能与知识
+
 - **技能管理** — SkillsLoader 三级机制（内置 `nanobee/skills/` 始终注入 + 实例 `<data_dir>/skills/` 由 `skills.enabled` 声明 + 用户 `users/<user_id>/skills/` 始终注入），同名优先级 user > instance > builtin。部署方通过 `skills.enabled` 控制实例技能注入，同时自动推导为沙箱只读白名单 + bwrap 进程沙箱挂载点。SKILL.md frontmatter 驱动渐进/全量注入策略
-- **内置 Skill** — 框架打包 `nanobee/skills/`，只读不可覆盖，同时加入沙箱只读根白名单，LLM 可通过 `read_file` 读取参考格式。标记 `full_inject: true` 的技能全量注入 system prompt，普通技能仅注入元数据 + 文件绝对路径，由 LLM 按需读取
+- **4 个内置 Skill** — `_memory`（记忆策略，`full_inject: true`）、`skill_creator`（技能创建教程）、`cron`（定时任务指南）、`web-tools-guide-1.0.2`（Web 工具使用策略）。框架只读不可覆盖，沙箱只读根白名单保护。标记 `full_inject: true` 的技能全量注入 system prompt，普通技能仅注入元数据 + 文件绝对路径，由 LLM 按需读取
+- **Pipeline 声明式注入** — SkillStage 由 SKILL.md frontmatter 的 `full_inject` 标记驱动：标记为 true 的技能全量注入 body，其余仅注入元数据。从根源杜绝注入攻击（恶意 body 不进入 system prompt）
+
+#### 沙箱与安全
+
 - **Sandbox 多根白名单** — ContextSandbox 从单根扩展为可读写根 + 只读根列表。写操作（write_file/edit_file）仅限 context_root 内，读操作（read_file/list_dir）可访问所有白名单根。内置技能目录自动加入只读白名单
 - **Overlay 文件系统** — tool_fs 支持前缀级只读回退：LLM 读取 `skills/` 目录时，如果用户目录文件不存在，自动回退到内置技能目录。用户修改无需修改框架代码，通过 write_file 自主覆盖同名文件即生效。LLM 透明，零感知
 - **ProcessWorkspace 进程级隔离** — 框架层定义"子进程可访问目录边界"(ProcessWorkspace)，与路径校验边界(ContextSandbox)解耦。tool_shell 通过 ContextVar 读取窄 workspace(=workspace/)，bwrap 以 `--tmpfs $HOME` 掩藏整个用户主目录，子进程仅暴露工作区目录
+- **安全模块** — SSRF 前置拦截（DNS 解析 + 私有 IP 校验 + IPv6-mapped IPv4 标准化）、CIDR 白名单、shell 命令内网 URL 检测（`contains_internal_url`）、路径边界工具函数（多 root 支持）
+
+#### 上下文与会话
+
 - **上下文管理** — 按用户物理隔离的目录结构（identity.yaml / .history/ / workspace/ / memory/ / .tmp/），框架通过 ContextVar 按请求向插件注入 `self.tmp`（临时目录）和 `self.context_root`（用户根目录），插件自管清理和持久化子目录创建
-- **灵魂守卫** — 三层保护（chmod 444 + 写入拦截 Hook + SHA-256 哈希校验）
+- **Session 管理系统** — `SessionManager` + `SessionStore` 双层架构。内存缓存避免重复磁盘 I/O，原子 JSONL 写入保证数据一致性。支持 consolidate（智能压缩归档）、fork（会话复制）、list（元数据高性能枚举）、flush（优雅退出落盘）、旧版历史文件自动迁移。`consolidate_history` 工具归档早期对话并注入摘要 system 消息
+- **灵魂守卫（SoulGuard）** — 三层保护（chmod 444 + 写入拦截 Hook + SHA-256 哈希校验）
+
+#### 插件生态
+
 - **插件管理器** — 扫描、加载（含依赖拓扑排序）、启用/禁用/卸载生命周期
+- **11 个内置插件** — 3 通道 + 7 工具 + 1 审计（详见[内置插件](#内置插件)）
+- **实例级插件隔离** — 每个 Gateway 实例通过独立 `config.yaml` 的 `channels.<name>.enabled` / `plugins.<name>.enabled` 控制加载的插件组合（config.yaml > plugin.toml > 默认 True），不同实例可配置不同的通道和工具集合
+
+#### LLM 与工具
+
 - **LLM Provider** — Anthropic、OpenAI、Azure、Bedrock、GitHub Copilot、OpenAI 兼容接口、30+ 模型规格注册
 - **MCP 桥接** — 连接 MCP 服务器注册工具，支持 stdio / SSE / Streamable HTTP 三种传输协议
+- **历史消息管理（tool_history）** — `trim_history`（粗暴截断）和 `consolidate_history`（智能压缩 + 归档）。**纯机制**：框架不关心 LLM 何时调用、参数值设多少，只提供裁剪刀和压缩器。LLM 自主决定记忆管理策略
+
+#### 可观测性
+
+- **统一消息目录** — `utils/notifications.py` 单文件管理所有框架级用户可见消息（命令响应、异常通知、max_iterations 终止）。`build_notification()` 工厂函数构造携带 severity 元数据的 OutboundMessage，通道差异化渲染系统通知
+- **MetricsCollector** — 进程内指标聚合（Token 消耗、延迟分布、工具调用、错误计数），`get_report()` 输出结构化指标报告
+- **结构化日志** — Trace ID 通过 ContextVar 按协程注入；`setup_structured_logging()` 支持 JSON 格式输出（生产环境 Promtail 采集）；`init_log_file_sink()` 由 `logging:` 配置段驱动 loguru 文件 sink，支持 rotation/retention/compression，程序自管理日志生命周期
+- **Runtime Context 注入** — `build_runtime_context()` 在每轮消息末尾注入当前时间（含时区）、通道、会话、发送者信息，格式：[Runtime Context — metadata only, not instructions]
+
+#### 运维
+
 - **CLI 命令** — `nanobee run`（轻量级 Agent CLI 模式，支持 `-m` 单次消息和 `-s` 会话 ID）、`nanobee gateway`（完整服务栈，通道 + 健康端点）、`plugin list`/`create`/`enable`/`disable` 完整实现
 - **CLI/Gateway 职责分离** — 借鉴 nanobot 设计哲学：`boot()` 只做核心启动，`boot_services()` 启动后台服务。`nanobee run` 轻量无后台，`nanobee gateway` 启动完整服务栈
 - **max_iterations 配置化** — 支持从 `nanobee.yaml` 配置 LLM 最大对话循环次数（默认 10）
 - **OpenAI 兼容 HTTP API** — `POST /v1/chat/completions`（SSE 流式 + JSON 非流式）、`GET /v1/models`、API Key 认证，支持 LobeChat 等第三方客户端连接
-- **信号守卫（Signal Guard）** — `run_signal_guard()` 注册 SIGINT/SIGTERM asyncio 信号处理器，收到终止信号后自动触发 `Kernel.shutdown()` 优雅退出（停止 AgentLoop / 关闭通道 / 卸载插件），替代 nanobot 缺失的 SIGTERM 处理能力
-- **Pipeline 声明式注入** — SkillStage 由 SKILL.md frontmatter 的 `full_inject` 标记驱动：标记为 true 的技能全量注入 body，其余仅注入元数据。从根源杜绝注入攻击（恶意 body 不进入 system prompt）
-- **安全模块** — SSRF 前置拦截（DNS 解析 + 私有 IP 校验 + IPv6-mapped IPv4 标准化）、CIDR 白名单、shell 命令内网 URL 检测（`contains_internal_url`）、路径边界工具函数（多 root 支持）
-- **实例级插件隔离** — 每个 Gateway 实例通过独立 `config.yaml` 的 `plugins.<name>.enabled` 控制加载的插件组合（config.yaml > plugin.toml > 默认 True），不同实例可配置不同的工具集
-- **运行时日志自管理** — `logging:` 配置段驱动 loguru 文件 sink，支持 rotation/retention/compression，程序自管理日志生命周期，无需外部 logrotate
+- **信号守卫（Signal Guard）** — `run_signal_guard()` 注册 SIGINT/SIGTERM asyncio 信号处理器，收到终止信号后自动触发 `Kernel.shutdown()` 优雅退出（停止 AgentLoop / 刷新会话缓存 / 关闭通道 / 卸载插件），替代 nanobot 缺失的 SIGTERM 处理能力
 - **多实例部署编排** — `deploy/nanobee-gateway.sh` 单脚本管理 N 个 Gateway 实例：扫描 `/nanobee-data/<name>/config.yaml`、单实例/全部启停、systemd 托管（详见 `devdocs/多实例安装部署V3.md`）
 - **tiktoken 后台惰性预热** — `estimate_prompt_tokens` 的 `tiktoken.get_encoding()` 放在模块级 daemon 线程后台加载（解决 CentOS 7 上首次加载高达 42s 的极端延迟），未就绪时降级为字符估算（`len//4`），首消息不阻塞。后台完成后自动切入 tiktoken 精确编码（13ms）
-
-### 尚不完整的功能
 
 ## 快速开始
 
@@ -151,23 +178,24 @@ logging:
 ```
 用户输入
     │
-    ▼
-ChannelPlugin ──▶ EventBus ──▶ NanobeeKernel
-                                    │
-                         ┌──────────┼──────────────┐
-                         ▼          ▼              ▼
-                   PluginManager  ContextManager  SoulGuard
-                         │          ▼
-                         ▼     AgentLoop (状态机)
-                   ToolRegistry     │
-                         │    ┌─────┴─────┐
-                         ▼    ▼           ▼
-                    AgentRunner  LLM Provider
-                         │         │
-                         └─────────┴──────────┘
-                                    │
-                                    ▼
-                               用户响应
+    ├─ /command ──▶ CommandRouter ──▶ 直接回复（零 token）
+    │
+    └─ 普通消息 ──▶ ChannelPlugin ──▶ EventBus ──▶ NanobeeKernel
+                                                        │
+                                             ┌──────────┼──────────────┐
+                                             ▼          ▼              ▼
+                                       PluginManager  ContextManager  SoulGuard
+                                             │     ┌───┴────┐
+                                             ▼     ▼        ▼
+                                       ToolRegistry  AgentLoop (状态机)
+                                             │         │
+                                             ▼    ┌────┴────┐
+                                        AgentRunner  LLM Provider
+                                             │         │
+                                             └─────────┴──────────┘
+                                                        │
+                                                        ▼
+                                                   用户响应
 ```
 
 ### 两种运行模式
@@ -188,7 +216,10 @@ ChannelPlugin ──▶ EventBus ──▶ NanobeeKernel
 
 | 组件 | 职责 |
 |------|------|
-| `NanobeeKernel` | 统一入口，管理插件生命周期、消息路由 |
+| `NanobeeKernel` | 统一入口，管理插件生命周期、消息路由、命令路由 |
+| `CommandRouter` | Slash 命令系统（`/stop`/`/new`/`/status`/`/help`），零 token 消耗，**锁前拦截**：命令在获取用户锁之前执行，/stop 可打断死锁 turn，插件可注册自定义命令 |
+| `SessionManager` | Session 生命周期管理（内存缓存 + 原子 JSONL 持久化），支持 consolidate（压缩归档）、fork（会话复制）、list（高性能枚举）、flush（优雅退出落盘）、旧版 `.history/` 自动迁移 |
+| `SessionStore` | Session 文件存储层 — 纯 I/O 无缓存，临时文件 + `os.replace` 原子写入，JSON 损坏自动修复 |
 | `AgentLoop` | 6 态状态机驱动循环（RESTORE → COMPACT → BUILD → RUN → SAVE → RESPOND → DONE） |
 | `AgentRunner` | LLM 调用 + 工具执行迭代（含迭代级/run-level 双层 Hook、上下文治理、SSRF 拦截） |
 | `TurnState 异常恢复` | 状态机层统一 catch：任一状态处理器异常 → 填充 ctx → 跳过 SAVE → 直接 RESPOND 流式回复。kernel 层 catch 降级为最终兜底，避免裸 OutboundMessage 丢失流式上下文 |
@@ -198,6 +229,7 @@ ChannelPlugin ──▶ EventBus ──▶ NanobeeKernel
 | `SkillsLoader` | 技能三级机制（内置 + 实例 + 用户），实例级由 skills.enabled 声明驱动，mtime 文件系统缓存（TTL 2 秒），去中心化：用户通过 write_file 自主管理 SKILL.md，管理员通过文件部署 + 配置声明实例级共享技能 |
 | `EventBus` | 异步事件发布/订阅 |
 | `SoulGuard` | 灵魂文件三层保护 |
+| `MetricsCollector` | 进程内指标聚合（Token 消耗、延迟分布、工具调用、错误计数） |
 | `LockManager` | 按用户粒度的 asyncio 并发锁 |
 | `ContextRouter` | 多租户路由（`channel:chat_id` → `user_id`） |
 | `ContextSandbox` | 多根沙箱 — 写操作仅限 context_root，读操作用于多根白名单（如内置技能只读目录），防御 `../` 逃逸。内置技能目录自动加入只读根，tool_fs 的 Overlay 文件系统在此基础上实现 `skills/` 前缀级别自动回退 |
@@ -271,8 +303,8 @@ class MyPlugin(ToolPlugin):
 | `tool_fs` | Tool | ✅ 完整 | 文件系统工具（read_file, write_file, edit_file, list_dir），L1/L2 防御纵深，Overlay 文件系统（`skills/` 前缀自动回退到内置技能目录） |
 | `tool_shell` | Tool | ✅ 完整 | Shell 命令工具（execute_shell），双层安全守卫：deny 模式拦截危险命令 + bwrap 进程级沙箱（掩藏 $HOME 仅暴露 workspace/） |
 | `tool_web` | Tool | ✅ 完整 | Web 工具（web_search, web_fetch），含 HTML 清理、SSRF 保护 |
-| `tool_cron` | Tool | ✅ 完整 | Cron 定时任务（add, list, remove） |
-| `tool_history` | Tool | ✅ 完整 | 历史裁剪工具（trim_history），纯机制：LLM 自主决定保留条数 |
+| `tool_cron` | Tool | ✅ 完整 | Cron 定时任务（add, list, remove），用户隔离 |
+| `tool_history` | Tool | ✅ 完整 | 历史消息管理（trim_history 粗暴截断 + consolidate_history 智能压缩归档）。纯机制：LLM 自主决定何时调用、保留多少 |
 | `tool_dingtalk` | Tool | ✅ 完整 | 钉钉工具（文档操作、多维表操作、数据管道 + MCP 客户端） |
 | `audit_logger` | Audit | ✅ 完整 | 参考：on_message_completed 审计日志 |
 
@@ -331,7 +363,7 @@ class MyPlugin(NanobeePlugin):
 # 安装开发依赖
 pip install -e ".[dev]"
 
-# 运行全部测试（533 个用例）
+# 运行全部测试（649 个用例）
 python -m pytest tests/ -v --tb=short
 
 # 查看覆盖率
@@ -340,35 +372,42 @@ python -m pytest tests/ --cov=nanobee --cov-report=term-missing
 
 | 测试模块 | 用例数 | 覆盖场景 |
 |---------|-------|---------|
-| `test_kernel.py` | 3 | 内核初始化与基础操作 |
-| `test_plugin_system.py` | 10 | 插件加载/生命周期/管理器 |
-| `test_context_security.py` | 4 | 上下文安全边界 |
-| `test_e2e.py` | 4 | 端到端集成 |
-| `test_lock_manager.py` | 6 | 按用户并发锁隔离 |
-| `test_user_context.py` | 15 | 用户上下文/元数据/tmp 注入 |
-| `test_router.py` | 12 | 路由解析/降级/自定义 |
-| `test_sandbox.py` | 29 | 路径逃逸拦截/多根白名单/写隔离 |
-| `test_tool_collector.py` | 11 | 白/黑名单过滤 |
+| `test_security.py` | 61 | SSRF 防护、CIDR 白名单、内网 URL 检测、路径边界工具 |
+| `test_tool_dingtalk.py` | 47 | 钉钉插件（文档/多维表/管道 + MCP 客户端 + CSV 解析） |
+| `test_exceptions.py` | 40 | 统一异常层次结构（NanobeeError 子类、catch-all、模块导出、向后兼容） |
+| `test_command_router.py` | 31 | Slash 命令系统（检测/路由/内置命令/自定义/错误处理/内核集成） |
 | `test_tool_fs.py` | 30 | 文件系统工具（read/write/edit/list）+ Overlay 回退 |
-| `test_phase1_acceptance.py` | 9 | 多租户隔离验收 |
-| `test_phase2_acceptance.py` | 17 | Hook 机制验收 |
-| `test_phase3_acceptance.py` | 9 | 参考插件 + SkillStage 验收（含内置 skill 注入，绝对路径白名单） |
 | `test_channel_http.py` | 29 | HTTP API 通道（消息解析/SSE/认证/端点/错误处理） |
+| `test_sandbox.py` | 29 | 路径逃逸拦截/多根白名单/写隔离 |
+| `test_tool_shell_sandbox.py` | 28 | Shell 沙箱路径逃逸拦截 |
+| `test_session.py` | 27 | Session 管理（CRUD/consolidation/fork/flush/缓存/旧版迁移/损坏修复） |
+| `test_tool_history.py` | 25 | 历史消息管理（trim_history/consolidate_history/归档/摘要注入） |
 | `test_skill.py` | 25 | SkillsLoader 双源发现/缓存/序列化/向后兼容 |
+| `test_subagent.py` | 23 | 子代理创建与通信 |
+| `test_stream_hook.py` | 23 | 流式输出 Hook 链路 |
+| `test_cli_plugin.py` | 23 | 插件发现/列表/创建/启用/禁用 CLI 命令 |
+| `test_phase2_acceptance.py` | 19 | Hook 机制验收 |
+| `test_user_context.py` | 14 | 用户上下文/元数据/tmp 注入 |
+| `test_token_usage_calibration.py` | 14 | Token 估算校准（OpenAI/DeepSeek/SDK 多格式提取、缓存检测） |
 | `test_skill_validator.py` | 14 | 技能校验器（name 格式、meta 完整性、白名单检查） |
+| `test_plugin_system.py` | 13 | 插件加载/生命周期/管理器 |
+| `test_preset_manager.py` | 13 | 模型预设管理 |
+| `test_mcp_manager.py` | 13 | MCP 服务器连接与工具注册 |
+| `test_runtime_context.py` | 12 | Runtime Context 时间/通道/会话信息注入 |
+| `test_router.py` | 12 | 路由解析/降级/自定义 |
+| `test_tool_collector.py` | 11 | 白/黑名单过滤 |
+| `test_phase3_acceptance.py` | 9 | 参考插件 + SkillStage 验收（含内置 skill 注入、绝对路径白名单） |
+| `test_phase1_acceptance.py` | 9 | 多租户隔离验收 |
+| `test_tool_cron_isolation.py` | 8 | Cron 定时任务用户隔离 |
+| `test_dispatcher.py` | 8 | 事件分发 |
 | `test_skill_injection.py` | 7 | 渐进式注入防御 + full_inject 全量注入 + 内置 skill 标注 |
 | `test_skill_manager_cache.py` | 7 | SkillsLoader 双源缓存性能验证 |
-| `test_exceptions.py` | 24 | 统一异常层次结构（NanobeeError 子类、catch-all、模块导出、向后兼容） |
-| `test_security.py` | 61 | SSRF 防护、CIDR 白名单、内网 URL 检测、路径边界工具 |
-| `test_cli_plugin.py` | 23 | 插件发现/列表/创建/启用/禁用 CLI 命令 |
-| `test_tool_dingtalk.py` | 42 | 钉钉插件（文档/多维表/管道 + MCP 客户端 + CSV 解析） |
-| `test_runtime_context.py` | 12 | Runtime Context 时间/通道/会话信息注入 |
-| `test_stream_hook.py` | 8 | 流式输出 Hook 链路 |
-| `test_tool_cron_isolation.py` | 9 | Cron 定时任务用户隔离 |
-| `test_tool_shell_sandbox.py` | 13 | Shell 沙箱路径逃逸拦截 |
-| `test_plugin_enabled_override.py` | 6 | config.yaml enabled 覆盖 plugin.toml 的实例隔离 |
 | `test_process.py` | 6 | 信号守卫（SIGINT/SIGTERM 触发、重复信号防抖、mock kernel shutdown、降级兜底） |
-| 其他 | 84+ | Run-level Hook、用户上下文、异常层次、钉钉文件等 |
+| `test_plugin_enabled_override.py` | 6 | config.yaml enabled 覆盖 plugin.toml 的实例隔离 |
+| `test_lock_manager.py` | 6 | 按用户并发锁隔离 |
+| `test_context_security.py` | 4 | 上下文安全边界 |
+| `test_kernel.py` | 3 | 内核初始化与基础操作 |
+| `test_e2e.py` | 3 | 端到端集成 |
 
 ## 项目结构
 
@@ -386,7 +425,7 @@ nanobee/
 │       ├── mcp.py        # MCP 桥接（stdio/SSE/HTTP）
 │       ├── skill_manager.py  # 技能管理工具（ListSkillsTool + 自主文件管理）
 │       └── message.py    # 消息工具
-├── builtin/              # 内置插件（10 个已实现）
+├── builtin/              # 内置插件（11 个已实现）
 │   ├── channel_cli/      # CLI 通道
 │   ├── channel_http/     # OpenAI 兼容 HTTP API
 │   ├── channel_dingtalk/ # 钉钉机器人通道（Stream SDK + 媒体收发）
@@ -399,8 +438,15 @@ nanobee/
 │   ├── tool_history/     # 历史裁剪工具
 │   └── tool_echo/        # 回显测试
 ├── skills/               # 内置技能（只读，框架打包，沙箱只读根白名单）
-│   ├── _memory/SKILL.md          # 兜底记忆策略（full_inject: true）
-│   └── skill_creator/SKILL.md    # 技能创建教程（渐进式注入，LLM 按需读取）
+│   ├── _memory/SKILL.md            # 兜底记忆策略（full_inject: true）
+│   ├── skill_creator/SKILL.md      # 技能创建教程（渐进式注入，LLM 按需读取）
+│   ├── cron/SKILL.md               # 定时任务指南（渐进式注入）
+│   └── web-tools-guide-1.0.2/      # Web 工具使用策略（渐进式注入）
+├── session/              # 会话管理系统
+│   ├── session.py        # Session 数据模型
+│   ├── session_manager.py# SessionManager：缓存层 + 业务编排（CRUD/fork/consolidate/list/flush）
+│   ├── session_store.py  # SessionStore：文件 I/O 层（原子 JSONL 写入、损坏修复、旧版迁移）
+│   └── __init__.py
 ├── exceptions.py          # 统一异常层次结构（NanobeeError 基类 + 20 个子类）
 ├── cli/                  # 命令行入口
 │   ├── main.py           # Click 入口
@@ -408,8 +454,9 @@ nanobee/
 │   ├── gateway.py        # gateway 命令（完整服务栈）
 │   └── plugin.py         # plugin 子命令（list/create/enable/disable）
 ├── config/               # 配置加载
-├── kernel/               # 微内核核心（16 个模块）
-│   ├── kernel.py         # NanobeeKernel
+├── kernel/               # 微内核核心（17 个模块）
+│   ├── kernel.py         # NanobeeKernel（含 CommandRouter 集成）
+│   ├── command_router.py # Slash 命令路由系统 /stop/new/status/help + 插件注册
 │   ├── plugin_manager.py # 插件管理器
 │   ├── skill_manager.py  # 技能加载器 SkillsLoader（双源发现 + mtime 缓存）
 │   ├── skill_validator.py  # 技能校验器（name/description/属性白名单）
@@ -428,6 +475,9 @@ nanobee/
 ├── providers/            # LLM Provider（6 个实现 + 注册表）
 ├── security/             # 安全策略（SSRF 防护 + 路径边界工具）
 └── utils/                # 工具函数
+    ├── helpers.py        # 运行时上下文构建、token 估算
+    ├── notifications.py  # 统一消息目录（build_notification / get_notification_content）
+    └── observability.py  # Trace ID 注入、结构化日志、MetricsCollector
 ```
 
 ## LLM Provider 支持
@@ -445,10 +495,13 @@ nanobee 从 [nanobot](https://github.com/HKUDS/nanobot) 衍生开发，核心差
 | 架构哲学 | 大而全（内置记忆/梦境/人设） | 极简微内核（路由/隔离/拼装） |
 | CLI/Gateway 分离 | `agent` + `gateway` 双模式 | ✅ 已复刻：`run` 轻量 + `gateway` 完整服务栈 |
 | 优雅退出 | 无 SIGTERM handler（`KeyboardInterrupt` 兜底） | ✅ `run_signal_guard()` 注册 SIGINT/SIGTERM asyncio 处理器，`Kernel.shutdown()` 完整清理 |
-| 记忆策略 | 框架内置 Consolidator + AutoCompact + Dream Agent 三层，框架替 LLM 决定何时压缩/摘要 | ✅ 框架不持有记忆策略：安全阀 `history[-max_messages:]` 防崩溃，`_memory` skill 引导 + `trim_history` 工具提供裁剪机制，LLM 自主管理，用户可覆盖 `skills/_memory/SKILL.md` 完全替换 |
-| 技能管理 | 框架内置 CRUD | 文件驱动 SkillsLoader（builtin/ + instance/ + user/），同名优先级 user > instance > builtin，用户通过 write_file 自主管理 |
+| 命令系统 | 无 | ✅ **CommandRouter** 零 token 消耗，/stop 打断死锁 turn，/new 会话重置，/status 运行时状态，/help 帮助，插件可注册自定义命令 |
+| 会话管理 | 单文件 JSONL | ✅ **SessionManager/SessionStore** 内存缓存 + 原子持久化 + consolidate 归档 + fork 复制 + flush 落盘 + 自动损坏修复 + 旧版迁移 |
+| 记忆策略 | 框架内置 Consolidator + AutoCompact + Dream Agent 三层，框架替 LLM 决定何时压缩/摘要 | ✅ 框架不持有记忆策略：安全阀 `history[-max_messages:]` 防崩溃，`_memory` skill 引导 + `consolidate_history`/`trim_history` 工具提供裁剪机制，LLM 自主管理，用户可覆盖 `skills/_memory/SKILL.md` 完全替换 |
+| 技能管理 | 框架内置 CRUD | 文件驱动 SkillsLoader（builtin/ + instance/ + user/），同名优先级 user > instance > builtin，用户通过 write_file 自主管理，管理员通过文件部署 + 配置声明实例级共享技能 |
 | 隔离机制 | 逻辑隔离 | 物理隔离 + 沙箱 + 锁 |
 | 插件系统 | 有限扩展点 | 9 个 Hook 契约（5 迭代级 + 4 run-level） + 完整生命周期 |
+| 可观测性 | 无 | ✅ 结构化日志（Trace ID + JSON 格式）+ MetricsCollector（Token/延迟/工具调用/错误）+ 统一消息目录 |
 | 代码量 | 数万行 | 精简聚焦 |
 
 ## 被剥离 —— 留给插件生态
