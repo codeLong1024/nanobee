@@ -51,7 +51,7 @@ from nanobee.utils.progress_events import (
     invoke_on_progress,
     on_progress_accepts_file_edit_events,
 )
-from nanobee.utils.prompt_templates import render_template
+from nanobee.utils.notifications import get_notification_content
 from nanobee.utils.runtime import (
     EMPTY_FINAL_RESPONSE_MESSAGE,
     build_finalization_retry_message,
@@ -711,9 +711,8 @@ class AgentRunner:
                     max_iterations=spec.max_iterations,
                 )
             else:
-                final_content = render_template(
-                    "agent/max_iterations_message.md",
-                    strip=True,
+                final_content = get_notification_content(
+                    "turn_max_iterations",
                     max_iterations=spec.max_iterations,
                 )
             self._append_final_message(messages, final_content)

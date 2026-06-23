@@ -1,7 +1,7 @@
 [plugin]
 name = "tool_history"
-version = "1.0.0"
-description = "历史消息裁剪工具：保留最近 N 条消息，删除更早的。纯机制，LLM 自主决定何时调用及 N 值。"
+version = "1.1.0"
+description = "历史消息管理工具：trim_history（粗暴截断）和 consolidate_history（智能压缩+归档）。纯机制，LLM 自主决定。"
 author = "nanobee-team"
 type = "tool"
 

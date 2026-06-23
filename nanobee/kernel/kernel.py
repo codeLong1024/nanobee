@@ -13,6 +13,7 @@ if TYPE_CHECKING:
 
 from nanobee.config.schema import Config
 from nanobee.exceptions import ContextError
+from nanobee.kernel.command_router import CommandContext, CommandRouter
 from nanobee.kernel.context_manager import ContextManager
 from nanobee.kernel.context_pipeline import ContextPipeline
 from nanobee.events.event_bus import EventBus
@@ -27,6 +28,7 @@ from nanobee.kernel.tool_collector import ToolCollector
 from nanobee.kernel.user_context import UserContext, UserMetadata
 from nanobee.utils.logger import logger
 
+from nanobee.utils.notifications import build_notification
 from nanobee.utils.observability import MetricsCollector, setup_structured_logging
 
 
@@ -87,6 +89,11 @@ class NanobeeKernel:
             soul_guard=self.soul_guard,
         )
         self.router = ContextRouter()
+
+        # 命令路由系统（Slash Command）
+        self.command_router = CommandRouter()
+        # 活跃 turn 追踪：context_id → asyncio.Task，用于 /stop 取消
+        self._active_turns: dict[str, asyncio.Task] = {}
 
         # 从配置加载路由表
         if self.config.routing:
@@ -294,6 +301,13 @@ class NanobeeKernel:
             metadata=metadata or {},
         )
 
+        # ── 命令拦截（锁之前，零 token 消耗） ──
+        if getattr(self, "command_router", None) is not None:
+            cmd_ctx = CommandContext(msg=msg, kernel=self)
+            cmd_response = await self.command_router.dispatch(msg.content, cmd_ctx)
+            if cmd_response is not None:
+                return cmd_response
+
         agent = self._agent_loop
         # 串行锁 + 待处理队列：同用户互斥，跨用户并行
         key = msg.context_id
@@ -302,6 +316,10 @@ class NanobeeKernel:
 
         try:
             async with agent._lock_manager.acquire(key):
+                # 追踪当前 Task，供 /stop 命令取消
+                task = asyncio.current_task()
+                if task is not None and hasattr(self, "_active_turns"):
+                    self._active_turns[key] = task
                 try:
                     response = await agent._process_message(
                         msg,
@@ -310,15 +328,23 @@ class NanobeeKernel:
                         on_progress=on_progress,
                     )
                 except asyncio.CancelledError:
-                    raise
-                except Exception:
-                    logger.exception("处理上下文 {} 的消息出错", key)
-                    response = OutboundMessage(
+                    logger.info("上下文 {} 的 turn 已被取消", key)
+                    response = build_notification(
+                        "turn_cancelled",
                         channel=msg.channel,
                         chat_id=msg.chat_id,
-                        content="抱歉，处理消息时发生内部错误。",
+                    )
+                except Exception:
+                    logger.exception("处理上下文 {} 的消息出错", key)
+                    response = build_notification(
+                        "turn_internal_error",
+                        channel=msg.channel,
+                        chat_id=msg.chat_id,
                     )
         finally:
+            # 清理 Task 追踪
+            if hasattr(self, "_active_turns"):
+                self._active_turns.pop(key, None)
             # 排空待处理队列，丢弃未处理的中轮注入消息
             queue = agent._pending_queues.pop(key, None)
             if queue is not None:

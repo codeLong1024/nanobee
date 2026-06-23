@@ -1,0 +1,469 @@
+"""DingTalk Channel main class for nanobee.
+
+Uses Stream SDK (WebSocket) for message receiving.
+Uses HTTP API (via DingTalkSender) for sending messages.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import os
+import random
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
+import httpx
+
+from nanobee.channel.base import ChannelPlugin
+from nanobee.channel.message import OutboundMessage as BeeOutboundMessage
+from .auth import (
+    DINGTALK_AVAILABLE,
+    ChatbotMessage,
+    Credential,
+    DingTalkStreamClient,
+)
+from .card_client import DingTalkCardClient
+from .card_manager import CardManager
+from .config import DingTalkConfig
+from .emotion_hook import EmotionContext
+from .message import NanobeeDingTalkHandler
+from .rate_limiter import RateLimiter
+from .sender import DingTalkSender
+from .session import build_session_key
+
+from nanobee.utils.logger import logger
+
+
+
+class DingTalkChannelPlugin(ChannelPlugin):
+    """DingTalk channel using Stream Mode (SDK) + AI Card streaming for nanobee."""
+
+    name = "channel_dingtalk"
+    display_name = "钉钉机器人"
+    supports_streaming = True
+
+    def __init__(self, metadata=None):
+        super().__init__(metadata)
+        self.logger = logger
+        self.config: DingTalkConfig | None = None
+        self._client: Any = None
+        self._http: httpx.AsyncClient | None = None
+        self._running = False
+
+        # Rate limiter
+        self.rate_limiter = RateLimiter(max_qps=20)
+
+        # Card manager + card client (lazy — init in start())
+        self.card_client: DingTalkCardClient | None = None
+        self.card_manager: CardManager | None = None
+
+        # Sender (setup() called in start())
+        self.sender: DingTalkSender | None = None
+
+    def _load_config(self) -> DingTalkConfig:
+        """从配置加载 DingTalk 配置。
+
+        配置优先级：
+        1. YAML channels.channel_dingtalk 段
+        2. 环境变量 DINGTALK_*
+        3. plugin.toml config 段
+        4. 默认值
+        """
+        cfg = {}
+
+        # 1. 从 YAML channels 段读取
+        channels_dict = getattr(self.kernel.config, "channels", {})
+        channel_key = self.metadata.name  # "channel_dingtalk"
+        channel_cfg = channels_dict.get(channel_key, {}) if channels_dict else {}
+        if channel_cfg:
+            cfg.update(channel_cfg)
+
+        # 2. 环境变量覆盖
+        if not cfg.get("client_id"):
+            cfg["client_id"] = os.environ.get("DINGTALK_CLIENT_ID", "")
+        if not cfg.get("client_secret"):
+            cfg["client_secret"] = os.environ.get("DINGTALK_CLIENT_SECRET", "")
+
+        # 3. plugin.toml config 段（最低优先级）
+        for key in DingTalkConfig.model_fields:
+            val = self.get_config(key, None)
+            if val is not None and key not in cfg:
+                cfg[key] = val
+
+        return DingTalkConfig.model_validate(cfg)
+
+    async def start(self) -> None:
+        """Start the DingTalk bot via Stream SDK."""
+        self.config = self._load_config()
+
+        if not DINGTALK_AVAILABLE:
+            self.logger.error("dingtalk-stream SDK not installed. Run: pip install dingtalk-stream")
+            return
+
+        if not self.config.client_id or not self.config.client_secret:
+            self.logger.error("client_id and client_secret not configured")
+            return
+
+        self._running = True
+        if self.config.proxy_url:
+            self._http = httpx.AsyncClient(proxies=self.config.proxy_url)
+            self.logger.info("HTTP client using proxy: {}", self.config.proxy_url)
+        else:
+            self._http = httpx.AsyncClient()
+
+        # 创建 sender（先不传 card_manager，它此时还未初始化）
+        self.sender = DingTalkSender(
+            self.config, self.logger,
+            http_client=self._http,
+        )
+        self.sender.setup(self._http)
+
+        # 创建 card_client + card_manager（需要 sender 的 token 函数）
+        self.card_client = DingTalkCardClient(
+            access_token_fn=self.sender.get_access_token,
+            proxy_url=self.config.proxy_url,
+        )
+        self.card_manager = CardManager(self.card_client)
+
+        # 把 card_manager 回写给 sender
+        self.sender.setup(self._http, self.card_manager)
+
+        self.logger.info(
+            "Initializing Stream Client with Client ID: {}...",
+            self.config.client_id,
+        )
+        credential = Credential(self.config.client_id, self.config.client_secret)
+        self._client = DingTalkStreamClient(credential)
+
+        # Register handler
+        handler = NanobeeDingTalkHandler(self)
+        self._client.register_callback_handler(ChatbotMessage.TOPIC, handler)
+
+        self.logger.info("bot started with Stream Mode")
+
+        # 主循环：保持连接 + 自动重连（_booted 已在 boot() 中提前设置，不影响消息处理）
+        while self._running:
+            try:
+                await self._client.start()
+            except Exception as e:
+                self.logger.warning("stream error: {}", e)
+            if self._running:
+                delay = 3 + random.uniform(0, 4)
+                self.logger.info("Reconnecting stream in %.1f seconds...", delay)
+                await asyncio.sleep(delay)
+
+    async def stop(self) -> None:
+        """Stop the DingTalk bot."""
+        self._running = False
+        if self.card_client:
+            await self.card_client.close()
+        if self._http:
+            await self._http.aclose()
+            self._http = None
+        if self.sender:
+            await self.sender.close()
+
+    async def _process_incoming(
+        self,
+        message: Any,
+        context_manager: Any,
+    ) -> list:
+        """实现 ChannelPlugin 抽象方法。
+
+        钉钉通道不通过 handle_incoming 入口路由消息；
+        消息直接由 Stream SDK → NanobeeDingTalkHandler → _on_message → kernel。
+        此方法仅用于满足抽象基类要求。
+        """
+        return []
+
+    async def send(self, message: BeeOutboundMessage, context_id: str = "default") -> None:
+        """Send a message through DingTalk."""
+        if self.sender is None:
+            return
+        # Convert nanobee OutboundMessage → internal format
+        from types import SimpleNamespace
+        internal_msg = SimpleNamespace(
+            channel=message.channel,
+            chat_id=message.chat_id,
+            content=message.content,
+            metadata=message.metadata,
+            media=message.media,
+        )
+        await self.sender.send(internal_msg)
+
+    async def _on_agent_outbound(self, data: dict) -> None:
+        """覆盖基类：为子代理自动触发等内部消息创建 AI Card 投递。
+
+        子代理完成后，_injector → enqueue_message → _dispatch → agent.outbound 事件
+        到达此处。基类 `_on_agent_outbound` 走裸 markdown，本覆盖改为创建 AI Card
+        （打字效果 + Card UI），失败时回退到基类 markdown。
+        """
+        if not isinstance(data, dict):
+            return
+        channel_name = data.get("channel", "")
+        if channel_name != self.metadata.name:
+            return
+        chat_id = data.get("chat_id", "direct")
+        content = data.get("content", "")
+        if not content:
+            return
+
+        # 尝试通过 AI Card 投递
+        if self.sender and content.strip():
+            token = await self.sender.get_access_token()
+            if token:
+                try:
+                    ok = await self.sender.send_via_card(token, chat_id, content.strip())
+                    if ok:
+                        return  # Card 投递成功，不发送 markdown
+                except Exception:
+                    self.logger.exception(
+                        "_on_agent_outbound: send_via_card failed for chat={}", chat_id,
+                    )
+
+        # Card 不可用或失败，回退到基类裸 markdown
+        await super()._on_agent_outbound(data)
+
+    async def send_delta(
+        self,
+        delta: Any,
+        context_id: str = "default",
+    ) -> None:
+        """Forward streaming deltas to DingTalkSender."""
+        if self.sender is None:
+            return
+        from types import SimpleNamespace
+        internal_msg = SimpleNamespace(
+            channel=self.name,
+            chat_id=context_id.split(":", 1)[-1] if ":" in context_id else context_id,
+            content=getattr(delta, "content", str(delta) if delta else ""),
+            metadata={"_stream_delta": True},
+            media=[],
+        )
+        await self.sender.send(internal_msg)
+
+    async def send_reasoning_delta(
+        self, reasoning: str, context_id: str = "default"
+    ) -> None:
+        """流式发送推理过程增量。"""
+        pass  # DingTalk card 暂不支持推理流式
+
+    async def send_reasoning_end(self, context_id: str = "default") -> None:
+        """标记推理过程结束。"""
+        pass
+
+    async def _on_message(
+        self,
+        content: str,
+        sender_id: str,
+        sender_name: str,
+        chat_id: str,
+        media: list[str] | None = None,
+        sender_staff_id: str | None = None,
+        is_dm: bool = False,
+        session_key: str | None = None,
+        card_id: str | None = None,
+    ) -> None:
+        """Handle incoming message — route to nanobee kernel with streaming.
+
+        card_id 由 message.py 在创建 AI Card 后传入，通过回调闭包嵌入 metadata，
+        sender 直接使用 card_id 作状态 key，无需共享 dict。
+        """
+        try:
+            self.logger.info("inbound: {} from {}", content, sender_name)
+
+            context_id = f"dingtalk:{chat_id}"
+
+            if self.kernel is None:
+                self.logger.warning("内核未就绪，无法处理钉钉消息")
+                return
+
+            use_streaming = self.config is not None and self.config.streaming and self.sender is not None
+
+            if use_streaming:
+                response = await self.kernel.handle_message(
+                    str(content), context_id,
+                    channel=self.metadata.name,
+                    on_stream=self._make_stream_callback(chat_id, card_id=card_id),
+                    on_stream_end=self._make_stream_end_callback(chat_id, card_id=card_id),
+                    on_progress=self._make_progress_callback(chat_id),
+                    sender_id=sender_id,
+                    session_id=f"dingtalk:{chat_id}",
+                    metadata={
+                        "sender_staff_id": sender_staff_id,
+                        "sender_name": sender_name,
+                        "session_key": session_key,
+                        "is_dm": is_dm,
+                    },
+                )
+            else:
+                response = await self.kernel.handle_message(
+                    str(content), context_id,
+                    channel=self.metadata.name,
+                    on_progress=self._make_progress_callback(chat_id),
+                    sender_id=sender_id,
+                    session_id=f"dingtalk:{chat_id}",
+                    metadata={
+                        "sender_staff_id": sender_staff_id,
+                        "sender_name": sender_name,
+                        "session_key": session_key,
+                        "is_dm": is_dm,
+                    },
+                )
+
+            if response and self.sender:
+                content_reply = str(response.content or "")
+                outbound_media = getattr(response, "media", []) or media or []
+                # 构造响应 metadata，嵌入 card_id 供 sender 非流式路径使用
+                resp_metadata = {}
+                if card_id:
+                    resp_metadata["_card_id"] = card_id
+                if use_streaming:
+                    if card_id:
+                        if self.sender.is_card_handled_by_streaming(card_id):
+                            # 卡片已有内容（流式 delta 已推送），检查是否为截断终止
+                            stop_reason = (getattr(response, "metadata", {}) or {}).get("stop_reason")
+                            if stop_reason == "max_iterations":
+                                # 流式被 max_iterations 打断：保留卡片已有碎片内容，
+                                # 追加分割线和超限提示，不额外发 markdown
+                                self.logger.debug(
+                                    "[STREAM] Card {} truncated by max_iterations, appending notification "
+                                    "(chat={})", card_id, chat_id)
+                                await self.sender.finalize_card_with_notification(
+                                    card_id, chat_id, content_reply,
+                                )
+                                if outbound_media:
+                                    await self.sender.send(SimpleNamespace(
+                                        channel=self.name, chat_id=chat_id,
+                                        content="", metadata={"_card_id": card_id},
+                                        media=outbound_media,
+                                    ))
+                            else:
+                                # 正常完成，跳过（内容已在流式中完整送达）
+                                self.logger.debug(
+                                    "[STREAM] Card {} handled by streaming, skipping duplicate send "
+                                    "(chat={})", card_id, chat_id)
+                                if outbound_media:
+                                    await self.sender.send(SimpleNamespace(
+                                        channel=self.name, chat_id=chat_id,
+                                        content="", metadata={"_card_id": card_id},
+                                        media=outbound_media,
+                                    ))
+                        else:
+                            # max_iterations 等非流式终止：内容未通过 card 送达，
+                            # 必须交由 sender 处理（最终化卡片或 markdown 回退）
+                            self.logger.debug(
+                                "[STREAM] Non-streamed termination with card={}, routing to sender "
+                                "(chat={})", card_id, chat_id)
+                            if content_reply or outbound_media:
+                                await self.sender.send(SimpleNamespace(
+                                    channel=self.name, chat_id=chat_id,
+                                    content=content_reply,
+                                    metadata=resp_metadata, media=outbound_media,
+                                ))
+                    else:
+                        self.logger.debug(
+                            "[STREAM] No card was created, sending via markdown fallback "
+                            "(chat={}, content_len={})", chat_id, len(content_reply))
+                        if content_reply or outbound_media:
+                            await self.sender.send(SimpleNamespace(
+                                channel=self.name, chat_id=chat_id,
+                                content=content_reply,
+                                metadata=resp_metadata, media=outbound_media,
+                            ))
+                elif content_reply or outbound_media:
+                    self.logger.debug(
+                        "[OUTBOUND] chat_id={}, outbound_media={}, content_len={}",
+                        chat_id, outbound_media, len(content_reply))
+                    await self.sender.send(SimpleNamespace(
+                        channel=self.name, chat_id=chat_id,
+                        content=content_reply,
+                        metadata=resp_metadata, media=outbound_media,
+                    ))
+        except Exception:
+            self.logger.exception("Error processing DingTalk message")
+            await self._fail_pending_card(card_id)
+
+    async def _fail_pending_card(self, card_id: str | None = None) -> None:
+        """出错时清理挂起的 AI Card，避免永久 INPUTING。
+
+        card_id 由 message.py 直接传入，无需共享 dict。
+        """
+        if card_id and self.card_manager:
+            try:
+                await self.card_manager.fail_card(card_id, "Internal processing error")
+            except Exception:
+                pass
+
+    def _make_progress_callback(self, chat_id: str) -> Any:
+        """创建进度回调：当工具开始执行时更新 DingTalk emotion 显示工具名。
+
+        返回的闭包签名与 ``on_progress`` 兼容：
+        async (delta: str, *, tool_hint: bool = False, tool_events=None) -> None
+        """
+        async def _on_progress(
+            delta: str, *,
+            tool_hint: bool = False,
+            tool_events: list[dict] | None = None,
+        ) -> None:
+            if tool_hint and self.sender and tool_events:
+                for event in tool_events:
+                    tool_name = event.get("name", "")
+                    if tool_name:
+                        # 显示工具名称细节（如 "🔧list_dir"），
+                        # 不走标准 state 查找，直接作为原始 emotion 名称
+                        await self.sender._trigger_emotion(
+                            chat_id, f"🔧{tool_name}",
+                        )
+                        break
+        return _on_progress
+
+    def _make_stream_callback(self, chat_id: str, *, card_id: str | None = None) -> Any:
+        """创建流式回调：LLM 每段 text delta → DingTalk AI Card 增量更新。
+
+        card_id 通过闭包嵌入 metadata，sender 直接使用，无需查共享 dict。
+        """
+        async def _on_stream(delta: str) -> None:
+            if self.sender and delta:
+                from types import SimpleNamespace
+                metadata: dict[str, Any] = {"_stream_delta": True}
+                if card_id:
+                    metadata["_card_id"] = card_id
+                await self.sender.send(SimpleNamespace(
+                    channel=self.name, chat_id=chat_id,
+                    content=delta, media=(),
+                    metadata=metadata,
+                ))
+        return _on_stream
+
+    def _make_stream_end_callback(self, chat_id: str, *, card_id: str | None = None) -> Any:
+        """创建流结束回调：通知 sender 流暂停（工具调用）或流结束。
+
+        card_id 通过闭包嵌入 metadata，sender 直接使用。
+        """
+        async def _on_stream_end(*, resuming: bool) -> None:
+            if self.sender:
+                from types import SimpleNamespace
+                metadata: dict[str, Any] = {"_stream_end": True, "_resuming": resuming}
+                if card_id:
+                    metadata["_card_id"] = card_id
+                await self.sender.send(SimpleNamespace(
+                    channel=self.name, chat_id=chat_id,
+                    content="", media=(),
+                    metadata=metadata,
+                ))
+        return _on_stream_end
+
+    def _get_robot_code(self) -> str:
+        robot_code = os.environ.get("DINGTALK_ROBOT_CODE")
+        if robot_code:
+            return robot_code
+        if hasattr(self, "_client") and self._client is not None:
+            client_robot = getattr(self._client, "robot_code", None)
+            if client_robot:
+                return client_robot
+        return (self.config.client_id if self.config else "")
+
+
+__all__ = ["DingTalkChannelPlugin", "DingTalkConfig"]

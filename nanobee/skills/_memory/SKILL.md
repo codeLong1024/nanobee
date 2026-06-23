@@ -32,7 +32,10 @@ full_inject: true
 
 当 Runtime Context 显示 `Conversation: ~X tokens (Y%)` 中 token 占比 >70% 时：
 1. 覆盖 `memory/facts.md` 为精简摘要（**删除过时、重复、已失效的事实**）
-2. 调用 `trim_history(n)` 裁剪旧消息
+2. 阅读早期对话历史，自行编写一份压缩摘要（100-300 字），覆盖：关键决策、用户偏好、重要事实、未完成任务
+3. 调用 `consolidate_history(summary="你的摘要", keep_last_n=8)` 归档旧消息并注入摘要
+   - `consolidate_history` 会自动将摘要存入 .consolidation.jsonl 归档，裁剪旧消息，并在开头注入 system 消息
+   - 仅在无需保留摘要的紧急清理场景使用 `trim_history(n)`
 
 ### 事实清理规则
 
