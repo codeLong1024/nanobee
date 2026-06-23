@@ -99,9 +99,18 @@ class LoggingConfig(Base):
 
 
 class GatewayConfig(Base):
-    """网关配置。"""
+    """网关配置（涵盖端口与多实例运行时管理）。
+
+    所有阈值均可通过 nanobee.yaml 覆盖，零硬编码。
+    pid_dir 为空时自动推导为 <data_dir>/.pid/。
+    """
 
     port: int = 8080
+    stop_timeout: float = 20.0
+    health_check_timeout: float = 10.0
+    health_check_interval: float = 1.0
+    pid_dir: str = ""
+    restart_delay: float = 2.0
 
 
 class ToolsConfig(Base):

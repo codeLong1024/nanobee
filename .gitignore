@@ -67,7 +67,7 @@ contexts/
 
 # 钉钉频道插件（包含敏感配置）
 nanobee/builtin/tool_dingtalk/
-nanobee/builtin/skills/web-tools-guide-1.0.2
+nanobee/skills/web-tools-guide-1.0.2
 # 钉钉测试文件（包含敏感配置）
 tests/test_tool_dingtalk.py
 
