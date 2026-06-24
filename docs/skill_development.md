@@ -262,7 +262,7 @@ nanobee/skills/git-helper/  → 不创建（同名时双方都显示，标注来
 - **kebab-case**：仅小写字母、数字、连字符，如 `weekly-report-generator`
 - **不以连字符起止**
 - **不要使用 `_memory` 等特殊前缀**（框架不对名称做特殊处理，`_memory` 只是按字母排序靠前）
-- **建议**：使用描述性名称，如 `git-log-analyzer`、`code-reviewer`、`docker-compose-helper`
+- **建议**：使用描述性名称，如 `git-log-analyzer`、`pr-reviewer`、`docker-compose-helper`
 
 ---
 
@@ -298,7 +298,7 @@ LLM 看到元数据后，自主决定是否通过 `write_file` 读取正文。
 
 ```markdown
 ---
-name: code-reviewer
+name: pr-reviewer
 description: "审查 Pull Request 代码变更，输出可操作的反馈，包括代码质量、安全风险和优化建议"
 author: "@tech-lead"
 full_inject: false
@@ -419,7 +419,7 @@ ContextPipeline.build()
 /workspace/
 ├── skills/                     ← 用户技能（可写）
 │   ├── my-skill/SKILL.md
-│   └── code-reviewer/SKILL.md
+│   └── pr-reviewer/SKILL.md
 │
 └── .venv/.../nanobee/skills/  ← 内置技能（只读）
     ├── _memory/SKILL.md

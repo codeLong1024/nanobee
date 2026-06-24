@@ -17,19 +17,16 @@ from nanobee.kernel.command_router import CommandContext, CommandRouter
 from nanobee.kernel.context_manager import ContextManager
 from nanobee.kernel.context_pipeline import ContextPipeline
 from nanobee.events.event_bus import EventBus
-from nanobee.kernel.lock_manager import LockManager
 from nanobee.kernel.plugin_manager import PluginManager
 from nanobee.kernel.router import ContextRouter, UnknownRouteError
 from nanobee.events.runtime_events import KernelBooted, RuntimeEventBus
-from nanobee.kernel.sandbox import ContextSandbox
 from nanobee.session.session_manager import SessionManager
 from nanobee.kernel.soul_guard import SoulGuard
-from nanobee.kernel.tool_collector import ToolCollector
 from nanobee.kernel.user_context import UserContext, UserMetadata
 from nanobee.utils.logger import logger
 
 from nanobee.utils.notifications import build_notification
-from nanobee.utils.observability import MetricsCollector, setup_structured_logging
+from nanobee.utils.observability import MetricsCollector
 
 
 from nanobee.kernel.skill_manager import SkillsLoader
@@ -145,7 +142,7 @@ class NanobeeKernel:
 
         # 3.1 注册工具插件到 AgentLoop（必须在插件启用完成后调用，仅注册已启用的工具）
         if self._agent_loop:
-            self._agent_loop._register_plugin_tools()
+            self._agent_loop.register_plugin_tools()
 
         self._booted = True
 
@@ -260,8 +257,8 @@ class NanobeeKernel:
     ) -> OutboundMessage | None:
         """处理用户消息的公共实现。
 
-        使用与 _dispatch 相同的串行锁 + 待处理队列机制：
-        - 同用户消息串行处理（LockManager）
+        使用 AgentLoop.dispatch 内部的串行保证：
+        - 同用户消息串行处理（由 AgentLoop.dispatch 内部保证）
         - 跨用户消息并行处理
         - 异常时返回友好错误消息而不是裸抛
 
@@ -309,54 +306,35 @@ class NanobeeKernel:
                 return cmd_response
 
         agent = self._agent_loop
-        # 串行锁 + 待处理队列：同用户互斥，跨用户并行
         key = msg.context_id
-        pending = asyncio.Queue(maxsize=20)
-        agent._pending_queues[key] = pending
+
+        # 追踪当前 Task，供 /stop 命令取消
+        task = asyncio.current_task()
+        if task is not None:
+            self._active_turns[key] = task
 
         try:
-            async with agent._lock_manager.acquire(key):
-                # 追踪当前 Task，供 /stop 命令取消
-                task = asyncio.current_task()
-                if task is not None and hasattr(self, "_active_turns"):
-                    self._active_turns[key] = task
-                try:
-                    response = await agent._process_message(
-                        msg,
-                        pending_queue=pending,
-                        extra_hook=extra_hook,
-                        on_progress=on_progress,
-                    )
-                except asyncio.CancelledError:
-                    logger.info("上下文 {} 的 turn 已被取消", key)
-                    response = build_notification(
-                        "turn_cancelled",
-                        channel=msg.channel,
-                        chat_id=msg.chat_id,
-                    )
-                except Exception:
-                    logger.exception("处理上下文 {} 的消息出错", key)
-                    response = build_notification(
-                        "turn_internal_error",
-                        channel=msg.channel,
-                        chat_id=msg.chat_id,
-                    )
+            response = await agent.dispatch(
+                msg,
+                extra_hook=extra_hook,
+                on_progress=on_progress,
+            )
+        except asyncio.CancelledError:
+            logger.info("上下文 {} 的 turn 已被取消", key)
+            response = build_notification(
+                "turn_cancelled",
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+            )
+        except Exception:
+            logger.exception("处理上下文 {} 的消息出错", key)
+            response = build_notification(
+                "turn_internal_error",
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+            )
         finally:
-            # 清理 Task 追踪
-            if hasattr(self, "_active_turns"):
-                self._active_turns.pop(key, None)
-            # 排空待处理队列，丢弃未处理的中轮注入消息
-            queue = agent._pending_queues.pop(key, None)
-            if queue is not None:
-                leftover = 0
-                while True:
-                    try:
-                        queue.get_nowait()
-                        leftover += 1
-                    except asyncio.QueueEmpty:
-                        break
-                if leftover:
-                    logger.info("上下文 {} 有 {} 条剩余消息被丢弃", key, leftover)
+            self._active_turns.pop(key, None)
 
         return response
 
@@ -366,33 +344,23 @@ class NanobeeKernel:
         """注入消息到处理管道（供子代理结果等异步通知使用）。
 
         统一入口：对齐 nanobot bus.publish_inbound 模式。
-        - 当前上下文有活跃 turn 时，中轮注入（put_nowait，非阻塞）
-        - 无活跃 turn 时，创建后台任务触发新 turn（通过 handle_message）
+        - 当前上下文有活跃 turn 时，中轮注入（非阻塞）
+        - 无活跃 turn 时，创建后台任务触发新 turn
 
         Args:
             msg: 待注入的入站消息（含 _subagent_auto_trigger 等元数据标记）
         """
-        from nanobee.agent.messages import InboundMessage as _IBM
-
         agent = self._agent_loop
         if agent is None:
             logger.warning("inject_message: AgentLoop 未初始化，丢弃消息")
             return
 
-        key = msg.context_id
-        if key in agent._pending_queues:
-            # 中轮注入：当前 turn 正在运行，非阻塞放入队列
-            try:
-                agent._pending_queues[key].put_nowait(msg)
-            except asyncio.QueueFull:
-                logger.warning("上下文 {} 待处理队列已满，丢弃注入消息", key)
-            else:
-                logger.debug("消息已中轮注入到上下文 {}", key)
+        if agent.try_inject(msg):
             return
 
         # 新轮触发：创建后台任务，不阻塞调用者
         asyncio.create_task(self._handle_injected_message(msg))
-        logger.debug("已创建新 turn 后台任务处理注入消息，上下文 {}", key)
+        logger.debug("已创建新 turn 后台任务处理注入消息，上下文 {}", msg.context_id)
 
     async def _handle_injected_message(self, msg: "InboundMessage") -> None:
         """处理注入消息：调用 handle_message 并通过 EventBus 发布结果。
@@ -435,6 +403,8 @@ class NanobeeKernel:
     ) -> None:
         """使用指定的 LLM Provider 启动内核并初始化 Agent Loop。
 
+        已废弃：请使用 ``nanobee.bootstrap.bootstrap()`` 组合根。
+
         注意：仅启动核心组件（灵魂校验 + 插件加载 + 工具注册），
         不启动通道等后台服务。
         如需完整服务栈，请额外调用 boot_services()。
@@ -444,6 +414,15 @@ class NanobeeKernel:
             model: 模型名称（可选，使用 provider 默认值）
             **extra: 传递给 AgentLoop 的额外参数
         """
+        logger.warning(
+            "boot_with_provider() 已废弃，请使用 nanobee.bootstrap.bootstrap() 组合根",
+        )
+        import warnings
+        warnings.warn(
+            "boot_with_provider() is deprecated, use nanobee.bootstrap.bootstrap() instead",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         # 延迟导入避免循环依赖（AgentLoop → kernel → AgentLoop）
         from nanobee.agent.loop import AgentLoop
 
@@ -463,7 +442,7 @@ class NanobeeKernel:
             router=self.router,
             config=self.config,
             model=model,
-            kernel_ref=self,
+            message_injector=self.inject_message,
             **extra,
         )
 
@@ -480,6 +459,8 @@ class NanobeeKernel:
     ) -> NanobeeKernel:
         """从配置文件创建并启动内核。
 
+        已废弃：请使用 ``nanobee.bootstrap.bootstrap()`` 组合根。
+
         一行完成：配置加载 → Provider 创建 → Boot 全流程。
         默认不启动后台服务（通道），
         设置 start_services=True 可开启 Gateway 模式。
@@ -493,6 +474,15 @@ class NanobeeKernel:
         Returns:
             已启动的 NanobeeKernel 实例
         """
+        logger.warning(
+            "from_config() 已废弃，请使用 nanobee.bootstrap.bootstrap() 组合根",
+        )
+        import warnings
+        warnings.warn(
+            "from_config() is deprecated, use nanobee.bootstrap.bootstrap() instead",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         from nanobee.config.loader import load_config, resolve_config_env_vars
         from nanobee.providers.factory import make_provider
 

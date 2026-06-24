@@ -323,12 +323,11 @@ class PluginManager:
 
     # ---- 插件生命周期 ----
 
-    def _set_enabled(self, name: str, state: bool, callback: str) -> bool:
+    def _set_enabled(self, name: str, callback: str) -> bool:
         """设置插件启用状态（内部方法）。
 
         Args:
             name: 插件名称
-            state: True=启用，False=禁用
             callback: 回调方法名（"on_enable" 或 "on_disable"）
 
         Returns:
@@ -345,11 +344,11 @@ class PluginManager:
 
     def enable(self, name: str) -> bool:
         """启用插件"""
-        return self._set_enabled(name, state=True, callback="on_enable")
+        return self._set_enabled(name, callback="on_enable")
 
     def disable(self, name: str) -> bool:
         """禁用插件"""
-        return self._set_enabled(name, state=False, callback="on_disable")
+        return self._set_enabled(name, callback="on_disable")
 
     def unload(self, name: str) -> bool:
         """卸载插件"""

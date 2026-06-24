@@ -9,7 +9,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import os
 from pathlib import Path
 
@@ -27,8 +26,12 @@ class LogReader:
     _CHUNK_SIZE = 4096
 
     def __init__(self) -> None:
-        """初始化日志读取器。"""
-        pass
+        """初始化日志读取器。
+
+        维护 _offsets 字典跟踪各文件的已读偏移量，
+        用于 stream() 增量读取。
+        """
+        self._offsets: dict[str, int] = {}
 
     def tail(self, log_path: Path, lines: int = 50) -> str:
         """读取日志文件最后 N 行。
@@ -52,18 +55,18 @@ class LogReader:
             logger.exception("Failed to read log file: {}", log_path)
             return ""
 
-    async def stream(self, log_path: Path) -> str | None:
-        """异步流式读取日志新增内容（单次调用）。
+    def stream(self, log_path: Path) -> str | None:
+        """读取日志文件新增内容（增量模式）。
 
-        读取从当前文件末尾开始的新增内容。
-        返回新增行，没有新内容时返回 None。
+        从上次读取的文件末尾开始，每次调用仅返回新增内容。
+        没有新内容时返回 None。
         调用方可在循环中反复调用此方法模拟 tail -f。
 
         Args:
             log_path: 日志文件路径。
 
-        Yields:
-            新增的日志行（当前未实现 yield，仅返回新增内容）。
+        Returns:
+            新增的日志内容字符串，无新内容时返回 None。
         """
         try:
             return self._read_new_lines(log_path)
@@ -108,9 +111,31 @@ class LogReader:
             return "\n".join(line.decode("utf-8", errors="replace") for line in result_lines)
 
     def _read_new_lines(self, log_path: Path) -> str | None:
-        """读取文件新增内容（从上次记录的位置）。"""
-        # 简化实现：总是从头读取
-        # 实际使用时调用方应维护 offset
+        """读取文件新增内容（基于偏移量增量读取）。
+
+        首次读取时从文件末尾开始（跳过已有内容），
+        之后仅返回偏移量之后的新增内容。
+        文件被截断时自动重置偏移量。
+        """
+        key = str(log_path)
+        try:
+            file_size = log_path.stat().st_size
+        except FileNotFoundError:
+            self._offsets.pop(key, None)
+            return None
+
+        prev_offset = self._offsets.get(key, 0)
+        # 首次读取：从文件末尾开始，或文件被截断时重置
+        if prev_offset == 0 or prev_offset > file_size:
+            self._offsets[key] = file_size
+            return None
+
+        if prev_offset >= file_size:
+            return None
+
         with open(log_path, "r") as f:
+            f.seek(prev_offset)
             content = f.read()
+            self._offsets[key] = f.tell()
+
         return content if content else None

@@ -176,10 +176,11 @@ class SkillsLoader:
         return skills
 
     def list_user_skills(self) -> list[Skill]:
-        """列出所有用户技能（废弃的全局路径）。
+        """列出所有用户技能（skills 目录下的技能）。
 
-        .. deprecated::
-            改用 scan_context_skills(context_root) 按 context 加载技能。
+        与 scan_context_skills 的区别：此方法列出用户全局 skills 目录下的技能，
+        用于技能管理（如 /list_skills 工具），而 scan_context_skills 按用户上下文
+        目录加载，用于 Agent 运行时注入。
         """
         if not self._user_dir:
             return []
@@ -310,13 +311,6 @@ class SkillsLoader:
         except Exception:
             logger.exception("解析技能文件失败: {}", skill_md)
             return None
-
-    @staticmethod
-    def _serialize(meta: SkillMeta, body: str) -> str:
-        front = yaml.dump(
-            meta.to_dict(), allow_unicode=True, default_flow_style=False,
-        ).strip()
-        return f"---\n{front}\n---\n\n{body.strip()}\n"
 
     @staticmethod
     def _parse(content: str) -> tuple[SkillMeta, str]:

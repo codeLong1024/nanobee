@@ -9,11 +9,17 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
 from loguru import logger
+
+
+# 默认值（当配置中未提供时回退）
+_DEFAULT_PORT = 8080
+_DEFAULT_LOG_NAME = "gateway-out.log"
 
 
 @dataclass
@@ -79,13 +85,13 @@ class InstanceDiscovery:
             config = yaml.safe_load(f)
 
         gateway = config.get("gateway", {})
-        port = gateway.get("port", 8080)
+        port = gateway.get("port", _DEFAULT_PORT)
         if not isinstance(port, int):
-            port = 8080
+            port = _DEFAULT_PORT
 
         # 日志路径
         log_dir = config_path.parent / "logs"
-        log_path = log_dir / "gateway-out.log"
+        log_path = log_dir / _DEFAULT_LOG_NAME
 
         # PID 文件名（基于配置路径 SHA1）
         pid_name = _instance_pid_name(config_path)
@@ -101,6 +107,4 @@ class InstanceDiscovery:
 
 def _instance_pid_name(config_path: Path) -> str:
     """基于配置文件路径 SHA1 生成 PID 文件标识名。"""
-    import hashlib
-
     return hashlib.sha1(str(config_path).encode()).hexdigest()[:16]

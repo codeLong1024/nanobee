@@ -498,16 +498,13 @@ class TestKernelIntegration:
 
         需要 mock:
         - _connect_mcp: 异步方法（kernel._handle_message_impl 中调用）
-        - _lock_manager.acquire: 异步上下文管理器
-        - _pending_queues: dict
-        - _process_message: 异步方法
+        - dispatch: 公开消息入口（替代 _process_message + lock + queue）
+        - try_inject: 中轮注入（替代 _pending_queues 直接访问）
         """
         mock_agent = MagicMock()
         mock_agent._connect_mcp = AsyncMock()
-        mock_agent._lock_manager = MagicMock()
-        mock_agent._lock_manager.acquire = _AsyncContextManagerMock()
-        mock_agent._pending_queues = {}
-        mock_agent._process_message = AsyncMock()
+        mock_agent.dispatch = AsyncMock()
+        mock_agent.try_inject = MagicMock(return_value=False)
         return mock_agent
 
     @pytest.mark.asyncio
@@ -527,7 +524,7 @@ class TestKernelIntegration:
         assert result is not None
         assert "/stop" in result.content
         # 不应进入 Agent Loop
-        mock_agent._process_message.assert_not_called()
+        mock_agent.dispatch.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_non_command_enters_agent_loop(self):
@@ -535,7 +532,7 @@ class TestKernelIntegration:
         kernel = _make_mock_kernel()
 
         mock_agent = self._make_mock_agent()
-        mock_agent._process_message.return_value = OutboundMessage(
+        mock_agent.dispatch.return_value = OutboundMessage(
             channel="test", chat_id="test_user", content="agent reply"
         )
         kernel._agent_loop = mock_agent
@@ -548,7 +545,7 @@ class TestKernelIntegration:
         )
         assert result is not None
         assert result.content == "agent reply"
-        mock_agent._process_message.assert_called_once()
+        mock_agent.dispatch.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_stop_cancels_running_turn_in_kernel(self):

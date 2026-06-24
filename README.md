@@ -25,7 +25,7 @@
 
 ```
 用户输入 → ChannelPlugin → CommandRouter(拦截 / 命令) → NanobeeKernel → AgentLoop(状态机)
-                                                                              │
+                                                                             │
     RESTORE → COMPACT → BUILD(system prompt) → RUN(LLM + 工具迭代) → SAVE → RESPOND
 ```
 
@@ -86,10 +86,18 @@ SessionManager(内存缓存) → SessionStore(原子 JSONL 持久化)
 ### 多实例部署
 
 ```
-nanobee svc start|stop|restart|status|logs|install [instance]
+nanobee svc start|stop|restart|status|logs [instance]
 ```
 
-扫描 `<data_dir>/<name>/config.yaml`，支持单实例/全部操作、原子 PID 管理、异步健康检查轮询、systemd unit 模板渲染与安装。所有阈值从 `nanobee.yaml` 读取，零硬编码。
+- 扫描 `<NANOBEE_DATA_DIR>/<name>/config.yaml`，支持单实例/全部操作
+- 原子 PID 管理 + 异步健康检查轮询
+- systemd 多实例单元通过环境变量注入 `NANOBEE_DATA_DIR`
+
+**单实例 vs 多实例边界**：
+- **单实例**（开发/测试/简单部署）：`nanobee gateway -c config.yaml`，不经过 svc
+- **多实例**（同一主机跑 N 个 Gateway）：systemd 注入 `NANOBEE_DATA_DIR` 后由 svc 统一管理
+
+详细运维操作见 [多实例部署运维手册](docs/multi_instance_ops.md)。
 
 ## 快速开始
 
@@ -121,6 +129,7 @@ nanobee run -c /path/to/config.yaml
 # 完整 Gateway 服务栈模式（生产部署：通道 + 健康端点）
 nanobee gateway
 nanobee gateway --port 8080           # 带健康检查 HTTP 端点
+nanobee gateway -c /path/to/config.yaml
 
 # Gateway 支持优雅退出（收到 SIGTERM/SIGINT 自动清理后退出）
 # 适合搭配 systemd / Docker / kill 命令使用
@@ -128,14 +137,14 @@ nanobee gateway &
 kill $!    # SIGTERM → 优雅关闭通道 + 保存状态 → 退出
 
 # Gateway 多实例运行时管理
-nanobee svc                          # 查看所有实例状态
-nanobee svc start                    # 启动所有实例
-nanobee svc start instance_name      # 启动指定实例
-nanobee svc stop                     # 停止所有实例
-nanobee svc restart instance_name    # 重启指定实例
-nanobee svc logs instance_name       # 查看实例日志
-nanobee svc install                  # 安装所有实例的 systemd unit
-# 所有命令支持 -c /path/to/config.yaml 指定配置文件
+# 设置数据目录，svc 会扫描该目录下所有子目录的 config.yaml
+export NANOBEE_DATA_DIR=~/.nanobee
+nanobee svc status                    # 查看所有实例状态
+nanobee svc start                     # 启动所有实例
+nanobee svc start <instance-1>        # 启动指定实例
+nanobee svc stop                      # 停止所有实例
+nanobee svc restart <instance-1>      # 重启指定实例
+nanobee svc logs <instance-1> -f      # 跟踪查看实例日志
 ```
 
 ### Windows
@@ -253,32 +262,28 @@ python -m pytest tests/ -v --tb=short
 python -m pytest tests/ --cov=nanobee --cov-report=term-missing
 ```
 
-## 测试
-
-```bash
-pip install -e ".[dev]"
-python -m pytest tests/ -v --tb=short
-python -m pytest tests/ --cov=nanobee --cov-report=term-missing
-```
-
 ## 项目结构
 
 ```
 nanobee/
 ├── agent/          Agent 核心引擎（状态机/执行器/Hook/工具体系）
 ├── builtin/        11 个内置插件（3 通道 + 7 工具 + 1 审计）
-├── skills/         内置技能（只读，沙箱保护）
-├── session/        会话管理（缓存 + 原子持久化）
-├── cli/            命令行入口（run/gateway/svc/plugin）
-├── config/         配置加载
-├── gateway/        Gateway 多实例运行时（PID/进程/健康检查/systemd）
-├── kernel/         微内核核心（17 模块）
+├── channel/        通道抽象层（基类、消息处理）
+├── cli/            命令行入口（run/gateway/svc）
+├── config/         配置加载与校验（loader/schema/paths）
+├── events/         事件总线（异步事件分发）
+├── gateway/        Gateway 多实例运行时（PID/进程/健康检查/发现/日志）
+├── kernel/         微内核核心
 ├── plugins/        插件接口定义
 ├── providers/      LLM Provider（6 实现 + 注册表）
 ├── security/       安全策略（SSRF + 路径边界）
-├── utils/          工具函数（通知/token 估算/可观测性）
-├── events/         事件总线
+├── session/        会话管理（SessionManager/Store/模型）
+├── skills/         内置技能（只读，沙箱保护）
 ├── templates/      模板（core.md 默认/subagent system 等）
+├── utils/          工具函数（通知/token 估算/可观测性）
+├── __main__.py     允许 python -m nanobee 运行
+├── bootstrap.py    组合根（配置→组件创建→AgentLoop 装配）
+├── deploy/         部署参考文件（systemd unit/配置模板/shell wrapper）
 └── exceptions.py   统一异常层次
 ```
 
@@ -299,17 +304,7 @@ Anthropic、OpenAI、Azure OpenAI、AWS Bedrock、GitHub Copilot、OpenAI 兼容
 | **9 个 Hook 契约** | 5 迭代级（工具前后、prompt 注入、消息完成）+ 4 run-level（循环前后、错误、终结），插件在关键切面注入逻辑 |
 | **框架无知论** | 框架不持有任何策略决策——记忆策略、技能注入策略、工具过滤策略全部由 LLM 或声明式元数据（SKILL.md frontmatter）自主决定 |
 | **可观测性** | Trace ID 按协程注入、结构化 JSON 日志、MetricsCollector（Token/延迟/工具/错误）、统一消息目录 |
-| **多实例部署** | `nanobee svc` 管理 N 个 Gateway 实例：原子 PID、健康检查轮询、systemd 托管，所有阈值从 YAML 读取零硬编码 |
-
-## 开发
-
-```bash
-pip install -e ".[dev]"
-pip install pytest-cov
-python -m pytest tests/ -v
-```
-
-详细贡献指南请见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+| **多实例部署** | `nanobee svc` 管理同一主机 N 个 Gateway 实例：原子 PID、健康检查轮询、systemd 托管。单实例直接 `nanobee gateway -c config.yaml`。详见[运维手册](docs/multi_instance_ops.md) |
 
 ## 许可证
 

@@ -1,62 +1,43 @@
 """Nanobee Service - 多实例 Gateway 运行时管理。
 
-提供 start/stop/restart/status/logs/install 六个子命令，
+提供 start/stop/restart/status/logs 五个子命令，
 替代 deploy/nanobee-gateway.sh 的进程管理功能。
 
 遵循框架无知论：CLI 层只负责参数解析和用户交互，
 不包含任何策略决策。
+
+配置入口：
+  单实例场景：nanobee gateway -c <config.yaml>（不经过 svc）
+  多实例场景：systemd 注入 NANOBEE_DATA_DIR 环境变量，
+               svc start 扫描该目录下所有子目录的 config.yaml 并启动。
 """
 
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
+import os
 
 import click
 
-from nanobee.config.loader import load_config
-from nanobee.config.schema import GatewayConfig
-from nanobee.gateway.discovery import InstanceDiscovery
-from nanobee.gateway.health_checker import HealthChecker
-from nanobee.gateway.log_reader import LogReader
-from nanobee.gateway.pid_manager import PidManager
-from nanobee.gateway.process_manager import ProcessManager
 from nanobee.gateway.runtime import GatewayRuntime
-from nanobee.gateway.systemd_renderer import SystemdRenderer
 from nanobee.utils.logger import logger
 
 
-def _build_runtime(config_path: str | None = None) -> GatewayRuntime:
-    """根据配置文件构建 GatewayRuntime 实例。
+def _build_runtime() -> GatewayRuntime:
+    """构建 GatewayRuntime 实例。
 
-    Args:
-        config_path: 配置文件路径，None 时自动搜索。
-
-    Returns:
-        GatewayRuntime 实例。
+    唯一入口：从 NANOBEE_DATA_DIR 环境变量读取数据目录。
+    无该变量时提示用户配置 systemd 的 Environment= 行。
     """
-    cfg = load_config(config_path)
-    runtime_config = cfg.gateway
-
-    # 解析 PID 目录
-    pid_dir = runtime_config.pid_dir or str(Path(cfg.data_dir).expanduser() / ".pid")
-    pid_manager = PidManager(pid_dir=Path(pid_dir))
-
-    discovery = InstanceDiscovery()
-    process_manager = ProcessManager()
-    health_checker = HealthChecker()
-    log_reader = LogReader()
-    systemd_renderer = SystemdRenderer()
-
-    return GatewayRuntime(
-        config=runtime_config,
-        discovery=discovery,
-        process_manager=process_manager,
-        pid_manager=pid_manager,
-        health_checker=health_checker,
-        log_reader=log_reader,
-        systemd_renderer=systemd_renderer,
-    )
+    data_dir = os.environ.get("NANOBEE_DATA_DIR")
+    if not data_dir:
+        raise click.UsageError(
+            "未设置 NANOBEE_DATA_DIR 环境变量。\n"
+            "多实例管理需要在 systemd unit 的 [Service] 段中配置:\n"
+            "  Environment=NANOBEE_DATA_DIR=/nanobee-data\n"
+            "单实例场景请直接使用: nanobee gateway -c <config.yaml>"
+        )
+    return GatewayRuntime.create(data_dir)
 
 
 def _run_async(coro):
@@ -68,21 +49,22 @@ def _run_async(coro):
 def svc():
     """Gateway 多实例运行时管理。
 
-    用于管理多个 Gateway 实例的启动、停止、重启、状态查看、
-    日志读取和 systemd 服务安装。
+    用于管理 NANOBEE_DATA_DIR 下多个 Gateway 实例的
+    启动、停止、重启、状态查看、日志读取。
+
+    仅限多实例场景。单实例请直接用: nanobee gateway -c config.yaml
     """
     pass
 
 
 @svc.command()
-@click.option("-c", "--config", "config_path", default=None, help="配置文件路径")
 @click.argument("instance", required=False)
-def start(config_path: str | None, instance: str | None) -> None:
+def start(instance: str | None) -> None:
     """启动一个或所有 Gateway 实例。
 
     INSTANCE: 实例名称（可选，默认启动所有）。
     """
-    runtime = _build_runtime(config_path)
+    runtime = _build_runtime()
     results = _run_async(runtime.start(instance))
 
     for name, ok in results.items():
@@ -91,14 +73,13 @@ def start(config_path: str | None, instance: str | None) -> None:
 
 
 @svc.command()
-@click.option("-c", "--config", "config_path", default=None, help="配置文件路径")
 @click.argument("instance", required=False)
-def stop(config_path: str | None, instance: str | None) -> None:
+def stop(instance: str | None) -> None:
     """停止一个或所有 Gateway 实例。
 
     INSTANCE: 实例名称（可选，默认停止所有）。
     """
-    runtime = _build_runtime(config_path)
+    runtime = _build_runtime()
     results = _run_async(runtime.stop(instance))
 
     for name, ok in results.items():
@@ -107,14 +88,13 @@ def stop(config_path: str | None, instance: str | None) -> None:
 
 
 @svc.command()
-@click.option("-c", "--config", "config_path", default=None, help="配置文件路径")
 @click.argument("instance", required=False)
-def restart(config_path: str | None, instance: str | None) -> None:
+def restart(instance: str | None) -> None:
     """重启一个或所有 Gateway 实例。
 
     INSTANCE: 实例名称（可选，默认重启所有）。
     """
-    runtime = _build_runtime(config_path)
+    runtime = _build_runtime()
     results = _run_async(runtime.restart(instance))
 
     for name, ok in results.items():
@@ -123,10 +103,9 @@ def restart(config_path: str | None, instance: str | None) -> None:
 
 
 @svc.command()
-@click.option("-c", "--config", "config_path", default=None, help="配置文件路径")
-def status(config_path: str | None) -> None:
+def status() -> None:
     """查看所有 Gateway 实例的运行状态。"""
-    runtime = _build_runtime(config_path)
+    runtime = _build_runtime()
     statuses = _run_async(runtime.status())
 
     if not statuses:
@@ -146,37 +125,23 @@ def status(config_path: str | None) -> None:
 
 
 @svc.command()
-@click.option("-c", "--config", "config_path", default=None, help="配置文件路径")
 @click.option("-n", "--lines", default=50, help="读取最后 N 行（默认 50）")
 @click.option("-f", "--follow", is_flag=True, default=False, help="持续跟踪新内容")
 @click.argument("instance")
-def logs(config_path: str | None, lines: int, follow: bool, instance: str) -> None:
+def logs(lines: int, follow: bool, instance: str) -> None:
     """查看指定实例的日志。
 
     INSTANCE: 实例名称（必填）。
     """
-    runtime = _build_runtime(config_path)
+    runtime = _build_runtime()
     content = _run_async(runtime.logs(instance, lines=lines, follow=follow))
     click.echo(content)
 
-
-@svc.command()
-@click.option("-c", "--config", "config_path", default=None, help="配置文件路径")
-@click.argument("instance", required=False)
-def install(config_path: str | None, instance: str | None) -> None:
-    """安装 systemd unit 文件。
-
-    INSTANCE: 实例名称（可选，默认安装所有）。
-    安装后请手动执行: systemctl daemon-reload
-    """
-    runtime = _build_runtime(config_path)
-    results = runtime.install(instance)
-
-    for name, unit_path in results.items():
-        click.echo(f"  {name}: {unit_path}")
-
-    click.echo("\nRun: systemctl daemon-reload")
-    click.echo("Then: systemctl start nanobee-<instance>")
+    if follow:
+        try:
+            _run_async(runtime.follow_logs(instance))
+        except KeyboardInterrupt:
+            pass
 
 
 def register(cli_group: click.Group) -> None:

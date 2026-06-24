@@ -9,29 +9,27 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-import json
 import os
 import time
-from contextlib import suppress
 from copy import deepcopy
-from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any, Callable, TypedDict
+from typing import Any
 
-from nanobee.exceptions import SandboxViolationError
 from nanobee.utils.logger import logger
 
 
 from nanobee.agent.hook import AgentHook, AgentHookContext, AgentRunHookContext
-from nanobee.agent.tools.registry import ToolRegistry
+from nanobee.agent.result_normalizer import ResultNormalizer
+from nanobee.agent.specs import (
+    AgentRunResult,
+    AgentRunSpec,
+    PluginHooks,
+    _DEFAULT_ERROR_MESSAGE,
+    _inject_context_to_tool,
+)
+from nanobee.agent.tool_pipeline import ToolPipeline
 from nanobee.providers.base import LLMProvider, LLMResponse, ToolCallRequest
-from nanobee.security.network import SSRF_BOUNDARY_NOTE
 from nanobee.utils.file_edit_events import (
-    build_file_edit_end_event,
-    build_file_edit_error_event,
-    build_file_edit_start_event,
     prepare_file_edit_tracker as _prepare_file_edit_tracker,
-    prepare_file_edit_trackers,
     StreamingFileEditTracker,
 )
 from nanobee.utils.helpers import (
@@ -41,14 +39,10 @@ from nanobee.utils.helpers import (
     estimate_prompt_tokens_chain,
     extract_reasoning,
     find_legal_message_start,
-    maybe_persist_tool_result,
     strip_think,
-    truncate_text,
 )
 from nanobee.utils.progress_events import (
-    build_tool_event_start_payload,
     invoke_file_edit_progress,
-    invoke_on_progress,
     on_progress_accepts_file_edit_events,
 )
 from nanobee.utils.notifications import get_notification_content
@@ -56,13 +50,9 @@ from nanobee.utils.runtime import (
     EMPTY_FINAL_RESPONSE_MESSAGE,
     build_finalization_retry_message,
     build_length_recovery_message,
-    ensure_nonempty_tool_result,
     is_blank_text,
-    repeated_external_lookup_error,
-    repeated_workspace_violation_error,
 )
 
-_DEFAULT_ERROR_MESSAGE = "Sorry, I encountered an error calling the AI model."
 _PERSISTED_MODEL_ERROR_PLACEHOLDER = "[Assistant reply unavailable due to model error.]"
 _MAX_EMPTY_RETRIES = 2
 _MAX_LENGTH_RECOVERIES = 3
@@ -75,119 +65,13 @@ _BACKFILL_CONTENT = "[Tool result unavailable — call was interrupted or lost]"
 prepare_file_edit_tracker = _prepare_file_edit_tracker
 
 
-class PluginHooks(TypedDict, total=False):
-    """插件 Hook 回调字典。
-
-    Attributes:
-        pre_invoke: 工具执行前拦截钩子，签名 (tool_name: str, args: dict) → args
-        post_invoke: 工具执行后拦截钩子，签名 (tool_name: str, result: Any) → result
-    """
-
-    pre_invoke: list[Callable[[str, dict[str, Any]], dict[str, Any]]]
-    post_invoke: list[Callable[[str, Any], Any]]
-
-
-def _inject_context_to_tool(tool: Any, spec: AgentRunSpec) -> None:
-    """调用工具插件的 set_context() 注入会话上下文。
-
-    用于工具插件（如 tool_cron）在每次工具执行前获取当前会话信息。
-    只对有 set_context 方法的工具插件调用。
-
-    Args:
-        tool: 工具实例（可能是 ToolPluginAdapter 或直接工具）
-        spec: Agent 执行配置，包含通道上下文信息
-    """
-    # 从 ToolPluginAdapter 中提取底层插件
-    plugin = None
-    if hasattr(tool, "_plugin"):
-        plugin = tool._plugin
-
-    if plugin is None:
-        # 尝试直接从工具实例获取（如果不是适配器）
-        if hasattr(tool, "set_context"):
-            plugin = tool
-
-    if plugin is None:
-        return
-
-    # 调用 set_context（如果存在）
-    if hasattr(plugin, "set_context") and callable(getattr(plugin, "set_context")):
-        try:
-            plugin.set_context(
-                channel=spec.channel,
-                chat_id=spec.chat_id,
-                user_id=spec.sender_id,
-                metadata=spec.metadata,
-                session_key=spec.session_id,
-            )
-        except Exception:
-            logger.debug("调用工具插件 set_context 失败: {}", type(plugin).__name__)
-
-
-@dataclass(slots=True)
-class AgentRunSpec:
-    """Agent 单次执行的配置。"""
-
-    initial_messages: list[dict[str, Any]]
-    tools: ToolRegistry
-    model: str
-    max_iterations: int
-    max_tool_result_chars: int
-    temperature: float | None = None
-    max_tokens: int | None = None
-    reasoning_effort: str | None = None
-    hook: AgentHook | None = None
-    error_message: str | None = _DEFAULT_ERROR_MESSAGE
-    max_iterations_message: str | None = None
-    concurrent_tools: bool = False
-    fail_on_tool_error: bool = False
-    workspace: Path | None = None
-    context_id: str | None = None
-    trace_id: str | None = None
-    context_window_tokens: int | None = None
-    context_block_limit: int | None = None
-    provider_retry_mode: str = "standard"
-    progress_callback: Any | None = None
-    stream_progress_deltas: bool = True
-    retry_wait_callback: Any | None = None
-    checkpoint_callback: Any | None = None
-    injection_callback: Any | None = None
-    llm_timeout_s: float | None = None
-    filtered_tool_names: list[str] | None = None
-    plugin_hooks: PluginHooks | None = None
-    # 通道上下文（用于工具插件的 set_context 调用）
-    channel: str = ""
-    chat_id: str = ""
-    sender_id: str = ""
-    session_id: str = "default"
-    metadata: dict[str, Any] = field(default_factory=dict)
-    # 需要节流的外部查询工具名集合，从插件 metadata.throttle_group 构建
-    throttled_tool_names: dict[str, str] = field(default_factory=dict)
-    # 具有命令执行能力的工具名集合，从插件 metadata.exec_capable 构建
-    exec_capable_tools: set[str] = field(default_factory=set)
-    # 具有文件编辑能力的工具名集合，从插件 metadata.file_edit_capability 构建
-    file_edit_tools: set[str] = field(default_factory=set)
-
-
-@dataclass(slots=True)
-class AgentRunResult:
-    """Agent 单次执行的最终结果。"""
-
-    final_content: str | None
-    messages: list[dict[str, Any]]
-    tools_used: list[str] = field(default_factory=list)
-    usage: dict[str, int] = field(default_factory=dict)
-    stop_reason: str = "completed"
-    error: str | None = None
-    tool_events: list[dict[str, str]] = field(default_factory=list)
-    had_injections: bool = False
-
-
 class AgentRunner:
     """工具型 LLM 循环执行器，不含产品层逻辑。"""
 
     def __init__(self, provider: LLMProvider) -> None:
         self.provider = provider
+        self._tool_pipeline = ToolPipeline()
+        self._result_normalizer = ResultNormalizer()
 
     @staticmethod
     def _merge_message_content(left: Any, right: Any) -> str | list[dict[str, Any]]:
@@ -498,7 +382,7 @@ class AgentRunner:
 
                 await hook.before_execute_tools(context)
 
-                results, new_events, fatal_error = await self._execute_tools(
+                results, new_events, fatal_error = await self._tool_pipeline.execute_all(
                     spec,
                     response.tool_calls,
                     external_lookup_counts,
@@ -513,11 +397,13 @@ class AgentRunner:
                         "role": "tool",
                         "tool_call_id": tool_call.id,
                         "name": tool_call.name,
-                        "content": self._normalize_tool_result(
-                            spec,
-                            tool_call.id,
-                            tool_call.name,
+                        "content": self._result_normalizer.normalize(
                             result,
+                            tool_name=tool_call.name,
+                            tool_call_id=tool_call.id,
+                            workspace=spec.workspace,
+                            context_id=spec.context_id,
+                            max_chars=spec.max_tool_result_chars,
                         ),
                     }
                     messages.append(tool_message)
@@ -935,374 +821,6 @@ class AgentRunner:
             merged[key] = merged.get(key, 0) + value
         return merged
 
-    async def _execute_tools(
-        self,
-        spec: AgentRunSpec,
-        tool_calls: list[ToolCallRequest],
-        external_lookup_counts: dict[str, int],
-        workspace_violation_counts: dict[str, int],
-    ) -> tuple[list[Any], list[dict[str, str]], BaseException | None]:
-        batches = self._partition_tool_batches(spec, tool_calls)
-        tool_results: list[tuple[Any, dict[str, str], BaseException | None]] = []
-        for batch in batches:
-            if spec.concurrent_tools and len(batch) > 1:
-                batch_results = await asyncio.gather(*(
-                    self._run_tool(
-                        spec, tool_call, external_lookup_counts, workspace_violation_counts,
-                    )
-                    for tool_call in batch
-                ))
-                tool_results.extend(batch_results)
-            else:
-                for tool_call in batch:
-                    result = await self._run_tool(
-                        spec, tool_call, external_lookup_counts, workspace_violation_counts,
-                    )
-                    tool_results.append(result)
-
-        results: list[Any] = []
-        events: list[dict[str, str]] = []
-        fatal_error: BaseException | None = None
-        for result, event, error in tool_results:
-            results.append(result)
-            events.append(event)
-            if error is not None and fatal_error is None:
-                fatal_error = error
-        return results, events, fatal_error
-
-    async def _run_tool(
-        self,
-        spec: AgentRunSpec,
-        tool_call: ToolCallRequest,
-        external_lookup_counts: dict[str, int],
-        workspace_violation_counts: dict[str, int],
-    ) -> tuple[Any, dict[str, str], BaseException | None]:
-        """执行单个工具调用，返回 (结果, 事件, 错误)。"""
-        hint = "\n\n[Analyze the error above and try a different approach.]"
-        lookup_error = repeated_external_lookup_error(
-            tool_call.name,
-            tool_call.arguments,
-            external_lookup_counts,
-            spec.throttled_tool_names,
-        )
-        if lookup_error:
-            event = {
-                "name": tool_call.name,
-                "status": "error",
-                "detail": "repeated external lookup blocked",
-            }
-            if spec.fail_on_tool_error:
-                return lookup_error + hint, event, RuntimeError(lookup_error)
-            return lookup_error + hint, event, None
-
-        # [DEBUG] 打印工具调用关键信息
-        _args_str = str(tool_call.arguments)
-        if len(_args_str) > 500:
-            _args_str = _args_str[:500] + "...(truncated)"
-        logger.debug("[TOOL] 请求: {} | args={}", tool_call.name, _args_str)
-
-        prepare_call = getattr(spec.tools, "prepare_call", None)
-        tool, params, prep_error = None, tool_call.arguments, None
-        if callable(prepare_call):
-            with suppress(Exception):
-                prepared = prepare_call(tool_call.name, tool_call.arguments)
-                if isinstance(prepared, tuple) and len(prepared) == 3:
-                    tool, params, prep_error = prepared
-        if prep_error:
-            event = {
-                "name": tool_call.name,
-                "status": "error",
-                "detail": prep_error.split(": ", 1)[-1][:120],
-            }
-            handled = self._classify_violation(
-                raw_text=prep_error,
-                soft_payload=prep_error + hint,
-                event=event,
-                tool_call=tool_call,
-                workspace_violation_counts=workspace_violation_counts,
-                exec_capable_tools=spec.exec_capable_tools,
-            )
-            if handled is not None:
-                return handled
-            return prep_error + hint, event, (
-                RuntimeError(prep_error) if spec.fail_on_tool_error else None
-            )
-        emit_file_edit_events = (
-            spec.progress_callback is not None
-            and on_progress_accepts_file_edit_events(spec.progress_callback)
-        )
-        progress_callback = spec.progress_callback if emit_file_edit_events else None
-        file_edit_trackers = (
-            prepare_file_edit_trackers(
-                call_id=tool_call.id,
-                tool_name=tool_call.name,
-                tool=tool,
-                workspace=spec.workspace,
-                params=params if isinstance(params, dict) else None,
-                file_edit_tools=spec.file_edit_tools,
-            )
-            if progress_callback is not None
-            else None
-        )
-        if file_edit_trackers and progress_callback is not None:
-            await invoke_file_edit_progress(
-                progress_callback,
-                [build_file_edit_start_event(
-                    file_edit_tracker,
-                    params if isinstance(params, dict) else None,
-                ) for file_edit_tracker in file_edit_trackers],
-            )
-
-        # 执行时过滤：检查工具是否在允许列表中
-        if spec.filtered_tool_names is not None and tool_call.name not in spec.filtered_tool_names:
-            event = {
-                "name": tool_call.name,
-                "status": "error",
-                "detail": f"tool not found: {tool_call.name}",
-            }
-            return f"Error: Tool '{tool_call.name}' not found. Available: {', '.join(spec.filtered_tool_names)}" + hint, event, None
-
-        # 沙箱拦截：通过 ContextVar 获取当前任务沙箱，清洗路径参数（L1 防线）
-        from nanobee.kernel.context_sandbox_var import current_sandbox
-
-        request_sandbox = current_sandbox()
-        if request_sandbox is not None and isinstance(params, dict):
-            try:
-                params = request_sandbox.sanitize_params(tool_call.name, params)
-            except (PermissionError, SandboxViolationError) as e:
-                event = {
-                    "name": tool_call.name,
-                    "status": "error",
-                    "detail": f"sandbox: {e}",
-                }
-                return str(e) + hint, event, None
-
-        # 注入会话上下文：调用 ToolPlugin.set_context()（如果工具支持）
-        if spec.channel or spec.chat_id or spec.sender_id:
-            _inject_context_to_tool(tool, spec)
-
-        # Plugin Hook: on_pre_invoke — 工具执行前拦截
-        if spec.plugin_hooks and isinstance(params, dict):
-            for hook_fn in spec.plugin_hooks.get("pre_invoke", []):
-                try:
-                    params = await hook_fn(tool_call.name, params)
-                except (PermissionError, SandboxViolationError) as e:
-                    event = {
-                        "name": tool_call.name,
-                        "status": "error",
-                        "detail": f"plugin-hook: {e}",
-                    }
-                    return str(e) + hint, event, None
-                except Exception as e:
-                    logger.exception("on_pre_invoke hook 执行出错: {}", e)
-                    # 不阻止工具执行，仅记录日志
-
-        # 通知通道：工具开始执行（tool_hint=True 触发通道展示 🔧 等视觉反馈）
-        if spec.progress_callback is not None:
-            await invoke_on_progress(
-                spec.progress_callback, "",
-                tool_hint=True,
-                tool_events=[build_tool_event_start_payload(tool_call)],
-            )
-
-        try:
-            if tool is not None:
-                result = await tool.execute(**params)
-            else:
-                result = await spec.tools.execute(tool_call.name, params)
-
-            # Plugin Hook: on_post_invoke — 工具执行后拦截
-            if spec.plugin_hooks:
-                for hook_fn in spec.plugin_hooks.get("post_invoke", []):
-                    try:
-                        result = await hook_fn(tool_call.name, result)
-                    except Exception as e:
-                        logger.exception("on_post_invoke hook 执行出错: {}", e)
-                        # 不阻止结果返回，仅记录日志
-
-            # [DEBUG] 打印工具结果信息
-            _result_str = str(result)
-            if len(_result_str) > 300:
-                _result_str = _result_str[:300] + "...(truncated)"
-            logger.debug("[TOOL] 结果: {} = {}", tool_call.name, _result_str)
-
-        except asyncio.CancelledError:
-            raise
-        except (KeyboardInterrupt, SystemExit):
-            raise
-        except Exception as exc:
-            if file_edit_trackers and progress_callback is not None:
-                await invoke_file_edit_progress(
-                    progress_callback,
-                    [
-                        build_file_edit_error_event(file_edit_tracker, str(exc))
-                        for file_edit_tracker in file_edit_trackers
-                    ],
-                )
-            event = {
-                "name": tool_call.name,
-                "status": "error",
-                "detail": str(exc),
-            }
-            payload = f"Error: {type(exc).__name__}: {exc}"
-            handled = self._classify_violation(
-                raw_text=str(exc),
-                soft_payload=payload,
-                event=event,
-                tool_call=tool_call,
-                workspace_violation_counts=workspace_violation_counts,
-                exception=exc,
-                exec_capable_tools=spec.exec_capable_tools,
-            )
-            if handled is not None:
-                return handled
-            if spec.fail_on_tool_error:
-                return payload, event, exc
-            return payload, event, None
-
-        if isinstance(result, str) and result.startswith("Error"):
-            if file_edit_trackers and progress_callback is not None:
-                await invoke_file_edit_progress(
-                    progress_callback,
-                    [
-                        build_file_edit_error_event(file_edit_tracker, result)
-                        for file_edit_tracker in file_edit_trackers
-                    ],
-                )
-            event = {
-                "name": tool_call.name,
-                "status": "error",
-                "detail": result.replace("\n", " ").strip()[:120],
-            }
-            handled = self._classify_violation(
-                raw_text=result,
-                soft_payload=result + hint,
-                event=event,
-                tool_call=tool_call,
-                workspace_violation_counts=workspace_violation_counts,
-                exec_capable_tools=spec.exec_capable_tools,
-            )
-            if handled is not None:
-                return handled
-            if spec.fail_on_tool_error:
-                return result + hint, event, RuntimeError(result)
-            return result + hint, event, None
-
-        if file_edit_trackers and progress_callback is not None:
-            await invoke_file_edit_progress(
-                progress_callback,
-                [build_file_edit_end_event(
-                    file_edit_tracker,
-                    params if isinstance(params, dict) else None,
-                ) for file_edit_tracker in file_edit_trackers],
-            )
-
-        detail = "" if result is None else str(result)
-        detail = detail.replace("\n", " ").strip()
-        if not detail:
-            detail = "(empty)"
-        elif len(detail) > 120:
-            detail = detail[:120] + "..."
-        return result, {"name": tool_call.name, "status": "ok", "detail": detail}, None
-
-    # 从 security 模块导入的 SSRF 边界提示
-    _SSRF_BOUNDARY_NOTE: str = SSRF_BOUNDARY_NOTE
-
-    def _classify_violation(
-        self,
-        *,
-        raw_text: str,
-        soft_payload: str,
-        event: dict[str, str],
-        tool_call: ToolCallRequest,
-        workspace_violation_counts: dict[str, int],
-        exception: BaseException | None = None,
-        exec_capable_tools: set[str] | None = None,
-    ) -> tuple[Any, dict[str, str], BaseException | None] | None:
-        """分类安全边界失败，或返回 None 以透传。
-
-        不做工具特定的文本模式匹配，优先使用异常类型检测：
-        - ``SandboxViolationError`` → 工作区越界
-        - 文本包含框架模块输出特征 → 安全违规
-        """
-        # 异常类型检测（优先级最高）
-        if isinstance(exception, SandboxViolationError):
-            return self._handle_workspace_violation(
-                raw_text, soft_payload, event, tool_call, workspace_violation_counts,
-                exec_capable_tools=exec_capable_tools,
-            )
-
-        # 文本特征检测——只检查框架内部模块的结构化输出格式
-        # SandboxViolationError.__str__() 始终输出 "沙箱拦截"
-        # security/network.py 的 SSRF 错误始终包含 "私有/内网" 或 "private"
-        if not raw_text:
-            return None
-        lowered = raw_text.lower()
-        is_ssrf = "私有" in raw_text or "private" in lowered
-        is_sandbox = "沙箱拦截" in raw_text
-
-        if is_ssrf:
-            return self._handle_ssrf_violation(raw_text, event)
-
-        if is_sandbox:
-            return self._handle_workspace_violation(
-                raw_text, soft_payload, event, tool_call, workspace_violation_counts,
-                exec_capable_tools=exec_capable_tools,
-            )
-
-        return None
-
-    def _handle_ssrf_violation(
-        self,
-        raw_text: str,
-        event: dict[str, str],
-    ) -> tuple[Any, dict[str, str], None]:
-        """处理 SSRF 违规：非可恢复，附 SSRF 边界提示。"""
-        logger.warning(
-            "Tool blocked by SSRF guard; returning non-retryable tool error: {}",
-            raw_text.replace("\n", " ").strip()[:200],
-        )
-        event["detail"] = self._event_detail("ssrf_violation: ", raw_text)
-        return self._ssrf_soft_payload(raw_text), event, None
-
-    def _handle_workspace_violation(
-        self,
-        raw_text: str,
-        soft_payload: str,
-        event: dict[str, str],
-        tool_call: ToolCallRequest,
-        workspace_violation_counts: dict[str, int],
-        exec_capable_tools: set[str] | None = None,
-    ) -> tuple[Any, dict[str, str], BaseException | None] | None:
-        """处理工作区越界：可恢复，重复时升级提示。"""
-        escalation = repeated_workspace_violation_error(
-            tool_call.name,
-            tool_call.arguments,
-            workspace_violation_counts,
-            exec_capable_tools,
-        )
-        event["detail"] = self._event_detail("workspace_violation: ", raw_text)
-        if escalation is not None:
-            logger.warning(
-                "Tool {} hit workspace boundary repeatedly; escalating hint",
-                tool_call.name,
-            )
-            event["detail"] = self._event_detail(
-                "workspace_violation_escalated: ",
-                raw_text,
-            )
-            return escalation, event, None
-        return soft_payload, event, None
-
-    @classmethod
-    def _ssrf_soft_payload(cls, raw_text: str) -> str:
-        text = raw_text.strip() or "Error: request blocked by SSRF guard"
-        return f"{text}\n\n{cls._SSRF_BOUNDARY_NOTE}"
-
-    @staticmethod
-    def _event_detail(prefix: str, text: str, limit: int = 160) -> str:
-        return (prefix + text.replace("\n", " ").strip())[:limit]
-
     async def _emit_checkpoint(
         self,
         spec: AgentRunSpec,
@@ -1332,41 +850,6 @@ class AgentRunner:
         if messages and messages[-1].get("role") == "assistant" and not messages[-1].get("tool_calls"):
             return
         messages.append(build_assistant_message(_PERSISTED_MODEL_ERROR_PLACEHOLDER))
-
-    def _normalize_tool_result(
-        self,
-        spec: AgentRunSpec,
-        tool_call_id: str,
-        tool_name: str,
-        result: Any,
-    ) -> Any:
-        """标准化工具结果：确保非空、持久化、截断、序列化。"""
-        result = ensure_nonempty_tool_result(tool_name, result)
-        # 非字符串结果（如工具返回的 dict）转为 JSON 字符串，防止 LLM 后端
-        # 将其解析为缺失 type 字段的多模态内容导致 400 错误。
-        if not isinstance(result, str) and result is not None:
-            try:
-                result = json.dumps(result, ensure_ascii=False, default=str)
-            except Exception:
-                result = str(result)
-        try:
-            content = maybe_persist_tool_result(
-                spec.workspace,
-                spec.context_id,
-                tool_call_id,
-                result,
-                max_chars=spec.max_tool_result_chars,
-            )
-        except Exception:
-            logger.exception(
-                "Tool result persist failed for {} in {}; using raw result",
-                tool_call_id,
-                spec.context_id or "default",
-            )
-            content = result
-        if isinstance(content, str) and len(content) > spec.max_tool_result_chars:
-            return truncate_text(content, spec.max_tool_result_chars)
-        return content
 
     @staticmethod
     def _drop_orphan_tool_results(
@@ -1445,11 +928,13 @@ class AgentRunner:
         for idx, message in enumerate(messages):
             if message.get("role") != "tool":
                 continue
-            normalized = self._normalize_tool_result(
-                spec,
-                str(message.get("tool_call_id") or f"tool_{idx}"),
-                str(message.get("name") or "tool"),
+            normalized = self._result_normalizer.normalize(
                 message.get("content"),
+                tool_name=str(message.get("name") or "tool"),
+                tool_call_id=str(message.get("tool_call_id") or f"tool_{idx}"),
+                workspace=spec.workspace,
+                context_id=spec.context_id,
+                max_chars=spec.max_tool_result_chars,
             )
             if normalized != message.get("content"):
                 if updated is messages:
@@ -1538,28 +1023,4 @@ class AgentRunner:
                 kept = kept[start:]
         return system_messages + kept
 
-    def _partition_tool_batches(
-        self,
-        spec: AgentRunSpec,
-        tool_calls: list[ToolCallRequest],
-    ) -> list[list[ToolCallRequest]]:
-        """将工具调用按并发安全性分组为批次。"""
-        if not spec.concurrent_tools:
-            return [[tool_call] for tool_call in tool_calls]
 
-        batches: list[list[ToolCallRequest]] = []
-        current: list[ToolCallRequest] = []
-        for tool_call in tool_calls:
-            get_tool = getattr(spec.tools, "get", None)
-            tool = get_tool(tool_call.name) if callable(get_tool) else None
-            can_batch = bool(tool and tool.concurrency_safe)
-            if can_batch:
-                current.append(tool_call)
-                continue
-            if current:
-                batches.append(current)
-                current = []
-            batches.append([tool_call])
-        if current:
-            batches.append(current)
-        return batches
