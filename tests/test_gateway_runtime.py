@@ -1,7 +1,7 @@
 """GatewayRuntime 完整测试套件。
 
 覆盖 PidManager、ProcessManager、HealthChecker、InstanceDiscovery、
-LogReader、SystemdRenderer、GatewayRuntime 编排层、CLI svc 命令。
+LogReader、GatewayRuntime 编排层、CLI svc 命令。
 
 遵循 TDD 红-绿-重构循环：先写测试，再写实现。
 """
@@ -17,14 +17,12 @@ from unittest import mock
 import pytest
 import pytest_asyncio
 
-from nanobee.config.schema import GatewayConfig
 from nanobee.gateway.discovery import Instance, InstanceDiscovery
 from nanobee.gateway.health_checker import HealthChecker
 from nanobee.gateway.log_reader import LogReader
 from nanobee.gateway.pid_manager import PidManager
 from nanobee.gateway.process_manager import ProcessManager
 from nanobee.gateway.runtime import GatewayRuntime
-from nanobee.gateway.systemd_renderer import SystemdRenderer
 
 
 class TestPidManager:
@@ -141,28 +139,14 @@ class TestPidManager:
         assert nested.exists()
         assert pm.read("test") == 42
 
-    def test_name_from_config_path_sha1(self):
-        """config_path 应通过 SHA1 生成唯一实例名。"""
-        config_path = Path("/nanobee-data/my-instance/config.yaml")
-        name = PidManager.instance_name_from_config(config_path)
-        # 结果应为 16 位十六进制字符串
-        assert len(name) == 16
-        assert all(c in "0123456789abcdef" for c in name)
-
-    def test_name_deterministic(self):
-        """相同 config_path 应产生相同实例名。"""
-        p = Path("/nanobee-data/prod/config.yaml")
-        assert PidManager.instance_name_from_config(p) == PidManager.instance_name_from_config(p)
-
-    def test_name_unique_for_different_paths(self):
-        """不同 config_path 应产生不同实例名。"""
-        a = PidManager.instance_name_from_config(Path("/nanobee-data/a/config.yaml"))
-        b = PidManager.instance_name_from_config(Path("/nanobee-data/b/config.yaml"))
-        assert a != b
+    def test_pid_dir_property(self, tmp_dir):
+        """pid_dir 属性返回 PID 目录路径。"""
+        pm = PidManager(pid_dir=tmp_dir)
+        assert pm.pid_dir == tmp_dir
 
 
 class TestProcessManager:
-    """跨平台进程管理测试。"""
+    """进程管理测试。"""
 
     @pytest.fixture
     def pm(self):
@@ -173,78 +157,82 @@ class TestProcessManager:
         """start 应返回子进程 PID。"""
         with mock.patch("subprocess.Popen") as mock_popen:
             with mock.patch.object(Path, "exists", return_value=True):
-                with mock.patch("builtins.open", mock.mock_open()):
-                    mock_process = mock.MagicMock()
-                    mock_process.pid = 12345
-                    mock_popen.return_value = mock_process
+                with mock.patch.object(Path, "mkdir") as _mock_mkdir:
+                    with mock.patch("builtins.open", mock.mock_open()):
+                        mock_process = mock.MagicMock()
+                        mock_process.pid = 12345
+                        mock_popen.return_value = mock_process
 
-                    process = pm.start(
-                        config_path=Path("/config.yaml"),
-                        venv_path=Path("/venv"),
-                        log_path=Path("/log/gateway-out.log"),
-                    )
+                        process = pm.start(
+                            config_path=Path("/config.yaml"),
+                            venv_path=Path("/venv"),
+                            log_path=Path("/log/gateway-out.log"),
+                        )
 
-                    assert process.pid == 12345
-                    mock_popen.assert_called_once()
+                        assert process.pid == 12345
+                        mock_popen.assert_called_once()
 
     def test_start_command_contains_venv_python(self, pm):
         """start 应使用 venv 中的 Python。"""
         with mock.patch("subprocess.Popen") as mock_popen:
             with mock.patch.object(Path, "exists", return_value=True):
-                with mock.patch("builtins.open", mock.mock_open()):
-                    mock_process = mock.MagicMock()
-                    mock_process.pid = 1
-                    mock_popen.return_value = mock_process
+                with mock.patch.object(Path, "mkdir") as _mock_mkdir:
+                    with mock.patch("builtins.open", mock.mock_open()):
+                        mock_process = mock.MagicMock()
+                        mock_process.pid = 1
+                        mock_popen.return_value = mock_process
 
-                    pm.start(
-                        config_path=Path("/etc/nanobee/inst/config.yaml"),
-                        venv_path=Path("/opt/.venv"),
-                        log_path=Path("/log/gateway-out.log"),
-                    )
+                        pm.start(
+                            config_path=Path("/etc/nanobee/inst/config.yaml"),
+                            venv_path=Path("/opt/.venv"),
+                            log_path=Path("/log/gateway-out.log"),
+                        )
 
-                    cmd = mock_popen.call_args[0][0]
-                    assert str(Path("/opt/.venv/bin/python")) in str(cmd)
+                        cmd = mock_popen.call_args[0][0]
+                        assert str(Path("/opt/.venv/bin/python")) in str(cmd)
 
     def test_start_command_contains_gateway_subcommand(self, pm):
         """start 命令应包含 nanobee gateway 子命令和 -c 参数。"""
         with mock.patch("subprocess.Popen") as mock_popen:
             with mock.patch.object(Path, "exists", return_value=True):
-                with mock.patch("builtins.open", mock.mock_open()):
-                    mock_process = mock.MagicMock()
-                    mock_process.pid = 1
-                    mock_popen.return_value = mock_process
+                with mock.patch.object(Path, "mkdir") as _mock_mkdir:
+                    with mock.patch("builtins.open", mock.mock_open()):
+                        mock_process = mock.MagicMock()
+                        mock_process.pid = 1
+                        mock_popen.return_value = mock_process
 
-                    pm.start(
-                        config_path=Path("/test/config.yaml"),
-                        venv_path=Path("/venv"),
-                        log_path=Path("/log/gateway-out.log"),
-                    )
+                        pm.start(
+                            config_path=Path("/test/config.yaml"),
+                            venv_path=Path("/venv"),
+                            log_path=Path("/log/gateway-out.log"),
+                        )
 
-                    cmd = mock_popen.call_args[0][0]
-                    cmd_str = " ".join(cmd)
-                    assert "gateway" in cmd_str
-                    assert "-c" in cmd_str
-                    assert "/test/config.yaml" in cmd_str
+                        cmd = mock_popen.call_args[0][0]
+                        cmd_str = " ".join(cmd)
+                        assert "gateway" in cmd_str
+                        assert "-c" in cmd_str
+                        assert "/test/config.yaml" in cmd_str
 
     def test_start_redirects_stdout_stderr_to_log(self, pm):
         """start 应将 stdout/stderr 重定向到日志文件。"""
         with mock.patch("subprocess.Popen") as mock_popen:
             with mock.patch.object(Path, "exists", return_value=True):
-                with mock.patch("builtins.open", mock.mock_open()):
-                    mock_process = mock.MagicMock()
-                    mock_process.pid = 1
-                    mock_popen.return_value = mock_process
+                with mock.patch.object(Path, "mkdir") as _mock_mkdir:
+                    with mock.patch("builtins.open", mock.mock_open()):
+                        mock_process = mock.MagicMock()
+                        mock_process.pid = 1
+                        mock_popen.return_value = mock_process
 
-                    log_path = Path("/log/gateway-out.log")
-                    pm.start(
-                        config_path=Path("/config.yaml"),
-                        venv_path=Path("/venv"),
-                        log_path=log_path,
-                    )
+                        log_path = Path("/log/gateway-out.log")
+                        pm.start(
+                            config_path=Path("/config.yaml"),
+                            venv_path=Path("/venv"),
+                            log_path=log_path,
+                        )
 
-                    kwargs = mock_popen.call_args[1]
-                    assert "stdout" in kwargs
-                    assert "stderr" in kwargs
+                        kwargs = mock_popen.call_args[1]
+                        assert "stdout" in kwargs
+                        assert "stderr" in kwargs
 
     def test_stop_sends_sigterm_then_sigkill(self, pm):
         """stop 应先发 SIGTERM，超时后发 SIGKILL。"""
@@ -534,81 +522,39 @@ class TestLogReader:
         result = reader.tail(log_path, lines=10)
         assert result.strip() == "only line"
 
-    @pytest.mark.asyncio
-    async def test_stream_nonexistent_file(self, tmp_dir):
+    def test_stream_nonexistent_file(self, tmp_dir):
         """stream 不存在的文件返回 None。"""
         reader = LogReader()
-        result = await reader.stream(tmp_dir / "nonexistent.log")
+        result = reader.stream(tmp_dir / "nonexistent.log")
         assert result is None
 
+    def test_stream_incremental(self, tmp_dir):
+        """stream 增量读取仅返回新增内容。"""
+        log_path = tmp_dir / "test.log"
+        log_path.write_text("line1\nline2\n")
 
-class TestSystemdRenderer:
-    """systemd unit 渲染测试。"""
+        reader = LogReader()
+        # 首次 stream 初始化偏移量到文件末尾
+        result = reader.stream(log_path)
+        assert result is None  # 无新内容
 
-    def test_render_contains_instance_name(self):
-        """渲染结果应包含实例名。"""
-        renderer = SystemdRenderer()
-        result = renderer.render(
-            instance_name="my-app",
-            config_path=Path("/etc/nanobee/my-app/config.yaml"),
-            data_dir=Path("/nanobee-data/my-app"),
-        )
-        assert "my-app" in result
-        assert "nanobee-my-app" in result
+        # 追加新内容
+        with open(log_path, "a") as f:
+            f.write("line3\nline4\n")
 
-    def test_render_contains_security_hardening(self):
-        """渲染结果应包含安全加固选项。"""
-        renderer = SystemdRenderer()
-        result = renderer.render(
-            instance_name="test",
-            config_path=Path("/etc/nanobee/test/config.yaml"),
-            data_dir=Path("/nanobee-data/test"),
-        )
-        assert "ProtectSystem=full" in result
-        assert "NoNewPrivileges=yes" in result
-        assert "PrivateDevices=yes" in result
-        assert "ProtectHome=read-only" in result
+        result = reader.stream(log_path)
+        assert result is not None
+        assert "line3" in result
+        assert "line1" not in result  # 旧内容不返回
 
-    def test_render_contains_exec_commands(self):
-        """渲染结果应包含正确的 ExecStart/ExecStop。"""
-        renderer = SystemdRenderer()
-        result = renderer.render(
-            instance_name="prod",
-            config_path=Path("/etc/nanobee/prod/config.yaml"),
-            data_dir=Path("/nanobee-data/prod"),
-        )
-        assert "svc start prod" in result
-        assert "svc stop prod" in result
+    def test_stream_first_read_no_content(self, tmp_dir):
+        """已有内容文件首次 stream 返回 None（偏移量定位到末尾）。"""
+        log_path = tmp_dir / "test.log"
+        log_path.write_text("old content")
 
-    def test_install_writes_to_systemd_dir(self, tmp_path):
-        """install 应将文件写入正确路径。"""
-        renderer = SystemdRenderer()
-
-        with mock.patch("pathlib.Path.mkdir"):
-            with mock.patch("shutil.move"):
-                with mock.patch.object(Path, "write_text") as mock_write:
-                    with mock.patch.object(Path, "chmod") as _mock_chmod:
-                        renderer.install(
-                            instance_name="my-app",
-                            config_path=Path("/etc/nanobee/my-app/config.yaml"),
-                            data_dir=Path("/nanobee-data/my-app"),
-                        )
-                        mock_write.assert_called_once()
-
-    def test_install_returns_unit_path(self):
-        """install 应返回 unit 文件路径。"""
-        renderer = SystemdRenderer()
-
-        with mock.patch("shutil.move"):
-            with mock.patch.object(Path, "write_text"):
-                with mock.patch.object(Path, "chmod"):
-                    unit_path = renderer.install(
-                        instance_name="my-app",
-                        config_path=Path("/etc/nanobee/my-app/config.yaml"),
-                        data_dir=Path("/nanobee-data/my-app"),
-                    )
-                    assert "my-app" in str(unit_path)
-                    assert unit_path.suffix == ".service"
+        reader = LogReader()
+        result = reader.stream(log_path)
+        assert result is None
 
 
 @pytest.mark.asyncio
@@ -618,25 +564,23 @@ class TestGatewayRuntime:
     @pytest.fixture
     def runtime(self, tmp_path):
         """创建 GatewayRuntime 实例（全部 mock）。"""
-        config = GatewayConfig()
         discovery = mock.MagicMock(spec=InstanceDiscovery)
         process_mgr = mock.MagicMock(spec=ProcessManager)
         pid_mgr = mock.MagicMock(spec=PidManager)
         health_checker = mock.MagicMock(spec=HealthChecker)
         log_reader = mock.MagicMock(spec=LogReader)
-        systemd_renderer = mock.MagicMock(spec=SystemdRenderer)
 
         # 默认 pid_dir
-        pid_mgr._pid_dir = tmp_path / "pid"
+        pid_mgr.pid_dir = tmp_path / "pid"
 
         return GatewayRuntime(
-            config=config,
+            data_dir=str(tmp_path),
             discovery=discovery,
             process_manager=process_mgr,
             pid_manager=pid_mgr,
             health_checker=health_checker,
             log_reader=log_reader,
-            systemd_renderer=systemd_renderer,
+            venv_path=tmp_path,
         )
 
     def _make_instance(self, name="test", port=8080):
@@ -688,7 +632,8 @@ class TestGatewayRuntime:
         results = await runtime.stop("test")
 
         assert results["test"] is True
-        runtime._process_manager.stop.assert_called_once_with(pid=12345, timeout=20.0)
+        # _stop_one 通过 run_in_executor 调用 stop，参数为位置传递
+        runtime._process_manager.stop.assert_called_once_with(12345, 20.0)
         runtime._pid_manager.remove.assert_called_once_with("pid-test")
 
     async def test_stop_not_running(self, runtime):
@@ -727,7 +672,7 @@ class TestGatewayRuntime:
             results = await runtime.restart("test")
 
         assert results["test"] is True
-        runtime._process_manager.stop.assert_called_once()
+        runtime._process_manager.stop.assert_called_once_with(12345, 20.0)
         runtime._process_manager.start.assert_called_once()
 
     async def test_status_with_running_instance(self, runtime):
@@ -775,13 +720,4 @@ class TestGatewayRuntime:
         runtime._log_reader.tail.assert_called_once_with(inst.log_path, lines=10)
         assert "line 1" in result
 
-    async def test_install(self, runtime):
-        """install 应调用 systemd_renderer.install。"""
-        inst = self._make_instance()
-        runtime._discovery.discover.return_value = [inst]
-        runtime._systemd_renderer.install.return_value = Path("/etc/systemd/system/nanobee-test.service")
 
-        results = runtime.install("test")
-
-        assert "test" in results
-        runtime._systemd_renderer.install.assert_called_once()

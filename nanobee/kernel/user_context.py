@@ -126,10 +126,6 @@ class UserContext:
         """确保 identity.yaml 存在，不存在则创建默认"""
         if self.meta_file.exists():
             return
-        self.base_dir.mkdir(parents=True, exist_ok=True)
-        # 同时创建 workspace/ 目录
-        workspace_dir = self.base_dir / "workspace"
-        workspace_dir.mkdir(parents=True, exist_ok=True)
         default = dict(_USER_META_DEFAULTS)
         default["user_id"] = self.user_id
         with open(self.meta_file, "w", encoding="utf-8") as f:

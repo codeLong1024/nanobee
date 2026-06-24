@@ -10,9 +10,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any
-
 from nanobee.agent.tools.base import Tool, tool_parameters
-
 from nanobee.utils.logger import logger
 
 
@@ -68,9 +66,32 @@ class MessageTool(Tool):
         content = kwargs.get("content", "")
         media = kwargs.get("media", [])
 
+        # 校验 media 路径：本地文件必须存在，避免 LLM 以为发送成功但实际传了无效路径
+        invalid_paths: list[str] = []
+        valid_media: list[str] = []
+        for p in media or []:
+            if not isinstance(p, str):
+                invalid_paths.append(repr(p))
+                continue
+            # HTTP/HTTPS URL 不校验存在性（需要在发送阶段验证）
+            if p.startswith(("http://", "https://")):
+                valid_media.append(p)
+                continue
+            path = Path(p)
+            if path.is_absolute() and not path.exists():
+                invalid_paths.append(p)
+                continue
+            valid_media.append(p)
+
+        if invalid_paths:
+            return (
+                f"错误：以下 media 文件路径不存在或无效：{', '.join(invalid_paths)}。"
+                f"请检查文件是否已正确生成，并传入有效的绝对路径。"
+            )
+
         # Build a friendly summary for the LLM
         filename_hints: list[str] = []
-        for path in media or []:
+        for path in valid_media:
             try:
                 filename_hints.append(Path(path).name)
             except Exception:

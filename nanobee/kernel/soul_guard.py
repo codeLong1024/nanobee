@@ -145,7 +145,7 @@ class SoulGuard:
             })
             # 类型化运行时事件
             from nanobee.events.runtime_events import SoulViolation as SoulViolationEvent
-            self.kernel.runtime_events.publish_nowait(SoulViolationEvent(
+            await self.kernel.runtime_events.publish(SoulViolationEvent(
                 path=str(path),
                 content_preview=content[:100],
             ))

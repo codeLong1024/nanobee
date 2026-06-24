@@ -165,19 +165,18 @@ class AgentLoop:
         max_messages: int = 120,
         preset_snapshot_loader: Callable[..., ProviderSnapshot] | None = None,
         provider_snapshot_loader: Callable[..., ProviderSnapshot] | None = None,
-        _kernel: Any = None,
+        _message_injector: Callable[[InboundMessage], None] | None = None,
     ) -> None:
         self.provider = provider
         self.workspace = workspace
-        self._kernel = _kernel  # Kernel 引用（供子代理 _injector 调用 inject_message）
+        self._message_injector = _message_injector  # 消息注入回调（供子代理 _injector 触发新 turn）
         self.context_manager = context_manager
         self.context_pipeline = context_pipeline
         self.session_manager = session_manager
         self.event_bus = event_bus
         self.plugin_manager = plugin_manager
         self.skill_manager = skill_manager
-        from nanobee.kernel.router import ContextRouter
-        self._router = router or ContextRouter()
+        self._router = router
         self.presets = ModelPresetManager(
             model_presets=model_presets,
             preset_snapshot_loader=preset_snapshot_loader,
@@ -218,7 +217,7 @@ class AgentLoop:
 
         # 先注册工具到 self.tools（注册顺序无关，self.tools 是同一个对象引用）
         self._register_message_tool()
-        self._register_plugin_tools()
+        self.register_plugin_tools()
         self._register_skill_tools()
 
         # 初始化 SubagentManager（在工具注册之后，确保 tools_registry 已填充）
@@ -244,13 +243,12 @@ class AgentLoop:
         skill_manager: Any = None,
         router: Any = None,
         config: Config | dict | None = None,
-        kernel_ref: Any = None,
+        message_injector: Callable[[InboundMessage], None] | None = None,
         **extra: Any,
     ) -> AgentLoop:
         """从 Kernel 子组件创建 AgentLoop。
 
-        相比直接传入 ``kernel`` 对象的 duck-typing 方式，
-        显式参数使契约更稳定，不依赖 kernel 内部的属性命名。
+        显式参数使契约更稳定，回调端口替代直接持有 Kernel 引用。
 
         Args:
             provider: LLM Provider 实例
@@ -263,6 +261,7 @@ class AgentLoop:
             skill_manager: 技能管理器
             router: 路由器（可选）
             config: 配置对象（Config 实例，用于读取 agents.defaults）
+            message_injector: 消息注入回调（同步 callable，无需 await）
             **extra: 传递给 AgentLoop.__init__ 的额外参数
         """
         # 统一为 Config 对象（允许传入 dict 保持向后兼容）
@@ -297,9 +296,75 @@ class AgentLoop:
             plugin_manager=plugin_manager,
             skill_manager=skill_manager,
             router=router,
-            _kernel=kernel_ref,
+            _message_injector=message_injector,
             **extra,
         )
+
+    # 公开 API：供 Kernel 调用的消息入口
+
+    async def dispatch(
+        self,
+        msg: "InboundMessage",
+        *,
+        extra_hook: Any = None,
+        on_progress: Any = None,
+    ) -> "OutboundMessage | None":
+        """公开消息入口：排队 → 加锁 → 处理 → 清理。
+
+        Kernel 通过此方法派发消息，不再直接管理 AgentLoop 的内部队列和锁。
+
+        Args:
+            msg: 入站消息
+            extra_hook: 可选的流式 Hook
+            on_progress: 工具执行进度回调
+
+        Returns:
+            Agent 回复（OutboundMessage，含 .content 和 .media）
+        """
+        key = msg.context_id
+        pending = asyncio.Queue(maxsize=20)
+        self._pending_queues[key] = pending
+
+        try:
+            async with self._lock_manager.acquire(key):
+                return await self._process_message(
+                    msg,
+                    pending_queue=pending,
+                    extra_hook=extra_hook,
+                    on_progress=on_progress,
+                )
+        finally:
+            queue = self._pending_queues.pop(key, None)
+            if queue is not None:
+                leftover = 0
+                while not queue.empty():
+                    try:
+                        queue.get_nowait()
+                        leftover += 1
+                    except asyncio.QueueEmpty:
+                        break
+                if leftover:
+                    logger.info("上下文 {} 有 {} 条剩余消息被丢弃", key, leftover)
+
+    def try_inject(self, msg: "InboundMessage") -> bool:
+        """中轮注入消息到正在运行的 turn。
+
+        Args:
+            msg: 待注入的入站消息
+
+        Returns:
+            True 表示消息已放入队列，False 表示当前无活跃 turn 可注入
+        """
+        key = msg.context_id
+        if key in self._pending_queues:
+            try:
+                self._pending_queues[key].put_nowait(msg)
+                logger.debug("消息已中轮注入到上下文 {}", key)
+                return True
+            except asyncio.QueueFull:
+                logger.warning("上下文 {} 待处理队列已满，丢弃注入消息", key)
+                return False
+        return False
 
     def _register_message_tool(self) -> None:
         """注册 ``message`` 工具，让 LLM 可以结构化携带 media 参数发送文件。"""
@@ -307,10 +372,10 @@ class AgentLoop:
         self.tools.register(MessageTool())
         logger.info("message 工具已注册")
 
-    def _register_plugin_tools(self) -> None:
+    def register_plugin_tools(self) -> None:
         """从 PluginManager 注册工具插件到 ToolRegistry。
 
-        注意：此方法需要在插件启用完成后调用（即在 Kernel.boot() 之后）。
+        公开 API：供 Kernel.boot() 在插件启用完成后调用。
         仅注册已启用的工具插件，跳过配置为禁用的插件。
         """
         if self.plugin_manager is None:
@@ -451,10 +516,10 @@ class AgentLoop:
                 session_id_override=session_id,
                 metadata={"_subagent_auto_trigger": True},
             )
-            if self._kernel is not None:
-                self._kernel.inject_message(trigger_msg)
+            if self._message_injector is not None:
+                self._message_injector(trigger_msg)
             else:
-                logger.error("_injector: kernel 引用未设置，无法注入子代理结果")
+                logger.error("_injector: message_injector 未设置，无法注入子代理结果")
 
         return SubagentManager(
             provider=self.provider,

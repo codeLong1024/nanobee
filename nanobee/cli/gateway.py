@@ -16,10 +16,9 @@ from typing import Any
 
 import click
 
+from nanobee.bootstrap import bootstrap
 from nanobee.config.loader import load_config
-from nanobee.kernel import NanobeeKernel
 from nanobee.kernel.process import run_signal_guard
-from nanobee.providers.factory import make_provider
 from nanobee.utils.logger import logger
 from nanobee.utils.observability import init_log_file_sink, setup_structured_logging
 
@@ -71,13 +70,12 @@ def gateway(
     setup_structured_logging(level=log_level)
     logger.debug("Gateway 命令已启动，verbose={}", verbose)
 
-    # 自动发现配置文件
+    # 自动发现配置文件（仅搜索当前目录，不硬编码 ~/.nanobee）
     config_path: Path | None
     if config:
         config_path = Path(config)
     else:
-        home_config = Path.home() / ".nanobee" / "nanobee.yaml"
-        candidates = [home_config, Path("nanobee.yaml"), Path.cwd() / "nanobee.yaml"]
+        candidates = [Path("nanobee.yaml"), Path.cwd() / "nanobee.yaml"]
         config_path = next((p for p in candidates if p.is_file()), None)
         if config_path:
             logger.debug("Auto-discovered config: {}", config_path)
@@ -111,12 +109,7 @@ def _run_gateway(
         port: 健康检查 HTTP 端口
     """
     async def _run():
-        # 创建 provider
-        provider = make_provider(cfg)
-        click.echo(f"  Provider 已初始化: {provider.__class__.__name__}")
-
         # 确定插件目录：默认相对于 nanobee 包位置（兼容 pip install 和 tar 部署）
-        kernel_config = dict(cfg)
         effective_plugin_dirs = []
         if plugin_dir:
             effective_plugin_dirs = [plugin_dir]
@@ -128,14 +121,13 @@ def _run_gateway(
 
         logger.debug("插件目录: {}", effective_plugin_dirs)
 
-        # 创建内核
-        kernel = NanobeeKernel(config=kernel_config, plugin_dirs=effective_plugin_dirs)
-        await kernel.boot_with_provider(provider, model=cfg.agents.defaults.model)
-
-        # 启动后台服务（通道插件，作为后台任务不阻塞）
-        logger.debug("正在启动后台通道服务...")
-        await kernel.boot_services()
-        logger.debug("后台通道服务已启动（后台任务）")
+        # 组合根启动（完整服务栈：含通道）
+        kernel = await bootstrap(
+            config=cfg,
+            model=cfg.agents.defaults.model,
+            plugin_dirs=effective_plugin_dirs,
+            start_services=True,
+        )
 
         click.echo("🚪 Nanobee Gateway 已启动")
         click.echo(f"  默认模型: {cfg.agents.defaults.model}")

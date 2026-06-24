@@ -10,7 +10,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import os
 import tempfile
 from pathlib import Path
@@ -33,6 +32,11 @@ class PidManager:
         """
         self._pid_dir = pid_dir
         self._pid_dir.mkdir(parents=True, exist_ok=True)
+
+    @property
+    def pid_dir(self) -> Path:
+        """PID 文件所在目录。"""
+        return self._pid_dir
 
     # ------------------------------------------------------------------
     # 公开方法
@@ -58,6 +62,11 @@ class PidManager:
             # 确保元数据落盘
             self._fsync_dir()
         except OSError:
+            # 清理临时文件
+            try:
+                os.unlink(tmp_path)
+            except FileNotFoundError:
+                pass
             logger.exception("Failed to write PID file for instance {}", name)
             raise
 
@@ -116,21 +125,6 @@ class PidManager:
         except FileNotFoundError:
             pass
         return result
-
-    @staticmethod
-    def instance_name_from_config(config_path: Path) -> str:
-        """根据配置文件路径生成唯一实例名。
-
-        使用配置文件绝对路径的 SHA1 生成 16 位十六进制标识，
-        避免多实例 PID 文件命名冲突。
-
-        Args:
-            config_path: 配置文件绝对路径。
-
-        Returns:
-            16 位十六进制实例名。
-        """
-        return hashlib.sha1(str(config_path).encode()).hexdigest()[:16]
 
     # ------------------------------------------------------------------
     # 内部方法

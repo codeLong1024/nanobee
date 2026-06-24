@@ -4,6 +4,7 @@
 # 数据目录（所有运行时数据的根目录，包括用户上下文、记忆、cron 任务等）
 # 相对路径基于配置文件所在目录解析
 # 实例级技能自动从 <data_dir>/skills/ 加载（管理员在此配属共享技能）
+# 多实例场景下每个实例有独立的 config.yaml，在各自 data_dir 子目录中
 data_dir: "~/.nanobee"
 
 # 网关配置（端口与多实例运行时管理）
@@ -153,7 +154,7 @@ channels:
 # skills:
 #   enabled:
 #     - company-risk-scanner
-#     - daily-report
+#     - <skill-name>
 
 # 安全配置
 # tools:

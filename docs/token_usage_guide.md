@@ -183,7 +183,7 @@ class CustomRunner(AgentRunner):
 
 ## 配置文件
 
-从 `~/.nanobee/trade-risk/config.yaml` 读取：
+从 `<data_dir>/config.yaml` 读取：
 
 ```yaml
 providers:

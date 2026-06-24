@@ -17,9 +17,8 @@ from typing import Any
 
 import click
 
+from nanobee.bootstrap import bootstrap
 from nanobee.config.loader import load_config
-from nanobee.kernel import NanobeeKernel
-from nanobee.providers.factory import make_provider
 from nanobee.utils.observability import init_log_file_sink, setup_structured_logging
 
 from nanobee.utils.logger import logger
@@ -78,13 +77,12 @@ def run(
     setup_structured_logging(level=log_level)
     logger.debug("CLI run 命令已启动，verbose={}，session={}", verbose, session_id)
 
-    # 自动发现配置文件
+    # 自动发现配置文件（仅搜索当前目录，不硬编码 ~/.nanobee）
     config_path: Path | None
     if config:
         config_path = Path(config)
     else:
-        home_config = Path.home() / ".nanobee" / "nanobee.yaml"
-        candidates = [home_config, Path("nanobee.yaml"), Path.cwd() / "nanobee.yaml"]
+        candidates = [Path("nanobee.yaml"), Path.cwd() / "nanobee.yaml"]
         config_path = next((p for p in candidates if p.is_file()), None)
         if config_path:
             logger.debug("Auto-discovered config: {}", config_path)
@@ -120,10 +118,6 @@ def _run_agent_session(
         session_id: 会话 ID
     """
     async def _run():
-        # 创建 provider
-        provider = make_provider(cfg)
-        click.echo(f"  Provider 已初始化: {provider.__class__.__name__}")
-
         # 确定插件目录
         effective_plugin_dirs = []
         if plugin_dir:
@@ -133,9 +127,13 @@ def _run_agent_session(
         else:
             effective_plugin_dirs = ["builtin", "plugins"]
 
-        # 创建内核（轻量模式：不启动通道）
-        kernel = NanobeeKernel(config=cfg, plugin_dirs=effective_plugin_dirs)
-        await kernel.boot_with_provider(provider, model=cfg.agents.defaults.model)
+        # 组合根启动（轻量模式：不启动通道）
+        kernel = await bootstrap(
+            config=cfg,
+            model=cfg.agents.defaults.model,
+            plugin_dirs=effective_plugin_dirs,
+            start_services=False,
+        )
 
         click.echo("🤖 Nanobee Agent 已启动")
         click.echo(f"  默认模型: {cfg.agents.defaults.model}")

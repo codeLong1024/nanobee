@@ -1,7 +1,7 @@
-"""跨平台进程控制模块。
+"""进程控制模块。
 
 提供子进程的启动、停止和存活检测功能。
-POSIX 使用 os.kill + signal，Windows 使用 ctypes TerminateProcess。
+依赖 os.kill + signal（Linux 环境）。
 
 遵循框架无知论：本模块只提供机制（进程控制），
 不持有策略（何时启动、何时停止）。
@@ -19,10 +19,10 @@ from loguru import logger
 
 
 class ProcessManager:
-    """跨平台进程生命周期管理器。
+    """进程生命周期管理器。
 
     负责启动 nanobee gateway 子进程、优雅终止（SIGTERM→SIGKILL）
-    和进程存活检测。
+    和进程存活检测。用于 Linux 环境。
     """
 
     # 轮询间隔（秒），用于 stop 时在 SIGTERM 和 SIGKILL 之间等待
@@ -61,6 +61,8 @@ class ProcessManager:
             str(config_path),
         ]
 
+        # 确保日志目录存在
+        log_path.parent.mkdir(parents=True, exist_ok=True)
         log_file = open(str(log_path), "a")
 
         try:
@@ -74,6 +76,9 @@ class ProcessManager:
             log_file.close()
             logger.exception("Failed to start gateway process")
             raise
+        finally:
+            # 子进程启动后，父进程侧关闭该句柄，避免泄漏
+            log_file.close()
 
         logger.info(
             "Gateway process started: pid={}, config={}",
@@ -87,6 +92,8 @@ class ProcessManager:
 
         先发送 SIGTERM，在 timeout 秒内轮询等待退出。
         超时后发送 SIGKILL 强制终止。
+
+        注意：此方法含 time.sleep 轮询，应在单独线程中调用避免阻塞事件循环。
 
         Args:
             pid: 要终止的进程 ID。
@@ -147,9 +154,9 @@ class ProcessManager:
             return True
 
     def _send_signal(self, pid: int, sig: int) -> None:
-        """跨平台发送信号。
+        """POSIX 发送信号。
 
-        POSIX 使用 os.kill，Windows 使用 TerminateProcess。
+        使用 os.kill 向目标进程发送信号。
         """
         try:
             os.kill(pid, sig)
