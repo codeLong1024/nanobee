@@ -320,30 +320,32 @@ class NanobeeDingTalkHandler(ChatbotHandler):
             else None
         ) or parsed.conversation_id or ""
 
-        token = (
-            await self.channel.sender.get_access_token()
+        # Pass the token provider callable (not a pre-resolved string)
+        # so that retry attempts can fetch fresh tokens.
+        token_provider = (
+            self.channel.sender.get_access_token
             if self.channel.sender
             else None
         )
 
-        if http and token:
+        if http and token_provider:
             await add_thinking_emoji(
-                http, token, robot_code, msg_id, open_conv_id,
+                http, token_provider, robot_code, msg_id, open_conv_id,
             )
 
         emotion_ctx = EmotionContext(
             http_client=http,
-            token=token,
+            token=token_provider,
             robot_code=robot_code,
             open_msg_id=msg_id,
             open_conversation_id=open_conv_id,
-        ) if http and token else None
+        ) if http and token_provider else None
         if emotion_ctx and self.channel.sender:
             self.channel.sender._emotion_contexts[parsed.msg_id] = emotion_ctx
 
         card_instance_id: str | None = None
         card_manager = self.channel.card_manager
-        if card_manager and http and token and config.streaming:
+        if card_manager and http and token_provider and config.streaming:
             try:
                 is_group = parsed.conversation_type == "2"
                 target = (
@@ -390,9 +392,9 @@ class NanobeeDingTalkHandler(ChatbotHandler):
                     await card_manager.fail_card(card_instance_id, str(e))
                 except Exception:
                     pass
-            if http and token:
+            if http and token_provider:
                 await recall_thinking_emoji(
-                    http, token, robot_code, msg_id, open_conv_id,
+                    http, token_provider, robot_code, msg_id, open_conv_id,
                 )
 
 
