@@ -198,7 +198,7 @@ class TestBuiltinCommands:
         result = await router.dispatch(sample_msg.content, ctx)
         assert result is not None
         assert "消息数: 3" in result.content
-        assert "Turn 状态: 空闲" in result.content
+        assert "当前状态: 空闲等待" in result.content
         assert "user_a" in result.content
 
     @pytest.mark.asyncio
@@ -225,7 +225,7 @@ class TestBuiltinCommands:
         ctx = CommandContext(msg=sample_msg, kernel=kernel)
         sample_msg.content = "/status"
         result = await router.dispatch(sample_msg.content, ctx)
-        assert "Turn 状态: 运行中" in result.content
+        assert "当前状态: 正在处理" in result.content
 
         # 清理
         active_task.cancel()

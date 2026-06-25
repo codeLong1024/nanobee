@@ -539,6 +539,13 @@ class ToolShellPlugin(ToolPlugin):
             ws = str(process_workspace) if process_workspace else cwd
             extra_ro_bind = list(current_bwrap_ro_bind() or [])
 
+            # 自动从 ContextSandbox 获取只读根目录（如内置/实例技能目录），
+            # 映射为 bwrap 只读挂载，让 LLM 的 execute_shell 脚本可用
+            sandbox_ctx = _current_sandbox()
+            if sandbox_ctx:
+                for ro_root in sandbox_ctx.read_only_roots:
+                    extra_ro_bind.append(str(ro_root))
+
             original_command = command
 
             # 配置声明的额外只读挂载（source:target 格式，如 venv 或 SDK 目录）

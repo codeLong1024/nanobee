@@ -5,10 +5,8 @@ from __future__ import annotations
 
 class AICardStatus:
     """DingTalk AI Card status codes."""
-    PROCESSING = "1"
     INPUTING = "2"
     FINISHED = "3"
-    EXECUTING = "4"
     FAILED = "5"
 
 

@@ -6,8 +6,8 @@
     python package_skill.py <path/to/skill-folder> [output-directory]
 
 示例:
-    python package_skill.py contexts/user_001/skills/my_skill
-    python package_skill.py contexts/user_001/skills/my_skill ./dist
+    python package_skill.py ./my_skills/my_skill
+    python package_skill.py ./my_skills/my_skill ./dist
 """
 
 import sys

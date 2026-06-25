@@ -51,7 +51,7 @@ _CATALOG: dict[str, Notification] = {
     ),
     "command_status": Notification(
         kind="command_status",
-        content="**运行时状态**\n- 用户: {user_id}\n- 会话: {session_id}\n- 消息数: {msg_count}\n- Turn 状态: {turn_status}\n- 当前锁定用户: {locked_users}",
+        content="**运行时状态**\n- 用户: {user_id}\n- 会话: {session_id}\n- 消息数: {msg_count}\n- 当前状态: {turn_status}\n- 当前锁定用户: {locked_users}",
     ),
     "command_help": Notification(
         kind="command_help",

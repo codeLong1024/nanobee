@@ -12,7 +12,6 @@ Reference: docs/dingtalk/emotion_reply.py
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 
 import httpx

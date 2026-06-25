@@ -11,7 +11,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import mimetypes
-import os
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urljoin, urlparse

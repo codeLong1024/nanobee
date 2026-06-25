@@ -5,18 +5,7 @@ description: "创建、编辑、管理技能（Skill）。技能是扩展 AI Age
 
 # Skill Creator
 
-通过读写文件管理技能。技能分两类：
-
-- **内置技能**：参考 system prompt `## 技能` 段中给出的绝对路径，用 `read_file` 读取参考格式
-- **用户技能**：`skills/<名称>/SKILL.md`（相对于你的工作目录），用 `write_file` 创建
-
-## 核心原则
-
-1. **精简至上**：只添加 Agent 尚未掌握的信息。审视每条信息："Agent 真的需要这个解释吗？"宁用简洁示例，不用冗长解释。
-2. **自由度匹配**：高自由度用文本说明，中自由度用伪代码/参数化脚本，低自由度用具体脚本。
-3. **渐进式披露**：元数据始终在上下文，SKILL.md 正文触发时加载，捆绑资源按需读取。保持 SKILL.md 在 500 行以内，超出则拆分到独立文件。
-
-## 技能目录结构
+通过读写文件管理技能。技能存放在 `skills/<名称>/` 目录下，格式为：
 
 ```
 <技能名称>/
@@ -28,7 +17,15 @@ description: "创建、编辑、管理技能（Skill）。技能是扩展 AI Age
 └── assets/       — 输出中使用的文件，不读入上下文
 ```
 
+## 核心原则
+
+1. **精简至上**：只添加 Agent 尚未掌握的信息。审视每条信息："Agent 真的需要这个解释吗？"宁用简洁示例，不用冗长解释。
+2. **自由度匹配**：高自由度用文本说明，中自由度用伪代码/参数化脚本，低自由度用具体脚本。
+3. **渐进式披露**：元数据始终在上下文，SKILL.md 正文触发时加载，捆绑资源按需读取。保持 SKILL.md 在 500 行以内，超出则拆分到独立文件。
+
 ### Frontmatter 字段
+
+与框架 `SkillMeta` 一致，只支持以下字段：
 
 | 字段 | 必需 | 说明 |
 |------|------|------|
@@ -64,7 +61,7 @@ description: "创建、编辑、管理技能（Skill）。技能是扩展 AI Age
 ### 3. 初始化
 
 ```bash
-python nanobee/skills/skill_creator/scripts/init_skill.py <名称> --path <路径> [--resources scripts,references,assets] [--examples]
+python <本SKILL.md所在目录>/scripts/init_skill.py <名称> --path <路径> [--resources scripts,references,assets] [--examples]
 ```
 
 脚本会创建目录、生成带 TODO 占位符的 SKILL.md、根据 `--resources` 创建资源目录。
@@ -82,7 +79,7 @@ python nanobee/skills/skill_creator/scripts/init_skill.py <名称> --path <路�
 ### 5. 打包
 
 ```bash
-python nanobee/skills/skill_creator/scripts/package_skill.py <技能目录> [输出目录]
+python <本SKILL.md所在目录>/scripts/package_skill.py <技能目录> [输出目录]
 ```
 
 自动校验 frontmatter 格式和命名规范，通过后创建 `.skill` 文件（Zip 格式）。
@@ -99,7 +96,7 @@ python nanobee/skills/skill_creator/scripts/package_skill.py <技能目录> [输
 ## 校验
 
 ```bash
-python nanobee/skills/skill_creator/scripts/quick_validate.py <技能目录>
+python <本SKILL.md所在目录>/scripts/quick_validate.py <技能目录>
 ```
 
 也可在打包时自动校验。编辑用户技能后，框架自动发现（缓存 TTL 2 秒），或通过 `invalidate_cache` 立即生效。
