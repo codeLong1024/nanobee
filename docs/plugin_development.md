@@ -7,6 +7,7 @@ Nanobee 的插件体系遵循**框架无知论**（Framework Ignorance Principle
 ## 目录
 
 - [插件体系概述](#插件体系概述)
+- [内置插件 vs 实例级插件](#内置插件-vs-实例级插件)
 - [插件类型](#插件类型)
 - [快速开始：最简插件](#快速开始最简插件)
 - [插件生命周期](#插件生命周期)
@@ -53,9 +54,126 @@ Nanobee 的插件体系遵循**框架无知论**（Framework Ignorance Principle
 └──────────────────────────────────────────┘
 ```
 
-插件独立打包为目录，目录放于 `plugins/` 目录下（或 `nanobee/builtin/` 作为内置插件）。
+插件独立打包为目录，有两种部署位置：
+
+| 类型 | 路径 | 说明 |
+|------|------|------|
+| **内置插件** | `<package>/builtin/` | 框架自带，始终自动加载，通过 `blacklist` 禁用 |
+| **实例级插件** | `<data-dir>/plugins/` | 跟随实例，自动发现（无需配置），与实例技能同机制 |
 
 ---
+
+## 内置插件 vs 实例级插件
+
+框架遵循**框架无知论**——不强制用户配置插件路径。两种插件都从固定目录自动发现：
+
+```
+nanobee/                              # 框架包
+├── builtin/                          # 内置插件（打包分发）
+│   ├── tool_fs/
+│   ├── tool_shell/
+│   └── ...
+
+<data-dir>/                           # 实例根目录（如 ~/.nanobee/ 或 /nanobee-data/<instance>/）
+├── config.yaml                       # 实例配置（不再需要 plugin_dirs 字段）
+├── plugins/                          # 实例级插件（自动发现）
+│   └── <plugin-name>/
+│       ├── plugin.toml
+│       ├── plugin.py
+│       ├── tests/                    # 测试放在插件目录内
+│       └── ...                       # 同级模块可通过 from .xxx import 相对导入
+├── skills/                           # 实例技能（与插件同机制）
+└── users/
+```
+
+**关键规则：**
+
+1. **实例插件自动发现**：`<data-dir>/plugins/` 目录存在即自动扫描加载，无需在 `config.yaml` 中配置 `plugin_dirs`
+2. **`plugin_dirs` 仅用于覆盖**：当插件放在非默认路径时，通过 `plugin_dirs: [<custom-path>]` 指定
+3. **相对导入原生可用**：PluginManager 为每个插件创建独立命名空间包，`from .xxx import yyy` 正常工作，不污染全局 `sys.path`
+4. **通过 `blacklist` 禁用**：`agents.defaults.blacklist: [<plugin-name>]` 可禁用内置或实例插件
+
+**实例级插件示例：**
+
+```yaml
+# <data-dir>/config.yaml
+data_dir: "<data-dir>"
+# plugin_dirs 不需要！实例插件从 <data-dir>/plugins/ 自动发现
+agents:
+  defaults:
+    blacklist:
+      - <builtin-plugin-to-disable>     # 禁用某个内置插件
+```
+
+```
+<data-dir>/plugins/
+└── <plugin-name>/
+    ├── plugin.toml       # name 字段定义插件名
+    ├── plugin.py         # 主模块
+    ├── __init__.py       # 可选，通常为空
+    ├── helper.py         # 同级模块，用 from .helper import xxx 导入
+    └── tests/            # 测试（不属于框架项目，实例自行维护）
+        ├── conftest.py   # 创建临时 Kernel，通过 PluginManager 加载本插件
+        └── test_xxx.py
+```
+
+**实例级插件测试指引：**
+
+实例插件的测试**不应**写在 nanobee 框架项目的 `tests/` 中。测试文件放在插件自己的 `tests/` 目录下，通过 PluginManager 加载：
+
+```python
+# <data-dir>/plugins/<plugin-name>/tests/conftest.py
+from pathlib import Path
+import pytest
+from nanobee.kernel import NanobeeKernel
+from nanobee.kernel.core_parser import CoreMDParser
+
+PLUGIN_DIR = Path(__file__).resolve().parent.parent  # 即 <plugin-name>/ 目录
+
+
+@pytest.fixture
+async def kernel(tmp_path):
+    """创建临时 Kernel，通过 PluginManager 加载本插件。"""
+    CoreMDParser.create_default(tmp_path / "core.md")
+    config = {
+        "data_dir": str(tmp_path),
+        "core_md_path": str(tmp_path / "core.md"),
+        "plugin_dirs": ["__replace__", str(PLUGIN_DIR)],  # 只加载本插件
+    }
+    k = NanobeeKernel(config=config)
+    await k.boot()
+    yield k
+    await k.shutdown()
+
+
+@pytest.fixture
+async def plugin(kernel):
+    """获取已加载的插件实例。"""
+    return kernel.plugin_manager.get("<plugin-name>")
+```
+
+```python
+# <data-dir>/plugins/<plugin-name>/tests/test_csv.py
+@pytest.mark.asyncio
+async def test_parse_csv(plugin):
+    result = plugin._pipeline_parse_csv("name,age\nAlice,30", "test")
+    assert result["ok"]
+```
+
+**`plugin.toml` 中 `name` 字段示例：**
+
+```toml
+[plugin]
+name = "<plugin-name>"
+version = "0.1.0"
+description = "<插件描述>"
+type = "tool"
+
+[config]
+enabled = true
+```
+
+***
 
 ## 插件类型
 

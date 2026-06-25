@@ -90,13 +90,12 @@ def gateway(
     if log_cfg is not None:
         init_log_file_sink(log_cfg.model_dump() if hasattr(log_cfg, "model_dump") else log_cfg)
     # 运行 Gateway 服务
-    _run_gateway(cfg, plugin_dir, cfg.plugin_dirs, port=port)
+    _run_gateway(cfg, plugin_dir, port=port)
 
 
 def _run_gateway(
     cfg: Any,
-    plugin_dir: str | None,
-    config_plugin_dirs: list[str] | None = None,
+    plugin_dir: str | None = None,
     *,
     port: int | None = None,
 ) -> None:
@@ -109,15 +108,8 @@ def _run_gateway(
         port: 健康检查 HTTP 端口
     """
     async def _run():
-        # 确定插件目录：默认相对于 nanobee 包位置（兼容 pip install 和 tar 部署）
-        effective_plugin_dirs = []
-        if plugin_dir:
-            effective_plugin_dirs = [plugin_dir]
-        elif config_plugin_dirs:
-            effective_plugin_dirs = list(config_plugin_dirs)
-        else:
-            _package_builtin = str(Path(__file__).resolve().parent.parent / "builtin")
-            effective_plugin_dirs = [_package_builtin]
+        # 插件目录：仅传递 CLI --plugin-dir 覆盖，其余由内核自动发现
+        effective_plugin_dirs = [plugin_dir] if plugin_dir else None
 
         logger.debug("插件目录: {}", effective_plugin_dirs)
 

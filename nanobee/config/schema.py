@@ -78,6 +78,8 @@ class AgentDefaults(Base):
     memory_store_threshold: int = 20
     max_iterations: int = 10
     max_concurrent_subagents: int = 4
+    blacklist: list[str] = []
+    whitelist: list[str] = []
 
 
 class AgentsConfig(Base):

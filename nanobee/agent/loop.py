@@ -166,9 +166,11 @@ class AgentLoop:
         preset_snapshot_loader: Callable[..., ProviderSnapshot] | None = None,
         provider_snapshot_loader: Callable[..., ProviderSnapshot] | None = None,
         _message_injector: Callable[[InboundMessage], None] | None = None,
+        global_blacklist: list[str] | None = None,
     ) -> None:
         self.provider = provider
         self.workspace = workspace
+        self._global_blacklist = global_blacklist or []
         self._message_injector = _message_injector  # 消息注入回调（供子代理 _injector 触发新 turn）
         self.context_manager = context_manager
         self.context_pipeline = context_pipeline
@@ -286,6 +288,9 @@ class AgentLoop:
         if "mcp_servers" not in extra and hasattr(cfg, "mcp_servers"):
             extra["mcp_servers"] = cfg.mcp_servers
 
+        # 提取全局工具黑名单默认值（与 per-user blacklist 合并后用于 ToolCollector）
+        global_blacklist = list(defaults.blacklist)
+
         return cls(
             provider=provider,
             workspace=workspace,
@@ -297,6 +302,7 @@ class AgentLoop:
             skill_manager=skill_manager,
             router=router,
             _message_injector=message_injector,
+            global_blacklist=global_blacklist,
             **extra,
         )
 
@@ -1062,14 +1068,16 @@ class AgentLoop:
             user_ctx, self.tools.tool_names,
         )
 
-        # 构建 ToolCollector：用户白/黑名单 + 插件修改后的列表
+        # 构建 ToolCollector：全局默认 + 用户级白/黑名单 + 插件修改后的列表
         filtered_tool_names: list[str] | None = None
         try:
             from nanobee.kernel.tool_collector import ToolCollector
+            # 合并全局默认黑名单与用户级黑名单（去重，用户级优先）
+            merged_blacklist = list(dict.fromkeys(self._global_blacklist + user_ctx.blacklist))
             collector = ToolCollector(
                 tool_names=plugin_modified_tool_names,
                 whitelist=user_ctx.whitelist,
-                blacklist=user_ctx.blacklist,
+                blacklist=merged_blacklist,
             )
             if collector.has_restrictions:
                 filtered_tool_names = collector.allowed_tools

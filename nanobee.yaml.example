@@ -183,18 +183,36 @@ channels:
 #   json_format: false
 
 # 插件配置
+# 
+# 内置插件（nanobee/builtin/）默认自动加载，无需配置。
+# 实例级插件从 <data_dir>/plugins/ 自动发现，也无需声明（与实例技能一致）。
+# 
+# 禁用内置插件两种方式（blacklist 双重作用）：
+# 1. 插件级：使用插件名（如 tool_shell），阻止整个插件加载
+# 2. 工具级：使用工具名（如 read_file），仅隐藏该工具，插件仍加载
+#
+# 配置示例：
+# agents:
+#   defaults:
+#     blacklist:
+#       - <plugin-name>       # 插件级：整个插件不加载
+#       - <tool-name>         # 工具级：仅隐藏该工具，插件仍加载
 # plugins:
-#   tool_shell:
+#   <plugin-name>:
+#     # <plugin-specific-config>
 #     # 沙箱后端（子进程隔离，需要系统安装 bwrap）
 #     # sandbox: "bwrap"
-    #     # 额外只读挂载（source:target 格式，可选）
-    #     # 部署方声明需要映射到沙箱内的目录，如 venv site-packages 或 SDK 目录。
-    #     # 注意：必须整条挂载（如整个 .venv），bwrap 不支持在 --ro-bind 创建的
-    #     # 只读挂载点内部 mkdir 子挂载点，分拆子目录会导致所有命令失败。
-    #     # extra_mounts:
-    #     #   - "/home/user/.venv:/sandbox_venv"
-    #     #
-    #     # 沙箱内环境变量注入（可选，与 extra_mounts 配合使用）
-    #     # env:
-    #     #   PYTHONPATH: "/sandbox_venv/lib/python3.11/site-packages"
-    #     #   PATH: "/sandbox_venv/bin:$PATH"
+#     # 额外只读挂载（source:target 格式，可选）
+#     # extra_mounts:
+#     #   - "/path/to/venv:/sandbox_venv"
+#     # env:
+#     #   PYTHONPATH: "/sandbox_venv/lib/python3.11/site-packages"
+#
+# 仅当实例插件不在默认的 <data_dir>/plugins/ 时，才需要配置 plugin_dirs：
+# plugin_dirs:
+#   - <custom-plugin-dir>  # 相对 data_dir 或绝对路径
+#
+# 完全替换内置插件（仅限测试场景）：
+# plugin_dirs:
+#   - "__replace__"  # 标记：不加载内置插件
+#   - "<custom-builtin-dir>"  # 自定义插件目录

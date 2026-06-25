@@ -91,7 +91,8 @@ class EchoToolPlugin(ToolPlugin):
     config = {
         "data_dir": str(tmp_path),
         "core_md_path": str(tmp_path / "core.md"),
-        "plugin_dirs": [str(builtin_dir)],
+        # 使用 __replace__ 完全替换内置插件，避免加载代码内置的 nanobee/builtin/
+        "plugin_dirs": ["__replace__", str(builtin_dir)],
     }
 
     CoreMDParser.create_default(tmp_path / "core.md")
@@ -131,6 +132,7 @@ async def test_e2e_context_lifecycle(tmp_path):
     config = {
         "data_dir": str(tmp_path),
         "core_md_path": str(tmp_path / "core.md"),
+        "plugin_dirs": ["__replace__"],
     }
     CoreMDParser.create_default(tmp_path / "core.md")
 
@@ -172,6 +174,7 @@ async def test_e2e_soul_guard(tmp_path):
     config = {
         "data_dir": str(tmp_path),
         "core_md_path": str(tmp_path / "core.md"),
+        "plugin_dirs": ["__replace__"],
     }
     CoreMDParser.create_default(tmp_path / "core.md")
 

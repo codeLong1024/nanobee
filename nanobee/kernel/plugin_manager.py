@@ -92,9 +92,17 @@ class PluginManager:
         Args:
             kernel: NanobeeKernel 实例
             plugin_dirs: 插件目录列表，相对于工作目录
+                - None（默认）：使用 ["builtin", "plugins"]
+                - 空列表 []：不扫描任何目录
+                - 非空列表：使用指定目录
         """
         self.kernel = kernel
-        self.plugin_dirs = [Path(d) for d in (plugin_dirs or ["builtin", "plugins"])]
+        # 注意：plugin_dirs=[] 是合法的（不扫描任何目录），不能用 or
+        self.plugin_dirs = (
+            [Path(d) for d in plugin_dirs]
+            if plugin_dirs is not None
+            else [Path("builtin"), Path("plugins")]
+        )
         self._plugins: dict[str, NanobeePlugin] = {}  # name → instance
         self._descriptors: dict[str, PluginDescriptor] = {}  # name → descriptor
 
@@ -155,12 +163,26 @@ class PluginManager:
             relative_plugin_dir = descriptor.plugin_dir.resolve()
             path_hash = hashlib.md5(str(relative_plugin_dir).encode()).hexdigest()[:8]
             module_name = f"_nanobee_plugins.{path_hash}.{name}"
+            
+            # 确保父级命名空间包存在，使 from .xxx 相对导入原生可用（不污染 sys.path）
+            _parent = f"_nanobee_plugins.{path_hash}"
+            if _parent not in sys.modules:
+                _parent_pkg = type(sys)(_parent)
+                _parent_pkg.__path__ = [str(descriptor.plugin_dir)]
+                sys.modules[_parent] = _parent_pkg
+            if "_nanobee_plugins" not in sys.modules:
+                _root_pkg = type(sys)("_nanobee_plugins")
+                _root_pkg.__path__ = []
+                sys.modules["_nanobee_plugins"] = _root_pkg
+            
             spec = importlib.util.spec_from_file_location(module_name, main_module)
             if spec is None or spec.loader is None:
                 logger.error("插件 {} 的文件无法加载为 Python 模块: {}", name, main_module)
                 return None
             module = importlib.util.module_from_spec(spec)
             sys.modules[spec.name] = module
+            # 设 __path__ 使插件模块可作为包，支持 from .xxx import 相对导入
+            module.__path__ = [str(descriptor.plugin_dir)]
             spec.loader.exec_module(module)
 
             # 查找插件类（继承 NanobeePlugin 的类）
@@ -187,11 +209,23 @@ class PluginManager:
 
         在动态导入模块之前检查，避免加载未启用的插件导致 import 错误。
 
+        支持两种禁用方式：
+        1. channels.<name>.enabled: false（通道级禁用）
+        2. agents.defaults.blacklist 包含插件元数据名（插件级禁用）
+
         配置格式（在 nanobee.yaml 中）：
         ```yaml
+        # 方式 1：通道级禁用
         channels:
           channel_http:
-            enabled: false  # 禁用 HTTP API 通道
+            enabled: false
+
+        # 方式 2：插件级禁用（blacklist 用插件名，如 tool_shell, dingtalk）
+        # 提示：工具名（如 dingtalk_doc）走 ToolCollector 过滤
+        agents:
+          defaults:
+            blacklist:
+              - tool_shell
         ```
 
         Args:
@@ -204,21 +238,31 @@ class PluginManager:
         if cfg is None:
             return False
 
-        # 兼容 kernel.config 为对象或 dict
+        # 检查方式 1：channels.<name>.enabled: false
         if hasattr(cfg, "channels"):
             channels_cfg = cfg.channels
         else:
             channels_cfg = cfg.get("channels", {})
 
-        if not isinstance(channels_cfg, dict):
-            return False
+        if isinstance(channels_cfg, dict):
+            plugin_cfg = channels_cfg.get(name)
+            if isinstance(plugin_cfg, dict):
+                if plugin_cfg.get("enabled", True) is False:
+                    return True
 
-        plugin_cfg = channels_cfg.get(name)
-        if not isinstance(plugin_cfg, dict):
-            return False
+        # 检查方式 2：agents.defaults.blacklist
+        if hasattr(cfg, "agents"):
+            blacklist = getattr(getattr(cfg.agents, "defaults", None), "blacklist", None)
+        elif isinstance(cfg, dict):
+            blacklist = cfg.get("agents", {}).get("defaults", {}).get("blacklist")
+        else:
+            blacklist = None
 
-        # 如果配置了 enabled: false，则禁用该插件
-        return plugin_cfg.get("enabled", True) is False
+        if isinstance(blacklist, list) and name in blacklist:
+            logger.debug("插件 {} 在 agents.defaults.blacklist 中", name)
+            return True
+
+        return False
 
     def _find_plugin_class(self, module: Any, plugin_type: str) -> Type[NanobeePlugin] | None:
         """在模块中查找具体的插件类，排除导入的抽象基类。

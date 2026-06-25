@@ -98,13 +98,12 @@ def run(
         init_log_file_sink(log_cfg.model_dump() if hasattr(log_cfg, "model_dump") else log_cfg)
 
     # 创建内核并运行会话（轻量模式）
-    _run_agent_session(cfg, plugin_dir, cfg.plugin_dirs, message, session_id)
+    _run_agent_session(cfg, plugin_dir, message, session_id)
 
 
 def _run_agent_session(
     cfg: Any,
-    plugin_dir: str | None,
-    config_plugin_dirs: list[str] | None = None,
+    plugin_dir: str | None = None,
     message: str | None = None,
     session_id: str = "default",
 ) -> None:
@@ -118,14 +117,8 @@ def _run_agent_session(
         session_id: 会话 ID
     """
     async def _run():
-        # 确定插件目录
-        effective_plugin_dirs = []
-        if plugin_dir:
-            effective_plugin_dirs = [plugin_dir]
-        elif cfg.plugin_dirs:
-            effective_plugin_dirs = list(cfg.plugin_dirs)
-        else:
-            effective_plugin_dirs = ["builtin", "plugins"]
+        # 插件目录：仅传递 CLI --plugin-dir 覆盖，其余由内核自动发现
+        effective_plugin_dirs = [plugin_dir] if plugin_dir else None
 
         # 组合根启动（轻量模式：不启动通道）
         kernel = await bootstrap(
