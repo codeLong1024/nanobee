@@ -158,6 +158,8 @@ class RulesStage(PipelineStage):
         rules_content = parser.rules
 
         # 注入用户身份 + 工作目录信息 —— 让 LLM 知道自己的 user_id 和文件操作的基准路径
+        # 注：此为持久信息（注入 system prompt，每条会话一次）。
+        # 轮次变化信息（时间/通道/会话统计）由 helpers.build_runtime_context() 注入到每条 user 消息末尾。
         user_ctx = ctx.user_context
         if user_ctx is not None:
             user_id = getattr(user_ctx, "user_id", None)

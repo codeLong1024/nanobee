@@ -286,8 +286,8 @@ class DingTalkChannelPlugin(ChannelPlugin):
                 response = await self.kernel.handle_message(
                     str(content), context_id,
                     channel=self.metadata.name,
-                    on_stream=self._make_stream_callback(chat_id, card_id=card_id),
-                    on_stream_end=self._make_stream_end_callback(chat_id, card_id=card_id),
+                    on_stream=self._make_stream_callback(chat_id, card_id=card_id, msg_id=msg_id),
+                    on_stream_end=self._make_stream_end_callback(chat_id, card_id=card_id, msg_id=msg_id),
                     on_progress=self._make_progress_callback(chat_id, msg_id=msg_id),
                     sender_id=sender_id,
                     session_id=f"dingtalk:{chat_id}",
@@ -425,7 +425,9 @@ class DingTalkChannelPlugin(ChannelPlugin):
                         break
         return _on_progress
 
-    def _make_stream_callback(self, chat_id: str, *, card_id: str | None = None) -> Any:
+    def _make_stream_callback(
+        self, chat_id: str, *, card_id: str | None = None, msg_id: str | None = None,
+    ) -> Any:
         """创建流式回调：LLM 每段 text delta → DingTalk AI Card 增量更新。
 
         card_id 通过闭包嵌入 metadata，sender 直接使用，无需查共享 dict。
@@ -436,6 +438,8 @@ class DingTalkChannelPlugin(ChannelPlugin):
                 metadata: dict[str, Any] = {"_stream_delta": True}
                 if card_id:
                     metadata["_card_id"] = card_id
+                if msg_id:
+                    metadata["msg_id"] = msg_id
                 await self.sender.send(SimpleNamespace(
                     channel=self.name, chat_id=chat_id,
                     content=delta, media=(),
@@ -443,7 +447,9 @@ class DingTalkChannelPlugin(ChannelPlugin):
                 ))
         return _on_stream
 
-    def _make_stream_end_callback(self, chat_id: str, *, card_id: str | None = None) -> Any:
+    def _make_stream_end_callback(
+        self, chat_id: str, *, card_id: str | None = None, msg_id: str | None = None,
+    ) -> Any:
         """创建流结束回调：通知 sender 流暂停（工具调用）或流结束。
 
         card_id 通过闭包嵌入 metadata，sender 直接使用。
@@ -454,6 +460,8 @@ class DingTalkChannelPlugin(ChannelPlugin):
                 metadata: dict[str, Any] = {"_stream_end": True, "_resuming": resuming}
                 if card_id:
                     metadata["_card_id"] = card_id
+                if msg_id:
+                    metadata["msg_id"] = msg_id
                 await self.sender.send(SimpleNamespace(
                     channel=self.name, chat_id=chat_id,
                     content="", media=(),

@@ -238,8 +238,13 @@ def build_runtime_context(
 ) -> str:
     """构建运行时上下文元数据块，追加到 user 消息末尾。
 
-    只注入每次轮次变化的信息（时间、通道、对话统计），
-    不注入工作目录等持久信息——这些在 system prompt 中已有。
+    只注入每次轮次变化的信息（时间、通道、对话统计）。
+    工作目录（context_root）和用户 ID 等持久信息由
+    context_pipeline.py 的 RulesStage.process() 注入到 system prompt 中。
+
+    LLM 完整可见上下文构成：
+    - system prompt: core.md Soul/Rules + RulesStage 用户身份/工作目录 + SkillStage 技能列表
+    - 每条 user 消息末尾: 本函数注入的 Runtime Context
 
     Token 估算使用 ``_rough_token_count``（len//4 字符级），
     快速量级感知，不做精确 BPE 编码。
