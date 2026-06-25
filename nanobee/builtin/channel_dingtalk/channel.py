@@ -264,6 +264,7 @@ class DingTalkChannelPlugin(ChannelPlugin):
         is_dm: bool = False,
         session_key: str | None = None,
         card_id: str | None = None,
+        msg_id: str | None = None,
     ) -> None:
         """Handle incoming message — route to nanobee kernel with streaming.
 
@@ -287,7 +288,7 @@ class DingTalkChannelPlugin(ChannelPlugin):
                     channel=self.metadata.name,
                     on_stream=self._make_stream_callback(chat_id, card_id=card_id),
                     on_stream_end=self._make_stream_end_callback(chat_id, card_id=card_id),
-                    on_progress=self._make_progress_callback(chat_id),
+                    on_progress=self._make_progress_callback(chat_id, msg_id=msg_id),
                     sender_id=sender_id,
                     session_id=f"dingtalk:{chat_id}",
                     metadata={
@@ -295,13 +296,14 @@ class DingTalkChannelPlugin(ChannelPlugin):
                         "sender_name": sender_name,
                         "session_key": session_key,
                         "is_dm": is_dm,
+                        "msg_id": msg_id,
                     },
                 )
             else:
                 response = await self.kernel.handle_message(
                     str(content), context_id,
                     channel=self.metadata.name,
-                    on_progress=self._make_progress_callback(chat_id),
+                    on_progress=self._make_progress_callback(chat_id, msg_id=msg_id),
                     sender_id=sender_id,
                     session_id=f"dingtalk:{chat_id}",
                     metadata={
@@ -309,16 +311,19 @@ class DingTalkChannelPlugin(ChannelPlugin):
                         "sender_name": sender_name,
                         "session_key": session_key,
                         "is_dm": is_dm,
+                        "msg_id": msg_id,
                     },
                 )
 
             if response and self.sender:
                 content_reply = str(response.content or "")
                 outbound_media = getattr(response, "media", []) or media or []
-                # 构造响应 metadata，嵌入 card_id 供 sender 非流式路径使用
+                # 构造响应 metadata，嵌入 card_id 和 msg_id 供 sender 使用
                 resp_metadata = {}
                 if card_id:
                     resp_metadata["_card_id"] = card_id
+                if msg_id:
+                    resp_metadata["msg_id"] = msg_id
                 if use_streaming:
                     if card_id:
                         if self.sender.is_card_handled_by_streaming(card_id):
@@ -331,7 +336,7 @@ class DingTalkChannelPlugin(ChannelPlugin):
                                     "[STREAM] Card {} truncated by max_iterations, appending notification "
                                     "(chat={})", card_id, chat_id)
                                 await self.sender.finalize_card_with_notification(
-                                    card_id, chat_id, content_reply,
+                                    card_id, msg_id or chat_id, content_reply,
                                 )
                                 if outbound_media:
                                     await self.sender.send(SimpleNamespace(
@@ -396,7 +401,7 @@ class DingTalkChannelPlugin(ChannelPlugin):
             except Exception:
                 pass
 
-    def _make_progress_callback(self, chat_id: str) -> Any:
+    def _make_progress_callback(self, chat_id: str, *, msg_id: str | None = None) -> Any:
         """创建进度回调：当工具开始执行时更新 DingTalk emotion 显示工具名。
 
         返回的闭包签名与 ``on_progress`` 兼容：
@@ -413,8 +418,9 @@ class DingTalkChannelPlugin(ChannelPlugin):
                     if tool_name:
                         # 显示工具名称细节（如 "🔧list_dir"），
                         # 不走标准 state 查找，直接作为原始 emotion 名称
+                        lookup_id = msg_id or chat_id
                         await self.sender._trigger_emotion(
-                            chat_id, f"🔧{tool_name}",
+                            lookup_id, f"🔧{tool_name}",
                         )
                         break
         return _on_progress

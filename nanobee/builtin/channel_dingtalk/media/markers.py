@@ -377,5 +377,4 @@ __all__ = [
     "process_video_markers",
     "process_audio_markers",
     "upload_and_replace_file_markers",
-    "process_video_markers",
 ]

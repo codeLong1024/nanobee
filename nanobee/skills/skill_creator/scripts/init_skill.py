@@ -6,9 +6,9 @@
     init_skill.py <skill-name> --path <path> [--resources scripts,references,assets] [--examples]
 
 示例:
-    init_skill.py pdf_editor --path ./contexts/user_001/skills
-    init_skill.py pdf_editor --path ./contexts/user_001/skills --resources scripts,references
-    init_skill.py weekly_report --path ./contexts/user_001/skills --resources scripts --examples
+    init_skill.py pdf_editor --path ./my_skills
+    init_skill.py pdf_editor --path ./my_skills --resources scripts,references
+    init_skill.py weekly_report --path ./my_skills --resources scripts --examples
 
 注意: nanobee 技能使用 snake_case 命名（如 pdf_editor、git_log_analyzer）。
 """
@@ -24,8 +24,8 @@ ALLOWED_RESOURCES = {"scripts", "references", "assets"}
 SKILL_TEMPLATE = """---
 name: {skill_name}
 description: "[TODO: 完整说明技能的功能和何时使用。包括触发场景 —— 哪些类型的文件、任务或用户请求应该触发这个技能。]"
-author: ""
-compatibility: ""
+# 如果是每轮对话都必须注入的技能（如记忆管理），取消下面注释：
+# full_inject: true
 ---
 
 # {skill_title}

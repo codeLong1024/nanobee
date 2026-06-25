@@ -37,7 +37,6 @@ except ImportError:
 __all__ = [
     "DINGTALK_AVAILABLE",
     "AckMessage",
-    "CallbackHandler",
     "CallbackMessage",
     "ChatbotHandler",
     "ChatbotMessage",

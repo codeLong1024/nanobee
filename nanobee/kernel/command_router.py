@@ -59,7 +59,7 @@ class CommandRouter:
         """注册内置命令处理器。"""
         self.register("/stop", self._cmd_stop, "取消当前正在运行的 Agent 任务")
         self.register("/new", self._cmd_new, "重置当前会话，开始全新对话")
-        self.register("/status", self._cmd_status, "显示运行时状态（消息数、turn 状态等）")
+        self.register("/status", self._cmd_status, "显示运行时状态（消息数、当前状态等）")
         self.register("/help", self._cmd_help, "显示此帮助信息")
 
     # ── 公共接口 ──────────────────────────────────────────
@@ -213,7 +213,7 @@ class CommandRouter:
         # 检查是否有活跃 turn
         active_turns: dict[str, asyncio.Task] = getattr(ctx.kernel, "_active_turns", {})
         task = active_turns.get(key)
-        turn_status = "运行中" if (task and not task.done()) else "空闲"
+        current_status = "正在处理" if (task and not task.done()) else "空闲等待"
 
         # 当前锁状态
         locked_users: list[str] = []
@@ -228,7 +228,7 @@ class CommandRouter:
             user_id=user_id,
             session_id=session_id,
             msg_count=msg_count,
-            turn_status=turn_status,
+            turn_status=current_status,
             locked_users=", ".join(locked_users) if locked_users else "无",
         )
 

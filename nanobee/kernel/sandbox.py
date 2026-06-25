@@ -99,6 +99,11 @@ class ContextSandbox:
         """用户上下文根目录（可读写）"""
         return self._context_root
 
+    @property
+    def read_only_roots(self) -> list[Path]:
+        """只读根目录列表，如内置技能目录、实例技能目录"""
+        return list(self._read_only_roots)
+
     def _all_roots(self) -> list[Path]:
         """所有可访问根 — 读写根 + 只读根"""
         return [self._context_root] + self._read_only_roots

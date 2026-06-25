@@ -1,11 +1,12 @@
 """DingTalk message handling for nanobee — using ChatbotHandler (SDK).
 
-Preserves AI Card creation, emotion feedback, and ConversationQueue.
+Preserves AI Card creation, emotion feedback.
 Message routing is adapted from nanobot's MessageBus → nanobee kernel.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json as _json
 import time as _time
 from dataclasses import dataclass, field
@@ -25,7 +26,6 @@ from .emotion_handler import (
 )
 from .emotion_hook import EmotionContext
 from .media.file_parser import parse_file_content
-from .session_manager import ConversationQueue
 from .session import build_session_key
 
 from nanobee.utils.logger import logger
@@ -61,7 +61,6 @@ class NanobeeDingTalkHandler(ChatbotHandler):
     def __init__(self, channel: "DingTalkChannelPlugin"):  # noqa: F821
         super().__init__()
         self.channel = channel
-        self.conversation_queue = ConversationQueue()
 
     async def process(self, message: CallbackMessage):
         """Quick parse + enqueue — returns ACK immediately."""
@@ -116,11 +115,7 @@ class NanobeeDingTalkHandler(ChatbotHandler):
                 raw_message=message,
             )
 
-            await self.conversation_queue.enqueue_message(
-                conversation_id or sender_id or chat_id,
-                parsed,
-                self._handle_message,
-            )
+            asyncio.create_task(self._handle_message(parsed))
 
             return AckMessage.STATUS_OK, "OK"
 
@@ -344,13 +339,7 @@ class NanobeeDingTalkHandler(ChatbotHandler):
             open_conversation_id=open_conv_id,
         ) if http and token else None
         if emotion_ctx and self.channel.sender:
-            existing = self.channel.sender._emotion_contexts.get(parsed.chat_id)
-            if existing is not None:
-                self.channel.logger.warning(
-                    "[Emotion] Overwriting existing context for chat={} (old_msg={}, new_msg={})",
-                    parsed.chat_id, existing.open_msg_id, emotion_ctx.open_msg_id,
-                )
-            self.channel.sender._emotion_contexts[parsed.chat_id] = emotion_ctx
+            self.channel.sender._emotion_contexts[parsed.msg_id] = emotion_ctx
 
         card_instance_id: str | None = None
         card_manager = self.channel.card_manager
@@ -389,6 +378,7 @@ class NanobeeDingTalkHandler(ChatbotHandler):
                     is_dm=is_dm,
                     session_key=parsed.session_key,
                     card_id=card_instance_id,
+                    msg_id=parsed.msg_id,
                 )
             self.channel.logger.info(
                 "[DISPATCH] Message dispatched to agent [user={}]", parsed.sender_id,
