@@ -32,6 +32,12 @@ from nanobee.utils.observability import MetricsCollector
 from nanobee.kernel.skill_manager import SkillsLoader
 
 
+def _resolve_plugin_dir(data_dir: Path, d: str) -> str:
+    """解析插件目录路径：相对路径基于 data_dir，绝对路径保持不变。"""
+    p = Path(d)
+    return str(p) if p.is_absolute() else str(data_dir / p)
+
+
 class NanobeeKernel:
     """Nanobee 内核
 
@@ -50,7 +56,11 @@ class NanobeeKernel:
 
         Args:
             config: 配置对象（Config 实例或字典，从 nanobee.yaml 加载）
-            plugin_dirs: 插件目录列表（覆盖配置中的 plugin_dirs）
+            plugin_dirs: 插件目录列表
+                - None（默认）：加载内置插件 + 配置中的 plugin_dirs
+                - 空列表 []：不加载任何插件
+                - 非空列表：追加到内置插件后
+                - 第一个元素是 "__replace__"：完全替换内置插件
         """
         # 统一为 Config 对象（允许传入 dict 保持向后兼容）
         if isinstance(config, dict):
@@ -62,9 +72,42 @@ class NanobeeKernel:
         self.event_bus = EventBus()              # 字符串 key 事件（供插件使用）
         self.runtime_events = RuntimeEventBus()  # 类型化运行时事件（内核内部通知）
         self.metrics = MetricsCollector()
-        # 默认插件目录：相对于 nanobee 包位置（兼容 pip install 和 tar 部署）
+        # 默认插件目录：内置插件始终自动加载（相对于包位置，兼容 pip install 和 tar 部署）
         _package_builtin = str(Path(__file__).resolve().parent.parent / "builtin")
-        resolved_plugin_dirs = plugin_dirs or self.config.plugin_dirs or [_package_builtin]
+        
+        # 解析插件目录（框架无知论：实例插件像 skill 一样默认自动发现，不用配置声明）
+        _use_builtin = True
+        instance_dirs: list[str] = []
+        
+        if plugin_dirs is not None:
+            # 构造函数显式指定（测试/高级用法）
+            if len(plugin_dirs) == 0:
+                _use_builtin = False  # 显式空：不加载任何插件
+            elif plugin_dirs[0] == "__replace__":
+                _use_builtin = False
+                instance_dirs = [_resolve_plugin_dir(self.data_dir, d) for d in plugin_dirs[1:]]
+            else:
+                instance_dirs = [_resolve_plugin_dir(self.data_dir, d) for d in plugin_dirs]
+        elif self.config.plugin_dirs:
+            # 配置文件明确指定了实例插件目录
+            cfg_dirs = self.config.plugin_dirs
+            if cfg_dirs[0] == "__replace__":
+                _use_builtin = False
+                instance_dirs = [_resolve_plugin_dir(self.data_dir, d) for d in cfg_dirs[1:]]
+            else:
+                instance_dirs = [_resolve_plugin_dir(self.data_dir, d) for d in cfg_dirs]
+        else:
+            # 默认：从 <data_dir>/plugins/ 自动发现（与实例技能 <data_dir>/skills/ 机制一致）
+            instance_dir = self.data_dir / "plugins"
+            if instance_dir.is_dir():
+                instance_dirs = [str(instance_dir)]
+        
+        # 构建最终目录列表
+        if _use_builtin:
+            resolved_plugin_dirs = [_package_builtin] + instance_dirs
+        else:
+            resolved_plugin_dirs = instance_dirs
+        
         self.plugin_manager = PluginManager(self, resolved_plugin_dirs)
         self.context_manager = ContextManager(self)
         # Session 管理器（管理多会话，存储于 <data_dir>/users/<user_id>/sessions/）

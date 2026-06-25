@@ -467,6 +467,9 @@ class ToolPipeline:
     @staticmethod
     async def _notify_tool_start(spec: AgentRunSpec, tool_call: ToolCallRequest) -> None:
         """通知通道工具开始执行（触发视觉反馈）。"""
+        # message 是 LLM 输出投递载体，非真正工具，无需通知通道触发视觉反馈
+        if tool_call.name == "message":
+            return
         if spec.progress_callback is not None:
             await invoke_on_progress(
                 spec.progress_callback, "",
