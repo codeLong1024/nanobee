@@ -55,13 +55,17 @@ class Schema(ABC):
 
         if nullable and val is None:
             return []
+        if t is None:
+            return [f"{label} has unknown type: {raw_type!r}"]
         if t == "integer" and (not isinstance(val, int) or isinstance(val, bool)):
             return [f"{label} should be integer"]
         if t == "number" and (
             not isinstance(val, _JSON_TYPE_MAP["number"]) or isinstance(val, bool)
         ):
             return [f"{label} should be number"]
-        if t in _JSON_TYPE_MAP and t not in ("integer", "number") and not isinstance(val, _JSON_TYPE_MAP[t]):
+        if t not in _JSON_TYPE_MAP:
+            return [f"{label} has unsupported type: {t!r}"]
+        if t not in ("integer", "number") and not isinstance(val, _JSON_TYPE_MAP[t]):
             return [f"{label} should be {t}"]
 
         errors: list[str] = []
@@ -286,6 +290,8 @@ def tool_parameters(schema: dict[str, Any]) -> Callable[[type[_ToolT]], type[_To
 
         cls.parameters = parameters  # type: ignore[assignment]
 
+        # 将 ``parameters`` 从抽象方法集合中移除，使被装饰的类可以实例化，
+        # 而无需子类手动覆写 parameters 属性。
         abstract = getattr(cls, "__abstractmethods__", None)
         if abstract is not None and "parameters" in abstract:
             cls.__abstractmethods__ = frozenset(abstract - {"parameters"})  # type: ignore[misc]

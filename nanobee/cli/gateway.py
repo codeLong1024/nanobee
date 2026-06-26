@@ -9,7 +9,6 @@ Nanobee Gateway - 完整服务栈模式
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from pathlib import Path
 from typing import Any
@@ -18,7 +17,7 @@ import click
 
 from nanobee.bootstrap import bootstrap
 from nanobee.config.loader import load_config
-from nanobee.kernel.process import run_signal_guard
+from nanobee.kernel.process import run_gateway_lifecycle
 from nanobee.utils.logger import logger
 from nanobee.utils.observability import init_log_file_sink, setup_structured_logging
 
@@ -101,10 +100,9 @@ def _run_gateway(
 ) -> None:
     """运行 Gateway 服务（完整服务栈）
 
-    Args:
+    Arg:
         cfg: 配置对象
         plugin_dir: 插件目录路径（命令行参数）
-        config_plugin_dirs: 配置中的插件目录列表
         port: 健康检查 HTTP 端口
     """
     async def _run():
@@ -135,90 +133,14 @@ def _run_gateway(
 
         # 启动健康检查 HTTP 服务器（可选）
         health_port = port or _resolve_health_port(cfg)
-        logger.debug("健康端口: {} (来自: config={}, CLI arg={})", health_port, _resolve_health_port(cfg), port)
-        health_tasks = []
         if health_port:
-            health_tasks.append(_safe_health_server("127.0.0.1", health_port))
             click.echo(f"  健康端点: http://127.0.0.1:{health_port}/health")
-
         click.echo("")
 
-        # 信号守卫：等待 SIGINT/SIGTERM 后优雅退出
-        guard_task = asyncio.create_task(run_signal_guard())
-        health_task_list = [asyncio.create_task(h) for h in health_tasks]
-
-        try:
-            done, pending = await asyncio.wait(
-                [guard_task, *health_task_list],
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-        except KeyboardInterrupt:
-            click.echo("\n正在关闭 Gateway...")
-        except Exception:
-            logger.exception("Gateway 异常退出")
-        finally:
-            # 取消正在运行的健康检查任务
-            for task in health_task_list:
-                if not task.done():
-                    task.cancel()
-            if health_task_list:
-                await asyncio.gather(*health_task_list, return_exceptions=True)
-            await kernel.shutdown()
-            click.echo("👋 Gateway 已停止")
+        # 生命周期管理：健康服务器 + 信号守卫 + 优雅退出
+        await run_gateway_lifecycle(kernel, health_port=health_port)
 
     asyncio.run(_run())
-
-
-async def _safe_health_server(host: str, health_port: int) -> None:
-    """安全版本的健康端点，端口被占时不崩 Gateway。"""
-    try:
-        await _health_server(host, health_port)
-    except Exception:
-        logger.exception("健康服务器启动失败（端口 {} 可能已被占用），Gateway 继续运行", health_port)
-        # 持续阻塞，确保 asyncio.wait 不会因为此任务完成而退出
-        await asyncio.Event().wait()
-
-
-async def _health_server(host: str, health_port: int) -> None:
-    """轻量级 HTTP 健康端点"""
-    async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        try:
-            data = await asyncio.wait_for(reader.read(4096), timeout=5)
-        except (asyncio.TimeoutError, ConnectionError):
-            writer.close()
-            return
-
-        request_line = data.split(b"\r\n", 1)[0].decode("utf-8", errors="replace")
-        parts = request_line.split(" ")
-        method, path = ("", "")
-        if len(parts) >= 2:
-            method, path = parts[0], parts[1]
-
-        if method == "GET" and path == "/health":
-            body = json.dumps({"status": "ok"})
-            resp = (
-                f"HTTP/1.0 200 OK\r\n"
-                f"Content-Type: application/json\r\n"
-                f"Content-Length: {len(body)}\r\n"
-                f"\r\n{body}"
-            )
-        else:
-            body = "Not Found"
-            resp = (
-                f"HTTP/1.0 404 Not Found\r\n"
-                f"Content-Type: text/plain\r\n"
-                f"Content-Length: {len(body)}\r\n"
-                f"\r\n{body}"
-            )
-
-        writer.write(resp.encode())
-        await writer.drain()
-        writer.close()
-
-    server = await asyncio.start_server(handle, host, health_port)
-    logger.info("健康端点已启动: http://{}:{}/health", host, health_port)
-    async with server:
-        await server.serve_forever()
 
 
 def _resolve_health_port(cfg: Any) -> int | None:

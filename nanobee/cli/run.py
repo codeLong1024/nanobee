@@ -112,7 +112,6 @@ def _run_agent_session(
     Args:
         cfg: 配置对象
         plugin_dir: 插件目录路径（命令行参数）
-        config_plugin_dirs: 配置中的插件目录列表
         message: 单次消息（可选）
         session_id: 会话 ID
     """

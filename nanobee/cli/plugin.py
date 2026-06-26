@@ -7,8 +7,6 @@ Nanobee Plugin - Plugin 子命令
 
 from __future__ import annotations
 
-import logging
-import shutil
 from pathlib import Path
 from typing import Any
 
@@ -166,8 +164,6 @@ def plugin_list(config: str | None, as_json: bool) -> None:
     扫描配置中的插件目录（默认 builtin、plugins），
     显示所有已发现插件的元数据。
     """
-    from pathlib import Path
-
     cfg = load_config(Path(config) if config else None)
     plugin_dirs = _resolve_plugin_dirs(cfg)
     plugins = _discover_plugins(plugin_dirs)
