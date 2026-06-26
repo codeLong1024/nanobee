@@ -76,6 +76,22 @@ class ChannelPlugin(NanobeePlugin, ABC):
             self.kernel.event_bus.subscribe("agent.outbound", self._on_agent_outbound)
             logger.debug("通道 {} 已订阅 agent.outbound 事件", self.display_name)
 
+    def on_disable(self) -> None:
+        """禁用时取消事件订阅，避免重复订阅或残留 handler。"""
+        self._unsubscribe_agent_outbound()
+        super().on_disable()
+
+    def on_unload(self) -> None:
+        """卸载前先取消订阅，再释放内核引用。"""
+        self._unsubscribe_agent_outbound()
+        super().on_unload()
+
+    def _unsubscribe_agent_outbound(self) -> None:
+        """取消 agent.outbound 事件订阅（内部辅助方法）。"""
+        if self.kernel and self.kernel.event_bus:
+            self.kernel.event_bus.unsubscribe("agent.outbound", self._on_agent_outbound)
+            logger.debug("通道 {} 已取消订阅 agent.outbound 事件", self.display_name)
+
     async def _on_agent_outbound(self, data: dict) -> None:
         """处理 agent.outbound 事件：匹配通道后投递消息。
 

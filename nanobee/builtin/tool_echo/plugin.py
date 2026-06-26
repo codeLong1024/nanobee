@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from nanobee.plugins.tool import ToolPlugin
+from nanobee.plugins import ToolPlugin
 
 from nanobee.utils.logger import logger
 

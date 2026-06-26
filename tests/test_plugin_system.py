@@ -6,7 +6,7 @@ import pytest
 
 from nanobee.kernel.plugin_manager import PluginManager, PluginDescriptor
 from nanobee.plugins.base import NanobeePlugin, PluginMetadata
-from nanobee.plugins.tool import ToolPlugin
+from nanobee.plugins import ToolPlugin
 from nanobee.channel.base import ChannelPlugin
 from nanobee.plugins.memory import MemoryPlugin
 

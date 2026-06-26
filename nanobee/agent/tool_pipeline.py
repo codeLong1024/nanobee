@@ -31,7 +31,7 @@ from nanobee.utils.progress_events import (
 from nanobee.utils.runtime import repeated_external_lookup_error
 
 from nanobee.agent.fault_classifier import FaultClassifier
-from nanobee.agent.specs import AgentRunSpec, _inject_context_to_tool
+from nanobee.agent.specs import AgentRunSpec
 
 # 工具执行返回：三元组 (结果, 事件字典, 致命错误)
 ToolResult = tuple[Any, dict[str, str], BaseException | None]
@@ -150,10 +150,6 @@ class ToolPipeline:
         params, sandbox_error = self._guard_sandbox(tool_call, params)
         if sandbox_error:
             return sandbox_error + _HINT, self._error_event(tool_call.name, f"sandbox: {sandbox_error}"), None
-
-        # 注入通道上下文
-        if spec.channel or spec.chat_id or spec.sender_id:
-            _inject_context_to_tool(tool, spec)
 
         # 守卫 4：Plugin pre-invoke hooks
         params, hook_error = await self._guard_pre_hooks(spec, tool_call, params)

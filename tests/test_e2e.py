@@ -72,7 +72,7 @@ enabled = true
 """, encoding="utf-8")
     (tool_echo_dir / "plugin.py").write_text("""from __future__ import annotations
 import logging
-from nanobee.plugins.tool import ToolPlugin
+from nanobee.plugins import ToolPlugin
 
 logger = logging.getLogger(__name__)
 

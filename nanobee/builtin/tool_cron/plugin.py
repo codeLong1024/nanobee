@@ -13,7 +13,8 @@ from zoneinfo import ZoneInfo
 
 from nanobee.builtin.tool_cron.service import CronService
 from nanobee.builtin.tool_cron.types import CronJob, CronSchedule
-from nanobee.plugins.tool import ToolPlugin
+from nanobee.kernel.context_sandbox_var import current_request_context
+from nanobee.plugins import ToolPlugin
 
 from nanobee.utils.logger import logger
 
@@ -22,7 +23,8 @@ class ToolCronPlugin(ToolPlugin):
     """Cron 定时任务工具插件。
 
     提供 cron 工具的三个操作（add / list / remove）。
-    通过 set_context() 注入当前会话的通道信息，用于任务触发后投递结果。
+    通过 CURRENT_REQUEST_CONTEXT ContextVar 按 turn 获取会话信息，
+    替代旧版 set_context() 实例属性写入模式。
     """
 
     name = "tool_cron"
@@ -33,12 +35,6 @@ class ToolCronPlugin(ToolPlugin):
         super().__init__(metadata)
         self._cron: CronService | None = None
         self._default_timezone: str = "UTC"
-        # 会话上下文（从 set_context 注入）
-        self._channel: str = ""
-        self._chat_id: str = ""
-        self._user_id: str = ""
-        self._context_metadata: dict[str, Any] = {}
-        self._session_key: str = ""
 
     def initialize(self, kernel: Any) -> None:
         """初始化插件：创建 CronService 实例。"""
@@ -46,7 +42,7 @@ class ToolCronPlugin(ToolPlugin):
 
         self._default_timezone = self.get_config("default_timezone", "UTC")
 
-        # 存储路径延迟初始化 — 在 set_context() 中基于 self.tmp 确定
+        # 存储路径延迟初始化 — 在 execute_tool 中基于 context_root 确定
         self._cron_base_dir: Path | None = None
         self._current_store_path: Path | None = None
 
@@ -58,8 +54,6 @@ class ToolCronPlugin(ToolPlugin):
         首次启动时扫描 users/*/cron/jobs.json 加载已有任务。
         """
         super().on_enable()
-        # 如果 set_context 尚未被调用（如 gateway 启动后无用户交互），
-        # 主动扫描 work_dir/users/*/cron/jobs.json 加载现有任务
         if self._cron is None:
             self._scan_existing_jobs()
         if self._cron is not None:
@@ -97,55 +91,44 @@ class ToolCronPlugin(ToolPlugin):
             self._cron.stop()
         super().on_disable()
 
-    def set_context(
-        self,
-        channel: str = "",
-        chat_id: str = "",
-        user_id: str = "",
-        metadata: dict[str, Any] | None = None,
-        session_key: str = "",
-    ) -> None:
-        """设置当前会话上下文（在 execute_tool 前调用）。
+    def _resolve_store_path(self, context_id: str) -> Path:
+        """根据 context_id 解析 cron 任务存储路径（线程安全，无实例属性依赖）。
+
+        cron 数据需要持久化，放在 <context_root>/cron/ 下（与 skills/ 平级）。
+        若 context_root 不可用，回退到 <data_dir>/cron/jobs_<context_id>.json。
 
         Args:
-            channel: 消息通道标识
-            chat_id: 会话/聊天 ID
-            user_id: 用户唯一标识（用于按用户隔离存储 cron jobs）
-            metadata: 通道特定元数据
-            session_key: 会话键（用于 session 记录）
-        """
-        self._channel = channel
-        self._chat_id = chat_id
-        self._user_id = user_id
-        self._context_metadata = metadata or {}
-        self._session_key = session_key
+            context_id: 用户上下文 ID
 
-        # 根据 user_id 切换存储路径
-        # cron 数据需要持久化，放在 <context_root>/cron/ 下（与 skills/ 平级）
-        if user_id:
-            if self.context_root is not None:
-                self._current_store_path = self.context_root / "cron" / "jobs.json"
-                self._current_store_path.parent.mkdir(parents=True, exist_ok=True)
-            else:
-                if self._cron_base_dir is None:
-                    data_dir = Path(self._kernel.data_dir) if self._kernel and hasattr(self._kernel, "data_dir") else Path.cwd()
-                    self._cron_base_dir = data_dir / "cron"
-                    self._cron_base_dir.mkdir(parents=True, exist_ok=True)
-                self._current_store_path = self._cron_base_dir / f"jobs_{user_id}.json"
-            if self._cron is None or getattr(self._cron, "store_path", None) != self._current_store_path:
-                if self._cron is not None:
-                    self._cron.stop()
-                self._cron = CronService(
-                    store_path=self._current_store_path,
-                    on_job=self._on_job_execute,
-                    max_sleep_ms=300_000,
-                )
-                logger.info("Cron 服务存储路径: {}", self._current_store_path)
+        Returns:
+            解析后的存储路径
+        """
+        if self.context_root is not None:
+            store_path = self.context_root / "cron" / "jobs.json"
         else:
-            self._current_store_path = None
+            if self._cron_base_dir is None:
+                data_dir = Path(self._kernel.data_dir) if self._kernel and hasattr(self._kernel, "data_dir") else Path.cwd()
+                self._cron_base_dir = data_dir / "cron"
+                self._cron_base_dir.mkdir(parents=True, exist_ok=True)
+            store_path = self._cron_base_dir / f"jobs_{context_id}.json"
+        store_path.parent.mkdir(parents=True, exist_ok=True)
+        return store_path
+
+    def _ensure_cron_service(self, store_path: Path) -> None:
+        """确保 CronService 已初始化并指向指定存储路径。
+
+        Args:
+            store_path: cron 任务存储路径
+        """
+        if self._cron is None or getattr(self._cron, "store_path", None) != store_path:
             if self._cron is not None:
                 self._cron.stop()
-                self._cron = None
+            self._cron = CronService(
+                store_path=store_path,
+                on_job=self._on_job_execute,
+                max_sleep_ms=300_000,
+            )
+            logger.info("Cron 服务存储路径: {}", store_path)
 
     def get_tools(self) -> list[dict[str, Any]]:
         """获取工具定义列表。
@@ -224,9 +207,26 @@ class ToolCronPlugin(ToolPlugin):
         if tool_name != "cron":
             raise ValueError(f"未知工具: {tool_name}")
 
+        # 从 per-turn ContextVar 获取路由上下文（线程安全）
+        rctx = current_request_context()
+        if rctx is None:
+            return "错误：无法获取当前会话上下文，无法执行 cron 操作"
+
+        # 根据 context_id 解析存储路径并确保 CronService 已就绪
+        store_path = self._resolve_store_path(rctx.context_id)
+        self._ensure_cron_service(store_path)
+        self._current_store_path = store_path
+
         action = kwargs.get("action", "").strip().lower()
         if action == "add":
-            return self._add_job(**kwargs)
+            return self._add_job(
+                channel=rctx.channel,
+                chat_id=rctx.chat_id,
+                context_metadata={} if rctx.context_id else {},
+                session_key=rctx.session_id,
+                user_id=rctx.context_id,
+                **kwargs,
+            )
         elif action == "list":
             return self._list_jobs()
         elif action == "remove":
@@ -248,8 +248,24 @@ class ToolCronPlugin(ToolPlugin):
         dt = datetime.fromtimestamp(ms / 1000, tz=ZoneInfo(tz_name))
         return f"{dt.isoformat()} ({tz_name})"
 
-    def _add_job(self, **kwargs: Any) -> str:
-        """添加定时任务。"""
+    def _add_job(
+        self,
+        channel: str = "",
+        chat_id: str = "",
+        context_metadata: dict[str, Any] | None = None,
+        session_key: str = "",
+        user_id: str = "",
+        **kwargs: Any,
+    ) -> str:
+        """添加定时任务。
+
+        Args:
+            channel: 来源通道名
+            chat_id: 会话/聊天 ID
+            context_metadata: 通道附加元数据
+            session_key: 会话键
+            user_id: 用户唯一标识
+        """
         if self._cron is None:
             return "错误：Cron 服务未初始化"
 
@@ -269,8 +285,6 @@ class ToolCronPlugin(ToolPlugin):
                 "请重试并包含 message=\"...\"。"
             )
 
-        channel = self._channel
-        chat_id = self._chat_id
         if not channel or not chat_id:
             return "错误：缺少会话上下文（channel/chat_id），无法创建投递任务"
 
@@ -318,9 +332,9 @@ class ToolCronPlugin(ToolPlugin):
             channel=channel,
             to=chat_id,
             delete_after_run=delete_after,
-            channel_meta=self._context_metadata,
-            session_key=self._session_key or None,
-            user_id=self._user_id or None,
+            channel_meta=context_metadata or {},
+            session_key=session_key or None,
+            user_id=user_id or None,
         )
         return f"已创建任务 '{job.name}' (id: {job.id})"
 

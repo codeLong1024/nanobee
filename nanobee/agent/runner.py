@@ -24,7 +24,6 @@ from nanobee.agent.specs import (
     AgentRunSpec,
     PluginHooks,
     _DEFAULT_ERROR_MESSAGE,
-    _inject_context_to_tool,
 )
 from nanobee.agent.tool_pipeline import ToolPipeline
 from nanobee.providers.base import LLMProvider, LLMResponse, ToolCallRequest

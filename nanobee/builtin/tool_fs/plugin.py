@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from nanobee.exceptions import SandboxViolationError
-from nanobee.plugins.tool import ToolPlugin
+from nanobee.plugins import ToolPlugin
 
 from nanobee.utils.logger import logger
 

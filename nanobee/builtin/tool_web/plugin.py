@@ -17,7 +17,7 @@ import httpx
 from nanobee.utils.logger import logger
 
 
-from nanobee.plugins.tool import ToolPlugin
+from nanobee.plugins import ToolPlugin
 from nanobee.security.network import validate_resolved_url, validate_url_target
 
 # ---------------------------------------------------------------------------
