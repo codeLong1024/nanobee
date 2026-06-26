@@ -1,0 +1,10 @@
+# GitHub Pages configuration
+# Exclude non-markdown files from rendering to avoid Jekyll syntax errors
+exclude:
+  - nanobee/templates/     # Jinja2/liquid templates with {% %} syntax
+  - devdocs/               # Development documentation
+  - .codebuddy/            # IDE working memory
+  - tests/                 # Test files
+  - deploy/                # Deployment configs
+  - '*.example'            # Example config files
+  - '*.mdc'                # Markdown config files
