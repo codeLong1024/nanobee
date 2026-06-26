@@ -29,13 +29,9 @@ from nanobee.utils.notifications import build_notification
 from nanobee.utils.observability import MetricsCollector
 
 
+from nanobee.kernel.channel_manager import ChannelManager
+from nanobee.kernel.plugin_dirs import resolve_plugin_dirs
 from nanobee.kernel.skill_manager import SkillsLoader
-
-
-def _resolve_plugin_dir(data_dir: Path, d: str) -> str:
-    """解析插件目录路径：相对路径基于 data_dir，绝对路径保持不变。"""
-    p = Path(d)
-    return str(p) if p.is_absolute() else str(data_dir / p)
 
 
 class NanobeeKernel:
@@ -72,41 +68,14 @@ class NanobeeKernel:
         self.event_bus = EventBus()              # 字符串 key 事件（供插件使用）
         self.runtime_events = RuntimeEventBus()  # 类型化运行时事件（内核内部通知）
         self.metrics = MetricsCollector()
-        # 默认插件目录：内置插件始终自动加载（相对于包位置，兼容 pip install 和 tar 部署）
+        # 插件目录解析：委托给纯函数（内置插件基于包位置，实例插件自动发现 <data_dir>/plugins/）
         _package_builtin = str(Path(__file__).resolve().parent.parent / "builtin")
-        
-        # 解析插件目录（框架无知论：实例插件像 skill 一样默认自动发现，不用配置声明）
-        _use_builtin = True
-        instance_dirs: list[str] = []
-        
-        if plugin_dirs is not None:
-            # 构造函数显式指定（测试/高级用法）
-            if len(plugin_dirs) == 0:
-                _use_builtin = False  # 显式空：不加载任何插件
-            elif plugin_dirs[0] == "__replace__":
-                _use_builtin = False
-                instance_dirs = [_resolve_plugin_dir(self.data_dir, d) for d in plugin_dirs[1:]]
-            else:
-                instance_dirs = [_resolve_plugin_dir(self.data_dir, d) for d in plugin_dirs]
-        elif self.config.plugin_dirs:
-            # 配置文件明确指定了实例插件目录
-            cfg_dirs = self.config.plugin_dirs
-            if cfg_dirs[0] == "__replace__":
-                _use_builtin = False
-                instance_dirs = [_resolve_plugin_dir(self.data_dir, d) for d in cfg_dirs[1:]]
-            else:
-                instance_dirs = [_resolve_plugin_dir(self.data_dir, d) for d in cfg_dirs]
-        else:
-            # 默认：从 <data_dir>/plugins/ 自动发现（与实例技能 <data_dir>/skills/ 机制一致）
-            instance_dir = self.data_dir / "plugins"
-            if instance_dir.is_dir():
-                instance_dirs = [str(instance_dir)]
-        
-        # 构建最终目录列表
-        if _use_builtin:
-            resolved_plugin_dirs = [_package_builtin] + instance_dirs
-        else:
-            resolved_plugin_dirs = instance_dirs
+        resolved_plugin_dirs = resolve_plugin_dirs(
+            data_dir=self.data_dir,
+            package_builtin=_package_builtin,
+            plugin_dirs=plugin_dirs,
+            config_dirs=self.config.plugin_dirs,
+        )
         
         self.plugin_manager = PluginManager(self, resolved_plugin_dirs)
         self.context_manager = ContextManager(self)
@@ -134,6 +103,10 @@ class NanobeeKernel:
         self.command_router = CommandRouter()
         # 活跃 turn 追踪：context_id → asyncio.Task，用于 /stop 取消
         self._active_turns: dict[str, asyncio.Task] = {}
+
+        # 通道后台任务生命周期管理
+        self.channel_manager = ChannelManager()
+        self._services_started = False
 
         # 从配置加载路由表
         if self.config.routing:
@@ -196,46 +169,20 @@ class NanobeeKernel:
         await self.runtime_events.publish(KernelBooted())
 
     async def boot_services(self) -> None:
-        """启动后台服务（通道插件 + Heartbeat）
+        """启动后台服务（通道插件 + MCP 连接）
 
         仅在 Gateway 模式下调用，Agent CLI 模式不启动。
         """
-        if getattr(self, "_services_started", False):
+        if self._services_started:
             logger.warning("后台服务已启动，跳过")
             return
 
         logger.info("正在启动 Nanobee 后台服务...")
 
-        # 1. 启动通道插件（后台任务，不与健康服务器串行阻塞）
+        # 启动通道后台任务
         channels = self.plugin_manager.get_by_type("channel")
-        self._channel_tasks: list[asyncio.Task] = []
-
-        def _log_channel_error(name: str) -> Any:
-            """返回一个 done callback，捕获通道任务异常并记录日志。"""
-            def _cb(t: asyncio.Task) -> None:
-                try:
-                    t.result()
-                except asyncio.CancelledError:
-                    pass
-                except Exception:
-                    logger.exception("通道 {} 后台任务异常退出", name)
-            return _cb
-
-        for channel in channels:
-            if not getattr(channel, "safe_for_gateway", True):
-                logger.info("通道 {} 跳过 Gateway 启动（交互式通道）", getattr(channel, "name", "?"))
-                continue
-            chan_name = getattr(channel, "name", "?")
-            try:
-                task = asyncio.create_task(channel.start())
-                task.add_done_callback(_log_channel_error(chan_name))
-                self._channel_tasks.append(task)
-            except Exception:
-                logger.exception("通道插件 {} 启动失败，已跳过", chan_name)
-
-        # 2. 主动连接 MCP 服务器（后台任务，不阻塞启动）
-        if self._agent_loop is not None:
-            asyncio.ensure_future(self._agent_loop._connect_mcp())
+        connect_mcp = self._agent_loop._connect_mcp if self._agent_loop else None
+        await self.channel_manager.start_channels(channels, connect_mcp=connect_mcp)
 
         self._services_started = True
         logger.info("Nanobee 后台服务启动完成")
@@ -564,23 +511,17 @@ class NanobeeKernel:
             self._agent_loop.stop()
             await self._agent_loop.close_mcp()
 
-        # 停止所有通道
+        # 优雅停止所有通道
         channels = self.plugin_manager.get_by_type("channel")
-        for channel in channels:
-            await channel.stop()
+        for ch in channels:
+            await ch.stop()
 
-        # 等待后台通道任务退出（取消后等待 3s 超时兜底）
-        for task in getattr(self, "_channel_tasks", []):
-            if not task.done():
-                task.cancel()
-        if getattr(self, "_channel_tasks", []):
-            await asyncio.wait(
-                self._channel_tasks, timeout=3,
-                return_when=asyncio.ALL_COMPLETED,
-            )
+        # 取消并等待通道后台任务（3s 超时兜底）
+        await self.channel_manager.shutdown()
 
         # 卸载所有插件
         self.plugin_manager.unload_all()
 
         self._booted = False
+        self._services_started = False
         logger.info("Nanobee 内核已关闭")

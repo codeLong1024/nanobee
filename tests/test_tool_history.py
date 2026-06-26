@@ -18,6 +18,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from nanobee.builtin.tool_history import ToolHistoryPlugin
+from nanobee.kernel.context_sandbox_var import RequestContext, bind_request_context, reset_request_context
 from nanobee.session.session_manager import SessionManager
 from nanobee.session.session_store import SessionStore
 
@@ -51,7 +52,6 @@ def _create_plugin(tmp_path: Path, user_id: str = "test-user", session_id: str =
     kernel.session_manager = session_manager
 
     plugin.initialize(kernel)
-    plugin.set_context(user_id=user_id, session_key=session_id)
 
     # 预填充一些消息
     session = session_manager.get_or_create(user_id, session_id)
@@ -60,6 +60,29 @@ def _create_plugin(tmp_path: Path, user_id: str = "test-user", session_id: str =
     session_manager.save(session)
 
     return plugin
+
+
+def _bind_context(user_id: str = "test-user", session_id: str = "test-session", channel: str = "test") -> object:
+    """绑定 RequestContext 到当前异步任务（模拟 per-turn 上下文注入）。
+
+    Returns:
+        Token 用于后续 reset。
+    """
+    return bind_request_context(RequestContext(
+        channel=channel,
+        chat_id=user_id,
+        context_id=user_id,
+        session_id=session_id,
+    ))
+
+
+def _call_tool(plugin: ToolHistoryPlugin, tool_name: str, user_id: str = "test-user", session_id: str = "test-session", **kwargs: Any) -> str:
+    """绑定上下文 + 调用工具，返回结果。"""
+    token = _bind_context(user_id, session_id)
+    try:
+        return _run_async(plugin.execute_tool(tool_name, **kwargs))
+    finally:
+        reset_request_context(token)
 
 
 # =============================================================================
@@ -73,7 +96,7 @@ class TestTrimHistory:
     def test_trim_history_success(self, tmp_path: Path) -> None:
         """正常裁剪：20 条消息 → 保留 5 条。"""
         plugin = _create_plugin(tmp_path)
-        result = _run_async(plugin.execute_tool("trim_history", n=5))
+        result = _call_tool(plugin, "trim_history", n=5)
         assert "20 → 5" in result or "裁剪完成" in result
 
         session = plugin.kernel.session_manager.get_or_create("test-user", "test-session")
@@ -82,19 +105,19 @@ class TestTrimHistory:
     def test_trim_history_invalid_n_too_small(self, tmp_path: Path) -> None:
         """n < 2 时返回错误。"""
         plugin = _create_plugin(tmp_path)
-        result = _run_async(plugin.execute_tool("trim_history", n=1))
+        result = _call_tool(plugin, "trim_history", n=1)
         assert "错误" in result or "≥2" in result
 
     def test_trim_history_invalid_n_type(self, tmp_path: Path) -> None:
         """n 为非整数时返回错误。"""
         plugin = _create_plugin(tmp_path)
-        result = _run_async(plugin.execute_tool("trim_history", n="abc"))
+        result = _call_tool(plugin, "trim_history", n="abc")
         assert "错误" in result or "≥2" in result
 
     def test_trim_history_no_need(self, tmp_path: Path) -> None:
         """消息数未超过 n 时无需裁剪。"""
         plugin = _create_plugin(tmp_path)
-        result = _run_async(plugin.execute_tool("trim_history", n=100))
+        result = _call_tool(plugin, "trim_history", n=100)
         assert "无需裁剪" in result or "未超过" in result
 
     def test_trim_history_no_user_context(self, tmp_path: Path) -> None:
@@ -103,7 +126,7 @@ class TestTrimHistory:
         kernel = MagicMock()
         kernel.session_manager = SessionManager(tmp_path / "users")
         plugin.initialize(kernel)
-        # 未调用 set_context，_user_id 为空
+        # 未绑定 RequestContext，current_request_context() 返回 None
 
         result = _run_async(plugin.execute_tool("trim_history", n=5))
         assert "错误" in result or "无法获取" in result
@@ -114,16 +137,18 @@ class TestTrimHistory:
         kernel = MagicMock()
         kernel.session_manager = None
         plugin.initialize(kernel)
-        plugin.set_context(user_id="test-user", session_key="test-session")
-
-        result = _run_async(plugin.execute_tool("trim_history", n=5))
+        token = _bind_context(user_id="test-user", session_id="test-session")
+        try:
+            result = _run_async(plugin.execute_tool("trim_history", n=5))
+        finally:
+            reset_request_context(token)
         assert "错误" in result or "不可用" in result
 
     def test_trim_history_unknown_tool(self, tmp_path: Path) -> None:
         """未知工具名抛出 ValueError。"""
         plugin = _create_plugin(tmp_path)
         with pytest.raises(ValueError, match="未知工具"):
-            _run_async(plugin.execute_tool("nonexistent_tool"))
+            _call_tool(plugin, "nonexistent_tool")
 
 
 # =============================================================================
@@ -138,9 +163,7 @@ class TestConsolidateHistory:
         """正常压缩：20 条 → 保留 5 条，归档 15 条。"""
         plugin = _create_plugin(tmp_path)
         summary = "用户讨论了消息测试，关键决策：保留5条最近消息。"
-        result = _run_async(plugin.execute_tool(
-            "consolidate_history", summary=summary, keep_last_n=5,
-        ))
+        result = _call_tool(plugin, "consolidate_history", summary=summary, keep_last_n=5)
         assert "压缩完成" in result
         assert "15" in result  # archived_count = 20 - 5
 
@@ -154,35 +177,27 @@ class TestConsolidateHistory:
     def test_consolidate_history_empty_summary(self, tmp_path: Path) -> None:
         """空摘要应返回错误。"""
         plugin = _create_plugin(tmp_path)
-        result = _run_async(plugin.execute_tool(
-            "consolidate_history", summary="", keep_last_n=5,
-        ))
+        result = _call_tool(plugin, "consolidate_history", summary="", keep_last_n=5)
         assert "错误" in result
         assert "不能为空" in result
 
     def test_consolidate_history_whitespace_summary(self, tmp_path: Path) -> None:
         """全空白摘要应返回错误。"""
         plugin = _create_plugin(tmp_path)
-        result = _run_async(plugin.execute_tool(
-            "consolidate_history", summary="   ", keep_last_n=5,
-        ))
+        result = _call_tool(plugin, "consolidate_history", summary="   ", keep_last_n=5)
         assert "错误" in result
 
     def test_consolidate_history_invalid_keep_last_n(self, tmp_path: Path) -> None:
         """keep_last_n < 2 时返回错误。"""
         plugin = _create_plugin(tmp_path)
-        result = _run_async(plugin.execute_tool(
-            "consolidate_history", summary="摘要文本", keep_last_n=1,
-        ))
+        result = _call_tool(plugin, "consolidate_history", summary="摘要文本", keep_last_n=1)
         assert "错误" in result or "≥2" in result
 
     def test_consolidate_history_default_keep_last_n(self, tmp_path: Path) -> None:
         """不传 keep_last_n 时使用默认值 8。"""
         plugin = _create_plugin(tmp_path)
         summary = "默认保留 8 条的压缩测试。"
-        result = _run_async(plugin.execute_tool(
-            "consolidate_history", summary=summary,
-        ))
+        result = _call_tool(plugin, "consolidate_history", summary=summary)
         assert "压缩完成" in result
         # 20 - 默认 8 = 12 条归档
         assert "12" in result
@@ -199,16 +214,15 @@ class TestConsolidateHistory:
         kernel = MagicMock()
         kernel.session_manager = session_manager
         plugin.initialize(kernel)
-        plugin.set_context(user_id="small-user", session_key="small-session")
 
         session = session_manager.get_or_create("small-user", "small-session")
         for i in range(3):
             session.add_message("user", f"msg {i}")
         session_manager.save(session)
 
-        result = _run_async(plugin.execute_tool(
-            "consolidate_history", summary="摘要文本", keep_last_n=10,
-        ))
+        result = _call_tool(plugin, "consolidate_history",
+                            user_id="small-user", session_id="small-session",
+                            summary="摘要文本", keep_last_n=10)
         assert "无需压缩" in result or "未超过" in result
 
     def test_consolidate_history_no_user_context(self, tmp_path: Path) -> None:
@@ -217,7 +231,7 @@ class TestConsolidateHistory:
         kernel = MagicMock()
         kernel.session_manager = SessionManager(tmp_path / "users")
         plugin.initialize(kernel)
-        # 未调用 set_context
+        # 未绑定 RequestContext
 
         result = _run_async(plugin.execute_tool(
             "consolidate_history", summary="摘要文本",
@@ -230,20 +244,20 @@ class TestConsolidateHistory:
         kernel = MagicMock()
         kernel.session_manager = None
         plugin.initialize(kernel)
-        plugin.set_context(user_id="test-user", session_key="test-session")
-
-        result = _run_async(plugin.execute_tool(
-            "consolidate_history", summary="摘要文本",
-        ))
+        token = _bind_context(user_id="test-user", session_id="test-session")
+        try:
+            result = _run_async(plugin.execute_tool(
+                "consolidate_history", summary="摘要文本",
+            ))
+        finally:
+            reset_request_context(token)
         assert "错误" in result or "不可用" in result
 
     def test_consolidate_history_creates_archive(self, tmp_path: Path) -> None:
         """consolidate_history 应创建 .consolidation.jsonl 归档文件。"""
         plugin = _create_plugin(tmp_path)
         summary = "验证归档文件创建的压缩测试。"
-        _run_async(plugin.execute_tool(
-            "consolidate_history", summary=summary, keep_last_n=5,
-        ))
+        _call_tool(plugin, "consolidate_history", summary=summary, keep_last_n=5)
 
         # 检查归档文件
         store = SessionStore(tmp_path / "users")
@@ -261,13 +275,9 @@ class TestConsolidateHistory:
         """多次 consolidate 应追加而非覆盖归档。"""
         plugin = _create_plugin(tmp_path)
         # 第一次压缩
-        _run_async(plugin.execute_tool(
-            "consolidate_history", summary="第一次压缩。", keep_last_n=10,
-        ))
+        _call_tool(plugin, "consolidate_history", summary="第一次压缩。", keep_last_n=10)
         # 第二次压缩（在压缩后的 11 条消息上再压缩）
-        _run_async(plugin.execute_tool(
-            "consolidate_history", summary="第二次压缩。", keep_last_n=3,
-        ))
+        _call_tool(plugin, "consolidate_history", summary="第二次压缩。", keep_last_n=3)
 
         store = SessionStore(tmp_path / "users")
         archive_path = store._consolidation_path("test-user", "test-session")
@@ -284,9 +294,7 @@ class TestConsolidateHistory:
         """system 消息应包含摘要和元信息。"""
         plugin = _create_plugin(tmp_path)
         summary = "关键决策：选择方案A，用户偏好：Python语言。"
-        _run_async(plugin.execute_tool(
-            "consolidate_history", summary=summary, keep_last_n=8,
-        ))
+        _call_tool(plugin, "consolidate_history", summary=summary, keep_last_n=8)
 
         session = plugin.kernel.session_manager.get_or_create("test-user", "test-session")
         system_msg = session.messages[0]

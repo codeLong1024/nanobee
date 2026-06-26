@@ -8,13 +8,15 @@
 让插件通过 self.tmp 动态获取当前用户上下文的临时目录。
 
 使用方式：
+    from nanobee.kernel.context_sandbox_var import (
+        CURRENT_SANDBOX as sandbox_slot,
+    )
+
+    # 或直接使用模块级别名（推荐）
     from nanobee.kernel.context_sandbox_var import bind_sandbox, current_sandbox
 
-    # 在 Agent 轮次开始时绑定
-    sandbox = ContextSandbox(context_root)
     token = bind_sandbox(sandbox)
     try:
-        # 协程中任意深度调用 current_sandbox() 均可获取
         ...
     finally:
         reset_sandbox(token)
@@ -23,210 +25,54 @@
 from __future__ import annotations
 
 from contextvars import ContextVar, Token
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Generic, TypeVar
 
 if TYPE_CHECKING:
     from nanobee.kernel.sandbox import ContextSandbox
 
-_CURRENT_SANDBOX: ContextVar["ContextSandbox | None"] = ContextVar(
-    "nanobee_sandbox",
-    default=None,
-)
-
-# 当前请求的 tmp 根目录（per-user: ~/.nanobee/users/<user>/.tmp/）
-# 插件访问 self.tmp 时会自动加上插件名作为子目录
-_CURRENT_TMP: ContextVar[Path | None] = ContextVar(
-    "nanobee_tmp",
-    default=None,
-)
-
-# 当前请求的用户上下文根目录（per-user: ~/.nanobee/users/<user>/）
-# 框架只提供 basedir，插件自己创建子目录
-_CURRENT_CONTEXT_ROOT: ContextVar[Path | None] = ContextVar(
-    "nanobee_context_root",
-    default=None,
-)
+T = TypeVar("T")
 
 
-def bind_sandbox(sandbox: ContextSandbox) -> Token[ContextSandbox | None]:
-    """在当前异步任务中绑定沙箱实例。
+class SandboxVar(Generic[T]):
+    """ContextVar 泛型包装 —— 替代 6×3 bind/reset/current 函数样板。
 
-    Args:
-        sandbox: ContextSandbox 实例
+    用法：
+        slot = SandboxVar[Path | None]("name", default=None)
+        token = slot.bind(value)
+        slot.reset(token)
+        val = slot.current()
 
-    Returns:
-        Token 用于后续 reset_sandbox 恢复
+    所有 ContextVar slot 声明集中在此文件底部，
+    模块级别名保证 ``from ... import bind_xxx`` 等现有导入不受影响。
     """
-    return _CURRENT_SANDBOX.set(sandbox)
 
+    def __init__(self, name: str, default: T = None) -> None:  # type: ignore[assignment]
+        self._var: ContextVar[T] = ContextVar(name, default=default)
 
-def reset_sandbox(token: Token[ContextSandbox | None]) -> None:
-    """恢复绑定的沙箱到绑定前的状态。
+    def bind(self, value: T) -> Token[T]:
+        """在当前异步任务中绑定值。
 
-    Args:
-        token: bind_sandbox 返回的 Token
-    """
-    _CURRENT_SANDBOX.reset(token)
+        Args:
+            value: 要绑定的值
 
+        Returns:
+            Token 用于后续 reset 恢复
+        """
+        return self._var.set(value)
 
-def current_sandbox() -> ContextSandbox | None:
-    """获取当前异步任务中绑定的沙箱实例。
+    def reset(self, token: Token[T]) -> None:
+        """恢复上下文到绑定前的状态。
 
-    Returns:
-        ContextSandbox 实例，未绑定时返回 None
-    """
-    return _CURRENT_SANDBOX.get()
+        Args:
+            token: bind 返回的 Token
+        """
+        self._var.reset(token)
 
-
-def bind_tmp(tmp_dir: Path) -> Token[Path | None]:
-    """在当前异步任务中绑定 tmp 根目录。
-
-    Args:
-        tmp_dir: per-user 的 tmp 根目录
-
-    Returns:
-        Token 用于后续 reset_tmp 恢复
-    """
-    return _CURRENT_TMP.set(tmp_dir)
-
-
-def reset_tmp(token: Token[Path | None]) -> None:
-    """恢复绑定的 tmp 到绑定前的状态。
-
-    Args:
-        token: bind_tmp 返回的 Token
-    """
-    _CURRENT_TMP.reset(token)
-
-
-def current_tmp() -> Path | None:
-    """获取当前异步任务中绑定的 tmp 根目录。
-
-    插件通过 self.tmp 属性访问（自动追加插件名），
-    无需直接调用此函数。
-
-    Returns:
-        tmp 根目录，未绑定时返回 None
-    """
-    return _CURRENT_TMP.get()
-
-
-def bind_context_root(ctx_root: Path) -> Token[Path | None]:
-    """在当前异步任务中绑定用户上下文根目录。
-
-    Args:
-        ctx_root: 用户上下文根目录（basedir）
-
-    Returns:
-        Token 用于后续 reset_context_root 恢复
-    """
-    return _CURRENT_CONTEXT_ROOT.set(ctx_root)
-
-
-def reset_context_root(token: Token[Path | None]) -> None:
-    """恢复绑定的上下文根目录到绑定前的状态。
-
-    Args:
-        token: bind_context_root 返回的 Token
-    """
-    _CURRENT_CONTEXT_ROOT.reset(token)
-
-
-def current_context_root() -> Path | None:
-    """获取当前异步任务中绑定的用户上下文根目录。
-
-    插件通过 self.context_root 属性访问，
-    拿到 basedir 后自己创建持久化子目录。
-
-    Returns:
-        用户上下文根目录，未绑定时返回 None
-    """
-    return _CURRENT_CONTEXT_ROOT.get()
-
-
-# 当前请求的子进程工作区边界（per-user: ~/.nanobee/users/<user>/workspace/）
-# 定义子进程可访问的目录边界，与 ContextRoot（路径校验边界）解耦。
-_CURRENT_PROCESS_WORKSPACE: ContextVar[Path | None] = ContextVar(
-    "nanobee_process_workspace",
-    default=None,
-)
-
-
-def bind_process_workspace(workspace: Path) -> Token[Path | None]:
-    """在当前异步任务中绑定子进程工作区边界。
-
-    Args:
-        workspace: 子进程可访问的工作区根目录
-
-    Returns:
-        Token 用于后续 reset_process_workspace 恢复
-    """
-    return _CURRENT_PROCESS_WORKSPACE.set(workspace)
-
-
-def reset_process_workspace(token: Token[Path | None]) -> None:
-    """恢复绑定的子进程工作区到绑定前的状态。
-
-    Args:
-        token: bind_process_workspace 返回的 Token
-    """
-    _CURRENT_PROCESS_WORKSPACE.reset(token)
-
-
-def current_process_workspace() -> Path | None:
-    """获取当前异步任务中绑定的子进程工作区边界。
-
-    tool_shell 插件通过此 ContextVar 获取 bwrap workspace 路径，
-    遵循框架无知论：工具层只读标记、不决策。
-
-    Returns:
-        子进程工作区根目录，未绑定时返回 None
-    """
-    return _CURRENT_PROCESS_WORKSPACE.get()
-
-
-# bwrap 额外只读挂载路径列表 —— 部署方通过 skills.enabled 声明后，
-# 框架自动推导 enabled 实例技能目录为 bwrap --ro-bind-try 目标。
-# tool_shell 插件在 _wrap_sandbox 中消费此 ContextVar。
-_CURRENT_BWRAP_RO_BIND: ContextVar[list[str] | None] = ContextVar(
-    "nanobee_bwrap_ro_bind",
-    default=None,
-)
-
-
-def bind_bwrap_ro_bind(paths: list[str]) -> Token[list[str] | None]:
-    """在当前异步任务中绑定 bwrap 额外只读挂载路径。
-
-    Args:
-        paths: 只读挂载路径列表（绝对路径字符串）
-
-    Returns:
-        Token 用于后续 reset_bwrap_ro_bind 恢复
-    """
-    return _CURRENT_BWRAP_RO_BIND.set(paths)
-
-
-def reset_bwrap_ro_bind(token: Token[list[str] | None]) -> None:
-    """恢复绑定的 bwrap ro-bind 到绑定前的状态。
-
-    Args:
-        token: bind_bwrap_ro_bind 返回的 Token
-    """
-    _CURRENT_BWRAP_RO_BIND.reset(token)
-
-
-def current_bwrap_ro_bind() -> list[str] | None:
-    """获取当前异步任务中绑定的 bwrap 额外只读挂载路径。
-
-    tool_shell 插件通过此 ContextVar 获取启用的实例技能目录，
-    追加为 bwrap --ro-bind-try 挂载点。
-
-    Returns:
-        只读挂载路径列表，未绑定时返回 None
-    """
-    return _CURRENT_BWRAP_RO_BIND.get()
+    def current(self) -> T:
+        """获取当前绑定的值，未绑定时返回 default。"""
+        return self._var.get()
 
 
 # ── Per-turn 路由上下文（对齐 nanobot 的 RequestContext 概念） ──────────────────
@@ -251,43 +97,60 @@ class RequestContext:
     chat_id: str      # 通道内会话标识（如用户 staff_id）
     context_id: str   # 用户上下文 ID，用于目录隔离和结果路由
     session_id: str   # 会话持久化 ID，用于 SessionManager 存储
+    metadata: dict = field(default_factory=dict)  # 通道附加元数据
 
 
-_CURRENT_REQUEST_CONTEXT: ContextVar[RequestContext | None] = ContextVar(
-    "nanobee_request_context",
-    default=None,
-)
+# ── 6 个 slot 声明 ──────────────────────────────────────────────────────────
+
+# 当前请求的沙箱实例（per-task: 由 AgentLoop 在 _state_run 中绑定）
+CURRENT_SANDBOX = SandboxVar["ContextSandbox | None"]("nanobee_sandbox", default=None)
+
+# 当前请求的 tmp 根目录（per-user: ~/.nanobee/users/<user>/.tmp/）
+# 插件访问 self.tmp 时会自动加上插件名作为子目录
+CURRENT_TMP = SandboxVar[Path | None]("nanobee_tmp", default=None)
+
+# 当前请求的用户上下文根目录（per-user: ~/.nanobee/users/<user>/）
+# 框架只提供 basedir，插件自己创建子目录
+CURRENT_CONTEXT_ROOT = SandboxVar[Path | None]("nanobee_context_root", default=None)
+
+# 当前请求的子进程工作区边界（per-user: ~/.nanobee/users/<user>/workspace/）
+# 定义子进程可访问的目录边界，与 ContextRoot（路径校验边界）解耦。
+CURRENT_PROCESS_WORKSPACE = SandboxVar[Path | None]("nanobee_process_workspace", default=None)
+
+# bwrap 额外只读挂载路径列表 —— 部署方通过 skills.enabled 声明后，
+# 框架自动推导 enabled 实例技能目录为 bwrap --ro-bind-try 目标。
+# tool_shell 插件在 _wrap_sandbox 中消费此 ContextVar。
+CURRENT_BWRAP_RO_BIND = SandboxVar[list[str] | None]("nanobee_bwrap_ro_bind", default=None)
+
+# Per-turn 路由上下文
+CURRENT_REQUEST_CONTEXT = SandboxVar[RequestContext | None]("nanobee_request_context", default=None)
 
 
-def bind_request_context(ctx: RequestContext) -> Token[RequestContext | None]:
-    """在当前异步任务中绑定 per-turn 路由上下文。
+# ── 模块级别名 —— 保持所有 import 兼容 ────────────────────────────────────────
 
-    Args:
-        ctx: RequestContext 实例，包含 channel/chat_id/context_id/session_id
+bind_sandbox = CURRENT_SANDBOX.bind
+reset_sandbox = CURRENT_SANDBOX.reset
+current_sandbox = CURRENT_SANDBOX.current
 
-    Returns:
-        Token 用于后续 reset_request_context 恢复
-    """
-    return _CURRENT_REQUEST_CONTEXT.set(ctx)
+bind_tmp = CURRENT_TMP.bind
+reset_tmp = CURRENT_TMP.reset
+current_tmp = CURRENT_TMP.current
 
+bind_context_root = CURRENT_CONTEXT_ROOT.bind
+reset_context_root = CURRENT_CONTEXT_ROOT.reset
+current_context_root = CURRENT_CONTEXT_ROOT.current
 
-def reset_request_context(token: Token[RequestContext | None]) -> None:
-    """恢复绑定的路由上下文到绑定前的状态。
+bind_process_workspace = CURRENT_PROCESS_WORKSPACE.bind
+reset_process_workspace = CURRENT_PROCESS_WORKSPACE.reset
+current_process_workspace = CURRENT_PROCESS_WORKSPACE.current
 
-    Args:
-        token: bind_request_context 返回的 Token
-    """
-    _CURRENT_REQUEST_CONTEXT.reset(token)
+bind_bwrap_ro_bind = CURRENT_BWRAP_RO_BIND.bind
+reset_bwrap_ro_bind = CURRENT_BWRAP_RO_BIND.reset
+current_bwrap_ro_bind = CURRENT_BWRAP_RO_BIND.current
 
-
-def current_request_context() -> RequestContext | None:
-    """获取当前异步任务中绑定的 per-turn 路由上下文。
-
-    Returns:
-        RequestContext 实例，未绑定时返回 None
-    """
-    return _CURRENT_REQUEST_CONTEXT.get()
-
+bind_request_context = CURRENT_REQUEST_CONTEXT.bind
+reset_request_context = CURRENT_REQUEST_CONTEXT.reset
+current_request_context = CURRENT_REQUEST_CONTEXT.current
 
 __all__ = [
     "bind_sandbox",

@@ -10,7 +10,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from nanobee.plugins.tool import ToolPlugin
+from nanobee.kernel.context_sandbox_var import current_request_context
+from nanobee.plugins import ToolPlugin
 from nanobee.utils.logger import logger
 
 
@@ -23,41 +24,14 @@ class ToolHistoryPlugin(ToolPlugin):
 
     LLM 自主决定何时调用、使用哪个、参数值。
     框架只提供裁剪和压缩机制，不持有策略。
+
+    线程安全：通过 CURRENT_REQUEST_CONTEXT ContextVar 按 turn 注入会话上下文，
+    替代旧版 set_context() 实例属性写入模式。
     """
 
     name = "tool_history"
     version = "1.1.0"
     plugin_type = "tool"
-
-    def __init__(self, metadata: Any = None):
-        super().__init__(metadata)
-        self._user_id: str = ""
-        self._session_id: str = "default"
-
-    # ------------------------------------------------------------------
-    # 上下文注入
-    # ------------------------------------------------------------------
-
-    def set_context(
-        self,
-        channel: str = "",
-        chat_id: str = "",
-        user_id: str = "",
-        metadata: dict[str, Any] | None = None,
-        session_key: str = "",
-    ) -> None:
-        """注入当前会话上下文（用于定位会话历史记录）。
-
-        Args:
-            channel: 通道名称
-            chat_id: 会话 ID
-            user_id: 用户 ID（用作 context_id）
-            metadata: 通道附加元数据
-            session_key: 会话键（用于定位 session）
-        """
-        self._user_id = user_id
-        if session_key:
-            self._session_id = session_key
 
     # ------------------------------------------------------------------
     # 工具定义
@@ -146,11 +120,16 @@ class ToolHistoryPlugin(ToolPlugin):
         if tool_name not in ("trim_history", "consolidate_history"):
             raise ValueError(f"未知工具: {tool_name}")
 
-        if not self._user_id:
-            return f"错误: 无法获取当前用户上下文，{tool_name} 未能执行"
+        # 从 per-turn ContextVar 获取路由上下文（线程安全）
+        rctx = current_request_context()
+        if rctx is None:
+            return f"错误: 无法获取当前会话上下文，{tool_name} 未能执行"
 
         if not self.kernel or not self.kernel.session_manager:
             return f"错误: session_manager 不可用，{tool_name} 未能执行"
+
+        self._user_id = rctx.context_id
+        self._session_id = rctx.session_id
 
         try:
             if tool_name == "trim_history":

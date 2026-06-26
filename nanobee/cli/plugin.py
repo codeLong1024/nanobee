@@ -224,7 +224,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from nanobee.plugins.tool import ToolPlugin
+from nanobee.plugins import ToolPlugin
 
 
 class {name.replace('_', ' ').title().replace(' ', '')}Plugin(ToolPlugin):

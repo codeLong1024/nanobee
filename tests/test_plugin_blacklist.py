@@ -22,7 +22,7 @@ description = "Shell 工具"
 author = "test"
 type = "tool"
 """, encoding="utf-8")
-    (tool_shell_dir / "plugin.py").write_text("""from nanobee.plugins.tool import ToolPlugin
+    (tool_shell_dir / "plugin.py").write_text("""from nanobee.plugins import ToolPlugin
 class ShellPlugin(ToolPlugin):
     name = "tool_shell"
     version = "1.0.0"

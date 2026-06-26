@@ -33,8 +33,7 @@ class PluginDescriptor:
             self._data = toml.load(f)
 
         plugin_section = self._data.get("plugin", {})
-        # 支持 "type" 和 "plugin_type" 两种字段名（向后兼容）
-        plugin_type = plugin_section.get("type") or plugin_section.get("plugin_type", "unknown")
+        plugin_type = plugin_section.get("type", "unknown")
         self.metadata = PluginMetadata(
             name=plugin_section.get("name", ""),
             version=plugin_section.get("version", "0.0.1"),

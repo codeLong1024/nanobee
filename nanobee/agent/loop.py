@@ -1050,6 +1050,7 @@ class AgentLoop:
             chat_id=ctx.msg.chat_id,
             context_id=ctx.context_id,
             session_id=ctx.session_id,
+            metadata=ctx.msg.metadata,
         ))
 
         # 根据部署方 skills.enabled 推导 bwrap 额外只读挂载路径

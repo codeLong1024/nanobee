@@ -23,7 +23,7 @@ from nanobee.kernel.context_sandbox_var import (
     current_process_workspace,
     current_sandbox as _current_sandbox,
 )
-from nanobee.plugins.tool import ToolPlugin
+from nanobee.plugins import ToolPlugin
 from nanobee.security.network import contains_internal_url
 
 from nanobee.utils.logger import logger
