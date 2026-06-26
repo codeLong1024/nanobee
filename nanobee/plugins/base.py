@@ -161,6 +161,43 @@ class NanobeePlugin(PluginHookMixin, ABC):
         """插件是否已启用"""
         return self._enabled
 
+    def resolve_path(self, path_str: str, *, for_write: bool = False) -> Path:
+        """安全解析路径，支持沙箱边界校验。
+
+        相对路径基于 context_root 解析，绝对路径直接使用。
+        通过 ContextVar 获取当前沙箱实例进行路径边界校验。
+        未绑定沙箱或 context_root 时回退到 Path.resolve()。
+
+        这是插件访问文件系统的统一入口。实例级插件无需直接导入
+        nanobee.kernel 内部模块，通过此方法即可获得沙箱保护。
+
+        Args:
+            path_str: 文件路径（相对或绝对）
+            for_write: 是否为写操作（写操作路径校验更严格，默认 False）
+
+        Returns:
+            解析后的安全绝对路径
+
+        Raises:
+            SandboxViolationError: 路径逃逸当前沙箱范围
+        """
+        from nanobee.kernel.context_sandbox_var import current_sandbox as _current_sandbox
+
+        p = Path(path_str)
+        if not p.is_absolute():
+            root = self.context_root
+            if root:
+                p = root / path_str
+            else:
+                p = p.resolve()
+
+        sandbox = _current_sandbox()
+        if sandbox is not None:
+            if for_write:
+                return sandbox.resolve_safe_writable(str(p))
+            return sandbox.resolve_with_fallback(str(p))
+        return p.resolve()
+
     def get_config(self, key: str, default: Any = None) -> Any:
         """从插件专属配置中获取指定键的值
 

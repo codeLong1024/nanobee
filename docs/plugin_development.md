@@ -18,7 +18,7 @@ Nanobee 的插件体系遵循**框架无知论**（Framework Ignorance Principle
   - [消息完成回调（on_message_completed）](#消息完成回调on_message_completed)
 - [开发 Tool 插件](#开发-tool-插件)
   - [简单工具插件](#简单工具插件)
-  - [带沙箱的工具插件](#带沙箱的工具插件)
+  - [路径安全与沙箱](#路径安全与沙箱)
 - [开发 Memory 插件](#开发-memory-插件)
 - [开发 Channel 插件](#开发-channel-插件)
 - [开发 Audit 插件](#开发-audit-插件)
@@ -463,44 +463,101 @@ class ToolEchoPlugin(ToolPlugin):
         raise ValueError(f"未知工具: {tool_name}")
 ```
 
-### 带沙箱的工具插件
+### 路径安全与沙箱
 
-参考 `nanobee/builtin/tool_fs/plugin.py`。沙箱（Sandbox）是框架注入的隔离机制，工具插件可通过 `current_sandbox()` 获取当前请求的沙箱实例：
+操作文件系统的工具需要路径安全校验。框架提供了两种模式，按需选用。
+
+#### 模式一：自带沙箱隔离（推荐给文件/Shell 工具）
+
+框架在 `NanobeePlugin` 基类上提供了 `resolve_path()` 公开方法，封装了沙箱边界校验。
+实例级插件**无需**导入 `nanobee.kernel` 内部模块，通过基类方法即可获得完整保护：
 
 ```python
+from pathlib import Path
 from nanobee.plugins.tool import ToolPlugin
-from nanobee.kernel.sandbox import SandboxViolationError, current_sandbox
 
 
 class ToolFsPlugin(ToolPlugin):
     name = "tool_fs"
     plugin_type = "tool"
 
-    def _resolve_path(self, path: str) -> str:
-        """解析路径并校验沙箱边界。
+    def _resolve_file_path(self, path_str: str) -> Path:
+        """安全解析文件路径。
 
-        使用 current_sandbox() 获取当前请求的沙箱（请求级注入，非全局）。
+        通过基类 resolve_path() 获得沙箱保护：
+        - 有沙箱时走沙箱边界校验，越界抛 SandboxViolationError
+        - 无沙箱时回退到 Path.resolve()
         """
-        sandbox = current_sandbox()
-        if sandbox is not None:
-            resolved = sandbox.assert_allowed(path)
-            return resolved
-        # 无沙箱时使用默认工作目录
-        return os.path.abspath(path)
+        return self.resolve_path(path_str)
 
     async def execute_tool(self, tool_name: str, **kwargs) -> str:
         if tool_name == "read_file":
-            safe_path = self._resolve_path(kwargs["path"])
-            # ... 读取文件逻辑
+            path = kwargs["path"]
+            safe_path = self._resolve_file_path(path)
+            content = safe_path.read_text("utf-8")
             return content
-        # ... 其他工具
+        raise ValueError(f"未知工具: {tool_name}")
 ```
 
-**沙箱规则**：
-- 通过 `current_sandbox()` 获取请求级沙箱（ContextVar 注入，线程安全）
-- `assert_allowed(path)` 返回规范化绝对路径，或抛出 `SandboxViolationError`
-- `SandboxViolationError` 会被框架自动识别为"工作区越界"违规，提示 LLM 修正
-- 路径逃逸超过 3 次时会升级为严重警告
+**`resolve_path()` 签名：**
+
+```python
+def resolve_path(self, path_str: str, *, for_write: bool = False) -> Path:
+```
+
+- `path_str`：文件路径（相对基于 context_root 解析，绝对直接使用）
+- `for_write`：是否为写操作（写操作有更严格的路径校验）
+- 有沙箱时调用 `sandbox.resolve_with_fallback()` 或 `resolve_safe_writable()`
+- 无沙箱时回退到 `Path.resolve()`
+
+#### 模式二：仅校验绝对路径（推荐给数据搬运工具）
+
+不需要沙箱隔离的工具（如数据导入/导出），直接校验绝对路径即可，
+不引入沙箱依赖。参考 `tool_dingtalk` 的实现：
+
+```python
+from pathlib import Path
+from nanobee.plugins.tool import ToolPlugin
+
+
+class MyDataTool(ToolPlugin):
+    name = "my_data_tool"
+    plugin_type = "tool"
+
+    def _resolve_input_dir(self, path_str: str) -> Path:
+        """解析输入目录（仅接受绝对路径）。
+
+        不接受相对路径——多租户沙箱隔离下相对路径不可靠。
+        路径不存在或不是目录时直接报错并引导使用绝对路径。
+        """
+        path = Path(path_str).resolve()
+        if not path.is_dir():
+            raise ValueError(
+                f"输入目录不存在或不是目录: {path_str}，请使用绝对路径"
+            )
+        return path
+
+    async def execute_tool(self, tool_name: str, **kwargs) -> str:
+        if tool_name == "import_data":
+            input_dir = self._resolve_input_dir(kwargs["input_dir"])
+            # 扫描目录下的数据文件
+            csv_files = list(input_dir.glob("*.csv"))
+            if not csv_files:
+                return f"错误：{input_dir} 中未找到 .csv 文件"
+            # ... 处理数据
+            return f"已导入 {len(csv_files)} 个文件"
+        raise ValueError(f"未知工具: {tool_name}")
+```
+
+**两种模式对比：**
+
+| | 模式一 `self.resolve_path()` | 模式二 绝对路径校验 |
+|---|---|---|
+| 适用场景 | 需沙箱隔离的文件/Shell 工具 | 数据搬运/导入导出工具 |
+| 沙箱依赖 | 有沙箱自动生效 | 不依赖沙箱 |
+| 相对路径 | 基于 context_root 解析 | 不接受（报错引导） |
+| 路径校验 | 沙箱边界 + 存在性自查 | 仅查存在性 |
+| 导入方式 | 基类公开 API | 纯标准库 |
 
 ---
 
@@ -742,7 +799,7 @@ python -m pytest tests/test_tool_fs.py -v
 1. **最小权限**：插件只覆盖需要的 Hook，不实现空方法
 2. **错误隔离**：工具失败返回错误字符串而非抛异常（LLM 可读可恢复）
 3. **异步优先**：所有 IO 操作使用 `async/await`，禁止同步阻塞
-4. **沙箱意识**：操作文件、网络时始终使用框架沙箱检测路径
+4. **按需沙箱**：需沙箱隔离的工具用 `self.resolve_path()`，数据搬运类工具直接校验绝对路径即可，不引入不必要的依赖
 5. **日志代替 print**：使用 `logger = get_logger(__name__)`，配置在 `plugin.py` 中
 6. **配置敏感信息**：API Key 等敏感信息通过 `nanobee.yaml` 配置读取，不硬编码
 7. **临时文件**：使用 `self.tmp` 目录（框架自动清理），不使用系统临时目录
