@@ -1116,6 +1116,7 @@ class AgentLoop:
                 user_ctx.context_root,
                 read_only_roots=read_only,
                 prefix_map=prefix_map,
+                process_workspace=user_ctx.work_dir,
             )
         except Exception:
             logger.debug("无法构建沙箱（非多租户模式）: {}", user_id)
@@ -1127,13 +1128,15 @@ class AgentLoop:
         logger.debug("[RUN] 开始 RUN 状态 (context_id={})", ctx.context_id)
         sandbox = await self._build_sandbox(ctx.context_id)
 
-        # 使用 ContextVar 绑定沙箱 + tmp + context_root + process_workspace + bwrap_ro_bind + request_context
+        # 使用 ContextVar 绑定沙箱 + tmp + context_root + process_workspace + bwrap_ro_bind + bwrap_rw_bind + request_context
         from nanobee.kernel.context_sandbox_var import (
             RequestContext,
-            bind_bwrap_ro_bind, bind_context_root,
+            bind_bwrap_ro_bind, bind_bwrap_rw_bind,
+            bind_context_root,
             bind_process_workspace, bind_request_context,
             bind_sandbox, bind_tmp,
-            reset_bwrap_ro_bind, reset_context_root,
+            reset_bwrap_ro_bind, reset_bwrap_rw_bind,
+            reset_context_root,
             reset_process_workspace, reset_request_context,
             reset_sandbox, reset_tmp,
         )
@@ -1163,6 +1166,12 @@ class AgentLoop:
                 _bwrap_ro_bind_token = bind_bwrap_ro_bind(
                     [str(d) for d in enabled_dirs]
                 )
+
+        # 将用户 skills_dir 绑定为 bwrap 额外可读写挂载路径，
+        # 让 execute_shell 在沙箱中创建/修改的技能目录持久化到真实文件系统
+        _bwrap_rw_bind_token = bind_bwrap_rw_bind(
+            [str(user_ctx.skills_dir)]
+        )
 
         # 让插件修改工具列表（在 ToolCollector 过滤之前）
         plugin_modified_tool_names = self._collect_plugin_tools(
@@ -1218,6 +1227,7 @@ class AgentLoop:
             reset_request_context(_rctx_token)
             if _bwrap_ro_bind_token is not None:
                 reset_bwrap_ro_bind(_bwrap_ro_bind_token)
+            reset_bwrap_rw_bind(_bwrap_rw_bind_token)
         _elapsed_runner = (time.perf_counter() - _t_runner) * 1000
         logger.debug("[RUN] runner.run 完成，耗时 {:.0f}ms", _elapsed_runner)
         final_content, tools_used, all_msgs, stop_reason, had_injections = result

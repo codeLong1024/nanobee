@@ -17,29 +17,52 @@ from typing import Callable
 from nanobee.utils.logger import logger
 
 
-def _bwrap(command: str, workspace: str, cwd: str, extra_ro_bind: list[str] | None = None) -> str:
+def _ensure_parent_dirs(args: list[str], resolved: str, home: Path) -> None:
+    """若路径在 tmpfs 覆盖的家目录下，逐级创建 --dir 穿透 tmpfs。
+
+    bwrap 使用 ``--tmpfs HOME`` 隐藏真实家目录内容。
+    挂载 HOME 下任意路径前必须先 --dir 重建各级祖先目录，
+    否则 --bind/--ro-bind 的目标父目录不存在，挂载失败。
+
+    不在 HOME 下的路径直接从宿主编译空间继承，无需 --dir。
+    """
+    home_str = str(home)
+    if not resolved.startswith(home_str + "/"):
+        return
+    # HOME 下路径：逐级 --dir 穿透 tmpfs
+    rel = Path(resolved).relative_to(home)
+    current = home
+    for part in rel.parts:
+        current = current / part
+        args += ["--dir", str(current)]
+
+
+def _bwrap(
+    command: str,
+    workspace: str,
+    cwd: str,
+    extra_ro_bind: list[str] | None = None,
+    extra_rw_bind: list[str] | None = None,
+) -> str:
     """使用 bubblewrap 包裹命令（需要系统安装 bwrap）。
 
-    只将 workspace 目录 bind-mount 为可读写，其父目录以 tmpfs 遮掩，
+    只暴露 workspace 目录为可读写，HOME 以 tmpfs 遮掩，
     阻止子进程访问其他用户目录和敏感配置。
 
     Args:
         command: 原始 shell 命令
-        workspace: 可读写的工作区根目录（子进程唯一可写入的地方）
-        cwd: 容器内的工作目录（通常与 workspace 相同或为其子目录）
+        workspace: 可读写的工作区根目录
+        cwd: 容器内的工作目录
         extra_ro_bind: 额外只读挂载列表，支持两种格式：
-            - 纯路径: "/real/path" → 绑定到相同路径（向后兼容）
-            - source:target: "/real/path:/sandbox/path" → 绑定到容器内非 HOME 路径
+            - 纯路径: ``"/real/path"`` → 绑定到相同路径
+            - source:target: ``"/real/path:/sandbox/path"`` → 绑定到容器内非 HOME 路径
+        extra_rw_bind: 额外可读写挂载列表（纯路径）
 
     Returns:
         包裹后的 bwrap 命令字符串
     """
     ws = Path(workspace).resolve()
 
-    # 计算容器内的 cwd（相对于 workspace）
-    # 如果 cwd 不在 workspace 内，直接报错，不做静默回退。
-    # 上层 _resolve_and_validate_working_dir 已确保 cwd 在可写范围内，
-    # 若此异常触发说明上层校验有 bug，应当暴露而非隐藏。
     try:
         sandbox_cwd = str(ws / Path(cwd).resolve().relative_to(ws))
     except ValueError:
@@ -47,9 +70,7 @@ def _bwrap(command: str, workspace: str, cwd: str, extra_ro_bind: list[str] | No
             f"沙箱工作目录不在 workspace 内: cwd={cwd}, workspace={workspace}"
         ) from None
 
-    # 系统必须的可读目录
     required = ["/usr"]
-    # 尝试挂载的可选系统目录
     optional = [
         "/bin", "/lib", "/lib64", "/etc/alternatives",
         "/etc/ssl/certs", "/etc/resolv.conf", "/etc/ld.so.cache",
@@ -68,7 +89,10 @@ def _bwrap(command: str, workspace: str, cwd: str, extra_ro_bind: list[str] | No
         "--tmpfs", "/tmp",
         "--tmpfs", str(home),
     ]
+
+    # ── 额外只读挂载 ──────────────────────────────────────────────
     for p in (extra_ro_bind or []):
+        # source:target 格式：宿主编译路径映射到容器内非 HOME 路径（如 venv）
         if ":" in p:
             parts = p.split(":", 1)
             source = str(Path(parts[0]).expanduser().resolve())
@@ -80,20 +104,25 @@ def _bwrap(command: str, workspace: str, cwd: str, extra_ro_bind: list[str] | No
                 args += ["--ro-bind", source, target]
                 continue
 
+        # 纯路径：挂载到相同路径
         resolved = str(Path(p).expanduser().resolve())
         if not Path(resolved).exists():
             continue
-        if resolved.startswith(str(home)):
-            rel = Path(resolved).relative_to(home)
-            current = home
-            for part in rel.parts[:-1]:  # 纯路径回退：HOME 下需逐级 --dir 穿透 tmpfs
-                current = current / part
-                args += ["--dir", str(current)]
-            args += ["--dir", resolved]
+        _ensure_parent_dirs(args, resolved, home)
         args += ["--ro-bind", resolved, resolved]
+
+    # ── 可读写挂载：workspace + 额外 rw 路径 ─────────────────────────
+    _ensure_parent_dirs(args, str(ws), home)
+    args += ["--bind", str(ws), str(ws)]
+
+    for p in (extra_rw_bind or []):
+        resolved = str(Path(p).expanduser().resolve())
+        if not Path(resolved).exists():
+            continue
+        _ensure_parent_dirs(args, resolved, home)
+        args += ["--bind", resolved, resolved]
+
     args += [
-        "--dir", str(ws),                 # 重建 workspace 挂载点
-        "--bind", str(ws), str(ws),       # workspace 可读写
         "--chdir", sandbox_cwd,
         "--", "sh", "-c", command,
     ]
@@ -127,6 +156,7 @@ def wrap_command(
     workspace: str,
     cwd: str,
     extra_ro_bind: list[str] | None = None,
+    extra_rw_bind: list[str] | None = None,
 ) -> str:
     """使用命名沙箱后端包裹命令。
 
@@ -136,6 +166,7 @@ def wrap_command(
         workspace: 可读写的工作区根目录
         cwd: 当前工作目录
         extra_ro_bind: 额外只读挂载路径列表（启用的实例技能目录）
+        extra_rw_bind: 额外可读写挂载路径列表（用户 skills_dir）
 
     Returns:
         包裹后的命令字符串
@@ -155,7 +186,7 @@ def wrap_command(
     if not available:
         raise RuntimeError(error_msg)
 
-    result = backend_fn(command, workspace, cwd, extra_ro_bind=extra_ro_bind)
+    result = backend_fn(command, workspace, cwd, extra_ro_bind=extra_ro_bind, extra_rw_bind=extra_rw_bind)
     logger.debug("沙箱包裹命令 (backend={}): {}", sandbox, result[:200])
     return result
 

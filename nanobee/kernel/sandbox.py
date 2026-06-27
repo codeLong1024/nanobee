@@ -26,15 +26,6 @@ from nanobee.security.workspace_policy import is_path_allowed, require_path_with
 from nanobee.utils.logger import logger
 
 
-# 包含路径的工具参数名（working_dir 特殊处理：只解析不拦截，拦截由 L2 工具层处理）
-_PATH_PARAM_KEYS: frozenset[str] = frozenset({
-    "path", "file_path", "directory", "dir", "target_path",
-    "source", "destination", "src", "dst", "working_dir",
-})
-
-# working_dir 类参数名 — 只解析为绝对路径，不做沙箱拦截
-_WORKING_DIR_KEYS: frozenset[str] = frozenset({"working_dir"})
-
 # 元数据文件写保护 — LLM 不可读/写/删这些文件
 _META_BLOCKED_FILES: frozenset[str] = frozenset({
     "identity.yaml",
@@ -78,6 +69,7 @@ class ContextSandbox:
         context_root: Path | str,
         read_only_roots: list[Path | str] | None = None,
         prefix_map: dict[str, Path | str] | None = None,
+        process_workspace: Path | str | None = None,
     ) -> None:
         """初始化沙箱
 
@@ -87,12 +79,18 @@ class ContextSandbox:
             prefix_map: 前缀 → 回退目录映射。
                 当路径在可写根内不存在时，按前缀匹配回退到指定目录。
                 例如 {"skills/": "/opt/nanobee/skills/"}。
+            process_workspace: 子进程可写工作目录边界（如 context_root/workspace/）。
+                用于 workspace 约束类型，execute_shell 的 working_dir 必须在此目录内。
+                未设置时不校验（向后兼容）。
         """
         self._context_root = Path(context_root).resolve()
         self._read_only_roots = [Path(r).resolve() for r in (read_only_roots or [])]
         self._prefix_map = {
             k: Path(v).resolve() for k, v in (prefix_map or {}).items()
         }
+        self._process_workspace = (
+            Path(process_workspace).resolve() if process_workspace is not None else None
+        )
 
     @property
     def context_root(self) -> Path:
@@ -175,6 +173,41 @@ class ContextSandbox:
         """
         return self._resolve(path_str, writable_only=True)
 
+    def resolve_safe_workspace(self, path_str: str) -> Path:
+        """解析路径并约束在 process_workspace 边界内。
+
+        相对路径基于 context_root 解析（与其他 resolve_* 一致），
+        绝对路径直接解析。
+
+        process_workspace 未设置时不校验边界（向后兼容）。
+
+        Args:
+            path_str: 路径字符串
+
+        Returns:
+            解析后的安全绝对路径
+
+        Raises:
+            SandboxViolationError: 路径超出进程工作目录边界
+        """
+        p = Path(path_str)
+        if not p.is_absolute():
+            p = (self._context_root / p).resolve()
+        else:
+            p = p.resolve()
+
+        if self._process_workspace is not None:
+            ws = self._process_workspace.resolve()
+            if p != ws and ws not in p.parents:
+                raise SandboxViolationError(
+                    path=str(p),
+                    context_root=str(self._context_root),
+                    detail="路径超出进程工作目录边界",
+                )
+
+        self._check_blocked(p)
+        return p
+
     def resolve_with_fallback(self, path_str: str) -> Path:
         """解析路径，支持前缀匹配回退（overlay 语义）。
 
@@ -221,37 +254,46 @@ class ContextSandbox:
         self,
         tool_name: str,
         params: dict[str, Any],
+        param_schema: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """清洗工具参数中的路径，确保所有路径都在沙箱内
+        """清洗工具参数中的路径，根据 x-constraint 声明执行对应约束。
 
-        对参数中所有已知的路径字段执行沙箱校验。
-        working_dir 参数特殊处理：只解析为绝对路径，不做沙箱拦截
-        （拦截由 L2 工具层处理，因为 working_dir 可能指向项目根）。
+        三种内置约束类型（由工具在 JSON Schema 的 properties 中声明）：
+        - "sandbox":   all roots 内可读，对应 resolve_safe()
+        - "writable":  context_root 内可写，对应 resolve_safe_writable()
+        - "workspace": process_workspace 内执行，对应 resolve_safe_workspace()
+
+        无 x-constraint 声明的参数直通，框架不猜测参数语义。
 
         Args:
             tool_name: 工具名称（用于日志）
             params: 工具参数字典
+            param_schema: 参数的 properties 字典（含 x-constraint 声明），
+                通常来自 tool.parameters["properties"]。
 
         Returns:
             清洗后的参数字典（路径被替换为解析后的绝对路径）
 
         Raises:
-            SandboxViolationError: 任意路径越界
+            SandboxViolationError: 任意被约束的路径越界
         """
         if not isinstance(params, dict):
             return params
 
+        properties = (param_schema or {}).get("properties", {})
         cleaned: dict[str, Any] = {}
         for key, value in params.items():
-            if key in _WORKING_DIR_KEYS and isinstance(value, str):
-                # working_dir 只解析为绝对路径，不做沙箱拦截
-                try:
-                    cleaned[key] = str(Path(value).resolve())
-                except Exception:
-                    cleaned[key] = value
-            elif key in _PATH_PARAM_KEYS and isinstance(value, str):
-                safe_path = self.resolve_safe(value)
-                cleaned[key] = str(safe_path)
+            if not isinstance(value, str):
+                cleaned[key] = value
+                continue
+
+            constraint = properties.get(key, {}).get("x-constraint")
+            if constraint == "workspace":
+                cleaned[key] = str(self.resolve_safe_workspace(value))
+            elif constraint == "writable":
+                cleaned[key] = str(self.resolve_safe_writable(value))
+            elif constraint == "sandbox":
+                cleaned[key] = str(self.resolve_safe(value))
             else:
                 cleaned[key] = value
 
@@ -319,9 +361,12 @@ class ContextSandbox:
                 )
 
     def __repr__(self) -> str:
+        parts = [f"ContextSandbox(writable={self._context_root}"]
         if self._read_only_roots:
-            return f"ContextSandbox(writable={self._context_root}, read_only={self._read_only_roots})"
-        return f"ContextSandbox(root={self._context_root})"
+            parts.append(f"read_only={self._read_only_roots}")
+        if self._process_workspace is not None:
+            parts.append(f"process_workspace={self._process_workspace}")
+        return ", ".join(parts) + ")"
 
 
 __all__ = [

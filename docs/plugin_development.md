@@ -626,12 +626,50 @@ class ToolEchoPlugin(ToolPlugin):
 
 ### 路径安全与沙箱
 
-操作文件系统的工具需要路径安全校验。框架提供了两种模式，按需选用。
+操作文件系统的工具需要路径安全校验。框架提供了**双层防护**：声明式参数约束（框架层预校验） + 插件内路径解析（执行层兜底）。
+
+#### x-constraint 参数约束声明（首选）
+
+在 `get_tools()` 的参数定义中，通过 `"x-constraint"` 标记路径参数的约束类型。
+框架在工具执行前自动读取该标记并校验参数，提前拦截越界路径：
+
+```python
+def get_tools(self) -> list[dict]:
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": "read_file",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "文件路径",
+                            "x-constraint": "sandbox",  # 标记此参数需沙箱校验
+                        },
+                    },
+                    "required": ["path"],
+                },
+            },
+        },
+    ]
+```
+
+**三种约束类型：**
+
+| 类型 | 含义 | 适用场景 |
+|------|------|----------|
+| `"sandbox"` | 可读路径，必须在沙箱只读根范围内 | `read_file`、`list_dir` 的路径参数 |
+| `"writable"` | 可写路径，必须在 context_root 范围内 | `write_file`、`edit_file` 的路径参数 |
+| `"workspace"` | Shell 工作目录，必须在 ProcessWorkspace 范围内 | `execute_shell` 的 `working_dir` 参数 |
+
+> `x-` 前缀的属性是框架内部扩展，`to_schema()` 会在发送给 LLM 前自动剥离，不会暴露给模型。
 
 #### 模式一：自带沙箱隔离（推荐给文件/Shell 工具）
 
 框架在 `NanobeePlugin` 基类上提供了 `resolve_path()` 公开方法，封装了沙箱边界校验。
-实例级插件**无需**导入 `nanobee.kernel` 内部模块，通过基类方法即可获得完整保护：
+实例级插件**无需**导入 `nanobee.kernel` 内部模块，结合 `x-constraint` 声明即可获得完整的双层防护：
 
 ```python
 from pathlib import Path
@@ -641,6 +679,29 @@ from nanobee.plugins.tool import ToolPlugin
 class ToolFsPlugin(ToolPlugin):
     name = "tool_fs"
     plugin_type = "tool"
+
+    def get_tools(self) -> list[dict]:
+        """工具定义，路径参数标注 x-constraint。"""
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": "read_file",
+                    "description": "读取文件内容",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {
+                                "type": "string",
+                                "description": "文件路径",
+                                "x-constraint": "sandbox",
+                            },
+                        },
+                        "required": ["path"],
+                    },
+                },
+            },
+        ]
 
     def _resolve_file_path(self, path_str: str) -> Path:
         """安全解析文件路径。
@@ -653,7 +714,7 @@ class ToolFsPlugin(ToolPlugin):
 
     async def execute_tool(self, tool_name: str, **kwargs) -> str:
         if tool_name == "read_file":
-            path = kwargs["path"]
+            path = kwargs["path"]  # 框架已通过 x-constraint 校验
             safe_path = self._resolve_file_path(path)
             content = safe_path.read_text("utf-8")
             return content
