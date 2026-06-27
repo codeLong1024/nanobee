@@ -400,7 +400,8 @@ async def on_post_invoke(
 
 ### 消息完成回调（on_message_completed）
 
-对话轮次结束后调用（后台执行，不阻塞 LLM 响应）：
+对话轮次结束后调用（后台执行，不阻塞 LLM 响应）。插件的调度行为由 ``plugin.toml`` 中的
+``[hooks.on_message_completed]`` 段控制（参见 [Hook 调度元数据](#hook-调度元数据声明)）。
 
 ```python
 async def on_message_completed(
@@ -410,14 +411,77 @@ async def on_message_completed(
 ) -> None:
     """一轮对话结束后调用。
 
-    适用于审计日志、后台整理等非关键同步操作。
+    适用于审计日志、后台整理等操作。
     此 Hook 的执行不会阻塞 LLM 响应返回给用户。
+    是否需要阻塞下一轮 dispatch 由 plugin.toml 中的 block_next 声明控制。
     """
     logger.info("对话轮次结束, 消息数: {len(messages)}")
-    # 写入审计日志
-    async with aiofiles.open("audit.log", "a") as f:
-        await f.write(f"{context.context_id}: {len(messages)} 条消息\n")
 ```
+
+---
+
+### Hook 调度元数据声明
+
+插件可通过 ``plugin.toml`` 的 ``[hooks.<hook_name>]`` 段声明各 Hook 的调度策略。
+框架只读标记、不懂含义（FIP），按声明驱动调度。
+
+支持的 Hook 名：``on_message_completed``、``on_pre_invoke``、``on_post_invoke``。
+
+#### 字段说明
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| ``block_next`` | bool | ``false`` | 是否阻塞同 ``context_id`` 的下一次 dispatch |
+| ``priority`` | int | ``10`` | 同 ``block_next`` 组内的执行优先级，数值越大越先执行 |
+| ``timeout`` | float | ``0.0`` | 阻塞型 Hook 的超时时间（秒），``0`` 表示不设超时 |
+
+#### 调度语义
+
+```
+block_next=true  → 框架在下一次 dispatch 前 await 本 Hook 完成
+                   （适用于 memory 存储等必须完成的操作）
+
+block_next=false → 框架 fire-and-forget，不等待、不追踪
+                   （适用于 audit 日志等丢了也无所谓的操作）
+
+priority         → 同 block_next 组内按降序执行
+                   （如 priority=100 的插件在 priority=50 之前执行）
+```
+
+#### 声明示例
+
+**非阻塞型（audit 日志）**：
+```toml
+# plugin.toml
+[hooks.on_message_completed]
+block_next = false      # 不阻塞下一步，丢了也无所谓
+priority = 10           # 低优先级
+```
+
+**阻塞型（memory 存储）**：
+```toml
+# plugin.toml
+[hooks.on_message_completed]
+block_next = true       # 必须存完才能处理下一条消息
+priority = 80           # 高优先级，先于其他 Hook 执行
+```
+
+**混合声明**：
+```toml
+[hooks.on_message_completed]
+block_next = true
+priority = 80
+timeout = 5.0
+
+[hooks.on_pre_invoke]
+priority = 100
+timeout = 3.0
+```
+
+#### 向后兼容
+
+- 不声明 ``[hooks]`` 段的插件 → 默认 ``block_next=false, priority=10``（非阻塞、无顺序保证）
+- 即现有插件无需修改即可正常工作，行为与改造前一致
 
 ---
 
@@ -726,17 +790,24 @@ version = "1.0.0"                      # 语义化版本
 description = "一句话描述插件功能"       # 简短描述
 author = "author-name"                 # 作者
 type = "tool"                          # 插件类型: tool / memory / channel / audit
-dependencies = ["tool_web"]            # 可选，依赖的其他插件
-permissions = ["network"]              # 可选，声明需要的权限
+permissions = { network = true }      # 可选，声明需要的权限
+
+[plugin.dependencies]
+requires = ["tool_web"]               # 可选，依赖的其他插件
 
 [config]
 enabled = true                         # 默认启用
+
+[hooks.on_message_completed]           # Hook 调度元数据（可选，不声明用默认值）
+block_next = false                      # 是否阻塞下一轮 dispatch
+priority = 10                           # 调度优先级（越大越优先）
 ```
 
-**`plugin_type` 字段说明**：
+**`[plugin].type` 字段说明**：
 
-- 可使用 `type` 或 `plugin_type`（优先 `plugin_type`）
-- 若有 `plugin_type` 字段，覆盖 `[plugin]` 级别；否则使用 `[plugin].type`
+- TOML 中使用 `type` 字段声明插件类型（内部存储为 `plugin_type` 元数据属性）
+- Python 类中使用 `plugin_type` 类变量（TOML 未提供 `type` 时作为回退值）
+- 有效值: `tool` / `memory` / `channel` / `audit`
 
 ---
 

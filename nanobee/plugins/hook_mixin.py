@@ -106,8 +106,14 @@ class PluginHookMixin:
     ) -> None:
         """对话轮次结束后的生命周期 Hook。
 
-        在每轮 Agent 交互完成后调用,适用于后台整理(如写入长期记忆)、
-        审计日志、梦境调度等场景。框架不等待此方法完成。
+        在每轮 Agent 交互完成后异步调用，适用于后台整理（如写入长期记忆）、
+        审计日志、梦境调度等场景。框架不阻塞 LLM 响应，调度策略由插件通过
+        ``plugin.toml`` 的 ``[hooks.on_message_completed]`` 段声明：
+
+        - ``block_next = true`` → 框架在下一轮同 context 的 dispatch 前等待本 Hook 完成
+        - ``priority = 100``  → 参与组内排序，数值越大越优先执行
+
+        未声明时默认 ``block_next=false, priority=10``，非阻塞、无顺序保证。
 
         Args:
             context: 当前用户上下文(UserContext 实例)

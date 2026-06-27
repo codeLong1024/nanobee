@@ -45,8 +45,16 @@ class PluginDescriptor:
             throttle_group=plugin_section.get("throttle_group", ""),
             exec_capable=plugin_section.get("exec_capable", False),
             file_edit_capability=plugin_section.get("file_edit_capability", False),
+            hooks=self._parse_hooks(),
         )
         self.config = self._data.get("config", {})
+
+    def _parse_hooks(self) -> dict[str, Any]:
+        """解析 [hooks] 段，返回 {hook_name: dict} 用于 PluginMetadata 校验器转换。"""
+        raw = self._data.get("hooks", {})
+        if not isinstance(raw, dict):
+            return {}
+        return dict(raw)
 
     def _parse_permissions(self, plugin_section: dict) -> list[str]:
         """解析权限声明"""

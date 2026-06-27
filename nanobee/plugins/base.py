@@ -8,12 +8,35 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, ClassVar
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from .hook_mixin import PluginHookMixin
 
 from nanobee.utils.logger import logger
 
+
+class HookConfig(BaseModel):
+    """单个 Hook 的调度元数据。
+
+    插件通过此声明告知框架如何调度该 Hook，框架只读标记、不懂含义。
+    这是 FIP 合规的核心：策略由插件声明，机制由框架执行。
+
+    Attributes:
+        block_next: 是否阻塞同 context_id 的下一条消息的 dispatch
+        priority: 同 block_next 组内的执行优先级，数值越大越优先
+        timeout: 阻塞型 Hook 的超时时间（秒），0 表示不设超时
+    """
+
+    block_next: bool = False
+    priority: int = 10
+    timeout: float = 0.0
+
+    @classmethod
+    def from_dict(cls, data: dict | None) -> "HookConfig":
+        """从字典构建 HookConfig，None 或空字典返回默认值。"""
+        if not data:
+            return cls()
+        return cls(**data)
 
 
 class PluginMetadata(BaseModel):
@@ -29,6 +52,23 @@ class PluginMetadata(BaseModel):
     throttle_group: str = ""  # 节流分组标识，同组工具共享节流计数
     exec_capable: bool = False  # 是否具备命令执行能力（用于工作区逃逸检测）
     file_edit_capability: bool = False  # 是否具备文件编辑能力（用于进度追踪）
+    hooks: dict[str, HookConfig] = Field(default_factory=dict)
+
+    @field_validator("hooks", mode="before")
+    @classmethod
+    def _coerce_hooks(cls, v: Any) -> dict[str, HookConfig]:
+        """将 hooks 字典中的 dict 值自动转换为 HookConfig 对象。"""
+        if not isinstance(v, dict):
+            return {}
+        result: dict[str, HookConfig] = {}
+        for key, val in v.items():
+            if isinstance(val, HookConfig):
+                result[key] = val
+            elif isinstance(val, dict):
+                result[key] = HookConfig(**val)
+            else:
+                result[key] = HookConfig()
+        return result
 
 
 class NanobeePlugin(PluginHookMixin, ABC):
@@ -63,6 +103,18 @@ class NanobeePlugin(PluginHookMixin, ABC):
     def metadata(self) -> PluginMetadata:
         """获取插件元数据"""
         return self._metadata
+
+    @property
+    def hook_config(self) -> dict[str, "HookConfig"]:
+        """插件声明的 Hook 调度元数据。
+
+        从 metadata.hooks 中提取，返回 {hook_name: HookConfig}。
+        FIP 原则：框架只读标记，不懂含义。插件通过此元数据
+        自行决定各 Hook 的调度策略（阻塞、优先级等）。
+
+        插件未声明时为 {}。
+        """
+        return self._metadata.hooks
 
     @property
     def kernel(self) -> Any | None:

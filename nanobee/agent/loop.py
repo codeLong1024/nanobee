@@ -228,6 +228,10 @@ class AgentLoop:
         self._register_subagent_tools()
         self._current_iteration: int = 0
 
+        # 阻塞型 Hook 的待完成 Task 追踪（context_id → Task）
+        # 同一 context_id 的下一次 dispatch 会等待这些 Task 完成
+        self._pending_blockers: dict[str, asyncio.Task] = {}
+
         # 订阅子代理启动事件：立即通知用户，不经 LLM
         if self.event_bus:
             self.event_bus.subscribe("subagent.spawned", self._on_subagent_spawned)
@@ -328,6 +332,16 @@ class AgentLoop:
             Agent 回复（OutboundMessage，含 .content 和 .media）
         """
         key = msg.context_id
+
+        # 等待同一 ctx_id 的上一次 blocking hook task 完成
+        # FIP：框架只提供"等待完成"机制，不决定"是否需要等"（由插件 block_next 声明）
+        pending_blocker = self._pending_blockers.pop(key, None)
+        if pending_blocker is not None and not pending_blocker.done():
+            try:
+                await pending_blocker
+            except Exception:
+                logger.warning("阻塞型 Hook 异常 (context={})，跳过继续", key)
+
         pending = asyncio.Queue(maxsize=20)
         self._pending_queues[key] = pending
 
@@ -591,7 +605,15 @@ class AgentLoop:
         context_id: str,
         messages: list[dict[str, Any]],
     ) -> None:
-        """通知所有已启用插件对话轮次已完成。
+        """FIP 合规的 Hook 调度器：按插件声明的元数据分组调度。
+
+        框架职责（机制）：
+        - 读 block_next → 分 blocking / non-blocking 两组
+        - 读 priority   → 组内降序排序
+        - non-blocking → create_task, 不跟踪
+        - blocking     → create_task, 追踪到 _pending_blockers[context_id]
+
+        插件职责（策略）：通过 plugin.toml [hooks.on_message_completed] 自行声明。
 
         Args:
             context_id: 用户上下文 ID
@@ -603,11 +625,53 @@ class AgentLoop:
             logger.debug("获取用户上下文失败，跳过 on_message_completed 通知")
             return
 
+        # 收集所有实现了 on_message_completed 的插件及其 Hook 元数据
+        entries: list[tuple[int, bool, NanobeePlugin]] = []
         for plugin in self._get_enabled_plugins():
-            try:
-                await plugin.on_message_completed(user_ctx, messages)
-            except Exception:
-                logger.exception("插件 {}.on_message_completed 出错", getattr(plugin, "name", "?"))
+            cfg = plugin.hook_config.get("on_message_completed")
+            priority = cfg.priority if cfg else 10
+            block_next = cfg.block_next if cfg else False
+            entries.append((priority, block_next, plugin))
+
+        if not entries:
+            return
+
+        # 按 priority 降序排序
+        entries.sort(key=lambda x: (-x[0], x[1]))
+
+        # 分组：blocking vs non-blocking
+        blocking = [(p, plg) for p, bn, plg in entries if bn]
+        non_blocking = [(p, plg) for p, bn, plg in entries if not bn]
+
+        # non-blocking 组：fire-and-forget（每个独立 create_task）
+        for _priority, plugin in non_blocking:
+            asyncio.create_task(self._safe_notify_one(plugin, user_ctx, messages, context_id))
+
+        # blocking 组：顺序 await，但整体放在 create_task 中不阻塞 LLM 响应
+        if blocking:
+            async def _blocking_group():
+                for _priority, plugin in blocking:
+                    await self._safe_notify_one(plugin, user_ctx, messages, context_id)
+
+            task = asyncio.create_task(_blocking_group())
+            self._pending_blockers[context_id] = task
+
+    async def _safe_notify_one(
+        self,
+        plugin: "NanobeePlugin",
+        user_ctx: Any,
+        messages: list[dict[str, Any]],
+        context_id: str,
+    ) -> None:
+        """安全调用单个插件的 on_message_completed，异常隔离。"""
+        try:
+            await plugin.on_message_completed(user_ctx, messages)
+        except Exception:
+            logger.exception(
+                "插件 {}.on_message_completed 出错 (context={})",
+                getattr(plugin, "name", "?"),
+                context_id,
+            )
 
     async def _connect_mcp(self) -> None:
         """连接配置的 MCP 服务器（委托给 MCPManager）。"""
@@ -777,16 +841,6 @@ class AgentLoop:
             logger.warning("达到最大迭代次数 ({max_iter})", max_iter=self.max_iterations)
         elif result.stop_reason == "error":
             logger.error("LLM 返回错误: {error}", error=(result.final_content or "")[:200])
-
-        # 发射事件
-        if self.event_bus:
-            await self.event_bus.publish("agent.turn_completed", {
-                "context_id": context_id,
-                "final_content": result.final_content,
-                "stop_reason": result.stop_reason,
-                "tools_used": result.tools_used,
-                "usage": result.usage,
-            })
 
         # 通知插件对话轮次已完成（后台执行，不阻塞主流程）
         task = asyncio.create_task(
