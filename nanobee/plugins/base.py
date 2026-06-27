@@ -31,13 +31,6 @@ class HookConfig(BaseModel):
     priority: int = 10
     timeout: float = 0.0
 
-    @classmethod
-    def from_dict(cls, data: dict | None) -> "HookConfig":
-        """从字典构建 HookConfig，None 或空字典返回默认值。"""
-        if not data:
-            return cls()
-        return cls(**data)
-
 
 class PluginMetadata(BaseModel):
     """插件元数据，从 plugin.toml 解析"""
@@ -57,7 +50,11 @@ class PluginMetadata(BaseModel):
     @field_validator("hooks", mode="before")
     @classmethod
     def _coerce_hooks(cls, v: Any) -> dict[str, HookConfig]:
-        """将 hooks 字典中的 dict 值自动转换为 HookConfig 对象。"""
+        """将 hooks 字典中的 dict 值自动转换为 HookConfig 对象。
+
+        非法类型（非 dict / 非 HookConfig）记录 warning 后降级为默认值，
+        不抛异常——一个插件的配置错误不应阻塞框架启动。
+        """
         if not isinstance(v, dict):
             return {}
         result: dict[str, HookConfig] = {}
@@ -67,6 +64,10 @@ class PluginMetadata(BaseModel):
             elif isinstance(val, dict):
                 result[key] = HookConfig(**val)
             else:
+                logger.warning(
+                    "hooks.{} 的值类型非法 ({}), 期望 dict 或 HookConfig, 已降级使用默认值",
+                    key, type(val).__name__,
+                )
                 result[key] = HookConfig()
         return result
 
