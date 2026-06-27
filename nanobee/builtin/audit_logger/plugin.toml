@@ -7,3 +7,7 @@ type = "audit"
 
 [config]
 enabled = true
+
+[hooks.on_message_completed]
+block_next = false
+priority = 10
