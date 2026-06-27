@@ -16,6 +16,7 @@ Nanobee 的插件体系遵循**框架无知论**（Framework Ignorance Principle
   - [工具过滤（contribute_to_tools）](#工具过滤contribute_to_tools)
   - [工具前后拦截（on_pre_invoke / on_post_invoke）](#工具前后拦截on_pre_invoke--on_post_invoke)
   - [消息完成回调（on_message_completed）](#消息完成回调on_message_completed)
+  - [事件系统（EventBus）与迁移指南](#事件系统eventbus与迁移指南)
 - [开发 Tool 插件](#开发-tool-插件)
   - [简单工具插件](#简单工具插件)
   - [路径安全与沙箱](#路径安全与沙箱)
@@ -429,13 +430,15 @@ async def on_message_completed(
 
 #### 字段说明
 
-| 字段 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| ``block_next`` | bool | ``false`` | 是否阻塞同 ``context_id`` 的下一次 dispatch |
-| ``priority`` | int | ``10`` | 同 ``block_next`` 组内的执行优先级，数值越大越先执行 |
-| ``timeout`` | float | ``0.0`` | 阻塞型 Hook 的超时时间（秒），``0`` 表示不设超时 |
+| 字段 | 类型 | 默认值 | 适用 Hook | 说明 |
+|------|------|--------|-----------|------|
+| ``block_next`` | bool | ``false`` | 仅 ``on_message_completed`` | 是否阻塞同 ``context_id`` 的下一次 dispatch |
+| ``priority`` | int | ``10`` | 全部 | 同组 Hook 的执行优先级，数值越大越先执行 |
+| ``timeout`` | float | ``0.0`` | ``on_message_completed``（block_next=true 时） | 阻塞型 Hook 的超时时间（秒），``0`` 表示不设超时 |
 
 #### 调度语义
+
+**``on_message_completed``（后台 fire-and-forget 模式）：**
 
 ```
 block_next=true  → 框架在下一次 dispatch 前 await 本 Hook 完成
@@ -444,8 +447,21 @@ block_next=true  → 框架在下一次 dispatch 前 await 本 Hook 完成
 block_next=false → 框架 fire-and-forget，不等待、不追踪
                    （适用于 audit 日志等丢了也无所谓的操作）
 
-priority         → 同 block_next 组内按降序执行
+priority         → block_next 同组内按降序执行
                    （如 priority=100 的插件在 priority=50 之前执行）
+
+timeout          → 仅 block_next=true 时生效，超时跳过该 Hook 继续处理下一个
+```
+
+**``on_pre_invoke`` / ``on_post_invoke``（同步拦截器链模式）：**
+
+```
+priority         → 拦截器链中按降序执行
+                   （如 security 检查 priority=100 先于 logging priority=10 执行）
+
+block_next       → 不适用（拦截器为同步内联调用，不存在"下一次 dispatch"的概念）
+
+timeout          → 暂不支持（拦截器在工具执行流中内联调用，按异常隔离兜底）
 ```
 
 #### 声明示例
@@ -475,13 +491,94 @@ timeout = 5.0
 
 [hooks.on_pre_invoke]
 priority = 100
-timeout = 3.0
+# 注：on_pre_invoke 为同步拦截器，仅 priority 参与排序；
+#     block_next / timeout 不适用于此 Hook
 ```
 
 #### 向后兼容
 
-- 不声明 ``[hooks]`` 段的插件 → 默认 ``block_next=false, priority=10``（非阻塞、无顺序保证）
+- 不声明 ``[hooks]`` 段的插件 → 默认 ``priority=10``（``on_message_completed`` 额外默认 ``block_next=false, timeout=0.0``）
 - 即现有插件无需修改即可正常工作，行为与改造前一致
+
+---
+
+### 事件系统（EventBus）与迁移指南
+
+框架通过 ``event_bus`` 发布内部事件，插件可通过 ``kernel.event_bus.subscribe()`` 订阅。
+以下为当前活跃的事件列表：
+
+| 事件 | 载荷 | 说明 |
+|------|------|------|
+| ``agent.iteration_start`` | ``context_id``, ``turn_id`` | 每个 Agent turn 开始时触发 |
+| ``agent.turn_saved`` | ``context_id``, ``turn_id``, ``latency_ms``, ``tools_used`` | SAVE 状态：对话历史持久化完成后触发 |
+| ``agent.outbound`` | ``channel``, ``chat_id``, ``content``, ``metadata`` | Agent 回复组装完成后发送到通道 |
+| ``subagent.spawned`` | ``task_id``, ``label``, ``task`` | 子代理启动时触发（通知通道立即发送用户可见消息） |
+
+#### 破坏性变更：`agent.turn_completed` 已移除（2026-06-27）
+
+原 ``agent.turn_completed`` 事件在 LLM 响应完成后发布，载荷包含：
+
+```python
+{
+    "context_id": "...",
+    "final_content": "...",
+    "stop_reason": "completed",
+    "tools_used": ["read_file", "execute_shell"],
+    "usage": {"prompt_tokens": 100, "completion_tokens": 200},
+}
+```
+
+**移除原因：** 该事件与 FIP 调度器 ``on_message_completed`` Hook 构成双重通知路径，造成隐式竞争。
+框架统一到 Hook 机制：插件通过 ``plugin.toml`` 声明调度策略（``block_next`` / ``priority`` / ``timeout``），
+框架只读标记、按声明驱动，符合 FIP。
+
+**迁移路径：**
+
+| 旧方案（已移除） | 新方案（推荐） |
+|---|---|
+| ``event_bus.subscribe("agent.turn_completed", handler)`` | 实现 ``on_message_completed()`` Hook + 在 ``plugin.toml`` 声明 ``[hooks.on_message_completed]`` |
+| 事件载荷 ``final_content`` / ``stop_reason`` | 通过 ``messages`` 参数自行提取最后一轮 assistant 消息 |
+| 事件载荷 ``tools_used`` | 统计 ``messages`` 中 ``role=tool`` 的消息 |
+| 事件载荷 ``usage``（token 用量） | 当前 Hook 未传递 usage（如需，在 Hook 签名中扩展） |
+
+**迁移示例：**
+
+```python
+# 旧方案（已不可用）
+class MyOldPlugin(NanobeePlugin):
+    async def initialize(self, kernel):
+        await super().initialize(kernel)
+        kernel.event_bus.subscribe("agent.turn_completed", self._on_turn_done)
+
+    async def _on_turn_done(self, data: dict):
+        ctx_id = data["context_id"]
+        tools = data["tools_used"]
+        # ...
+
+# 新方案
+class MyNewPlugin(NanobeePlugin):
+    name = "audit_logger"
+    plugin_type = "audit"
+
+    async def on_message_completed(self, context, messages):
+        ctx_id = context.context_id
+        tools = [
+            m.get("name") or m.get("function", {}).get("name", "?")
+            for m in messages
+            if m.get("role") == "tool"
+        ]
+        # ...
+```
+
+```toml
+# plugin.toml
+[hooks.on_message_completed]
+block_next = false
+priority = 10
+```
+
+> 如需获取 token 用量统计，请通过 ``AgentRunner`` 的返回结果自行跟踪，或在 Hook 层面扩展载荷字段。
+> ``agent.turn_saved`` 事件仍然可用（在 SAVE 状态触发），但其载荷不含 ``final_content`` 和 ``usage``。
 
 ---
 

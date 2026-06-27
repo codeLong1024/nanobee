@@ -559,6 +559,50 @@ class AgentLoop:
             return []
         return self.plugin_manager.get_enabled_plugins()
 
+    def _build_plugin_hooks(
+        self,
+        enabled_plugins: list[Any],
+        user_ctx: Any,
+    ) -> PluginHooks | None:
+        """构造插件 Hook 闭包列表，按 hook_config priority 降序排序。
+
+        FIP：读取 hook_config 元数据决定执行顺序，框架只读标记、不懂含义。
+        block_next 仅适用于 on_message_completed（后台 fire-and-forget 模式），
+        on_pre_invoke / on_post_invoke 为同步拦截器链，仅 priority 参与排序。
+
+        Args:
+            enabled_plugins: 已启用的插件列表
+            user_ctx: 当前用户上下文
+
+        Returns:
+            PluginHooks 字典（pre_invoke/post_invoke 两个列表），无插件时返回 None
+        """
+        if not enabled_plugins:
+            return None
+
+        pre_invoke_entries: list[tuple[int, Any]] = []
+        post_invoke_entries: list[tuple[int, Any]] = []
+        for p in enabled_plugins:
+            pre_cfg = p.hook_config.get("on_pre_invoke")
+            pre_priority = pre_cfg.priority if pre_cfg else 10
+            pre_invoke_entries.append((
+                pre_priority,
+                lambda name, args, _p=p, _ctx=user_ctx: _p.on_pre_invoke(_ctx, name, args),
+            ))
+            post_cfg = p.hook_config.get("on_post_invoke")
+            post_priority = post_cfg.priority if post_cfg else 10
+            post_invoke_entries.append((
+                post_priority,
+                lambda name, result, _p=p, _ctx=user_ctx: _p.on_post_invoke(_ctx, name, result),
+            ))
+        # 按 priority 降序排序（高优先级先执行）
+        pre_invoke_entries.sort(key=lambda x: -x[0])
+        post_invoke_entries.sort(key=lambda x: -x[0])
+        return {
+            "pre_invoke": [fn for _, fn in pre_invoke_entries],
+            "post_invoke": [fn for _, fn in post_invoke_entries],
+        }
+
     def _collect_plugin_prompts(self, user_ctx: Any) -> str:
         """收集所有已启用插件贡献的提示词内容。
 
@@ -626,12 +670,13 @@ class AgentLoop:
             return
 
         # 收集所有实现了 on_message_completed 的插件及其 Hook 元数据
-        entries: list[tuple[int, bool, NanobeePlugin]] = []
+        entries: list[tuple[int, bool, float, NanobeePlugin]] = []
         for plugin in self._get_enabled_plugins():
             cfg = plugin.hook_config.get("on_message_completed")
             priority = cfg.priority if cfg else 10
             block_next = cfg.block_next if cfg else False
-            entries.append((priority, block_next, plugin))
+            timeout = cfg.timeout if cfg else 0.0
+            entries.append((priority, block_next, timeout, plugin))
 
         if not entries:
             return
@@ -640,18 +685,36 @@ class AgentLoop:
         entries.sort(key=lambda x: (-x[0], x[1]))
 
         # 分组：blocking vs non-blocking
-        blocking = [(p, plg) for p, bn, plg in entries if bn]
-        non_blocking = [(p, plg) for p, bn, plg in entries if not bn]
+        blocking = [(p, timeout, plg) for p, bn, timeout, plg in entries if bn]
+        non_blocking = [(p, plg) for p, bn, timeout, plg in entries if not bn]
 
         # non-blocking 组：fire-and-forget（每个独立 create_task）
+        # add_done_callback 防止 shutdown 时 CancelledError 产生 "never retrieved" 警告
         for _priority, plugin in non_blocking:
-            asyncio.create_task(self._safe_notify_one(plugin, user_ctx, messages, context_id))
+            task = asyncio.create_task(
+                self._safe_notify_one(plugin, user_ctx, messages, context_id)
+            )
+            task.add_done_callback(lambda t: t.exception() if t.exception() else None)
 
-        # blocking 组：顺序 await，但整体放在 create_task 中不阻塞 LLM 响应
+        # blocking 组：顺序 await，超时跳过，整体放在 create_task 中不阻塞 LLM 响应
         if blocking:
             async def _blocking_group():
-                for _priority, plugin in blocking:
-                    await self._safe_notify_one(plugin, user_ctx, messages, context_id)
+                for _priority, timeout, plugin in blocking:
+                    try:
+                        if timeout > 0:
+                            await asyncio.wait_for(
+                                self._safe_notify_one(plugin, user_ctx, messages, context_id),
+                                timeout=timeout,
+                            )
+                        else:
+                            await self._safe_notify_one(plugin, user_ctx, messages, context_id)
+                    except asyncio.TimeoutError:
+                        logger.warning(
+                            "阻塞型 Hook {}.on_message_completed 超时 ({:.1f}s) (context={})，跳过",
+                            getattr(plugin, "name", "?"),
+                            timeout,
+                            context_id,
+                        )
 
             task = asyncio.create_task(_blocking_group())
             self._pending_blockers[context_id] = task
@@ -783,28 +846,9 @@ class AgentLoop:
             hooks.append(extra_hook)
         hook = CompositeHook(hooks) if hooks else AgentHook()
 
-        # 构造插件 Hook 闭包列表（on_pre_invoke / on_post_invoke）
-        plugin_hooks: PluginHooks | None = None
         enabled_plugins = self._get_enabled_plugins()
-        if enabled_plugins:
-            try:
-                user_ctx_for_hooks = await self.context_manager.get_or_create(context_id)
-                pre_invoke_fns: list[Any] = []
-                post_invoke_fns: list[Any] = []
-                for p in enabled_plugins:
-                    pre_invoke_fns.append(
-                        lambda name, args, _p=p, _ctx=user_ctx_for_hooks: _p.on_pre_invoke(_ctx, name, args)
-                    )
-                    post_invoke_fns.append(
-                        lambda name, result, _p=p, _ctx=user_ctx_for_hooks: _p.on_post_invoke(_ctx, name, result)
-                    )
-                if pre_invoke_fns or post_invoke_fns:
-                    plugin_hooks = {
-                        "pre_invoke": pre_invoke_fns,
-                        "post_invoke": post_invoke_fns,
-                    }
-            except Exception:
-                logger.debug("构造 plugin_hooks 失败，跳过工具 Hook")
+        user_ctx_for_hooks = await self.context_manager.get_or_create(context_id)
+        plugin_hooks = self._build_plugin_hooks(enabled_plugins, user_ctx_for_hooks)
 
         result = await self.runner.run(AgentRunSpec(
             initial_messages=initial_messages,
@@ -843,6 +887,8 @@ class AgentLoop:
             logger.error("LLM 返回错误: {error}", error=(result.final_content or "")[:200])
 
         # 通知插件对话轮次已完成（后台执行，不阻塞主流程）
+        # 注：原 event_bus.publish("agent.turn_completed") 已移除（2026-06-27），
+        # 迁移到 on_message_completed Hook（详见 docs/plugin_development.md 事件系统与迁移指南）
         task = asyncio.create_task(
             self._notify_plugins_message_completed(context_id, result.messages)
         )
