@@ -609,3 +609,301 @@ class TestEmotionContext:
         )
         ctx.current_emotion = "thinking"
         assert ctx.current_emotion == "thinking"
+
+
+# ============================================================
+# _on_message 响应投递分支 — 锁当前行为，为重构提供安全网
+# ============================================================
+
+
+@pytest.fixture
+def dingtalk_plugin():
+    """创建一个最小可测试的 DingTalkChannelPlugin 实例。
+
+    注入 mock kernel 和 mock sender，各分支独立控制 sender 行为。
+    """
+    from nanobee.builtin.channel_dingtalk.channel import DingTalkChannelPlugin
+    from nanobee.builtin.channel_dingtalk.config import DingTalkConfig
+
+    plugin = DingTalkChannelPlugin.__new__(DingTalkChannelPlugin)
+    plugin.__init__(metadata=SimpleNamespace(name="channel_dingtalk"))
+    plugin.logger = MagicMock()
+    plugin.config = DingTalkConfig(streaming=False)  # 默认非流式
+    plugin.sender = None
+    plugin.card_manager = None
+    plugin.name = "channel_dingtalk"
+
+    # Mock kernel
+    kernel = MagicMock()
+    kernel.handle_message = AsyncMock()
+    kernel.config = DingTalkConfig()
+    plugin._kernel = kernel
+
+    return plugin
+
+
+def _make_sender():
+    """创建一个 mock DingTalkSender。"""
+    sender = MagicMock()
+    sender.send = AsyncMock()
+    sender.is_card_handled_by_streaming = MagicMock(return_value=False)
+    sender.finalize_card_with_notification = AsyncMock()
+    return sender
+
+
+class TestOnMessageResponseDelivery:
+    """测试 _on_message 的 5 个响应投递分支。
+
+    每个分支配置不同的 streaming / card_id / handled_by_streaming / stop_reason
+    组合，验证 sender 调用行为与当前实现一致。
+    """
+
+    # ---- Branch E: 非 streaming ----
+
+    @pytest.mark.asyncio
+    async def test_branch_e_non_streaming_sends_content_and_media(
+        self, dingtalk_plugin,
+    ):
+        """非流式模式：有内容有 media → sender.send 携带 content + media。"""
+        from nanobee.channel.message import OutboundMessage
+
+        dingtalk_plugin.config.streaming = False
+        dingtalk_plugin.sender = _make_sender()
+
+        response = OutboundMessage(
+            channel="channel_dingtalk",
+            chat_id="conv-test",
+            content="hello non-streaming",
+            media=["img.png"],
+        )
+        dingtalk_plugin._kernel.handle_message.return_value = response
+
+        await dingtalk_plugin._on_message(
+            content="hi",
+            sender_id="u1",
+            sender_name="Alice",
+            chat_id="conv-test",
+        )
+
+        dingtalk_plugin.sender.send.assert_awaited_once()
+        call_args = dingtalk_plugin.sender.send.await_args[0][0]
+        assert call_args.content == "hello non-streaming"
+        assert call_args.media == ["img.png"]
+
+    @pytest.mark.asyncio
+    async def test_branch_e_non_streaming_no_sender_skips(
+        self, dingtalk_plugin,
+    ):
+        """非流式但无 sender → 跳过 send（不崩溃）。"""
+        from nanobee.channel.message import OutboundMessage
+
+        dingtalk_plugin.config.streaming = False
+        dingtalk_plugin.sender = None
+
+        response = OutboundMessage(
+            channel="channel_dingtalk",
+            chat_id="conv-test",
+            content="no sender",
+        )
+        dingtalk_plugin._kernel.handle_message.return_value = response
+
+        # 不应抛异常
+        await dingtalk_plugin._on_message(
+            content="hi",
+            sender_id="u1",
+            sender_name="Alice",
+            chat_id="conv-test",
+        )
+
+    @pytest.mark.asyncio
+    async def test_branch_e_non_streaming_no_response_skips(
+        self, dingtalk_plugin,
+    ):
+        """非流式但 kernel 返回 None → 跳过 send。"""
+        dingtalk_plugin.config.streaming = False
+        dingtalk_plugin.sender = _make_sender()
+        dingtalk_plugin._kernel.handle_message.return_value = None
+
+        await dingtalk_plugin._on_message(
+            content="hi",
+            sender_id="u1",
+            sender_name="Alice",
+            chat_id="conv-test",
+        )
+
+        dingtalk_plugin.sender.send.assert_not_called()
+
+    # ---- Branch D: streaming + 无 card_id ----
+
+    @pytest.mark.asyncio
+    async def test_branch_d_streaming_no_card_sends_markdown_fallback(
+        self, dingtalk_plugin,
+    ):
+        """流式但无 card_id → markdown fallback sender.send(content + media)。"""
+        from nanobee.channel.message import OutboundMessage
+
+        dingtalk_plugin.config.streaming = True
+        dingtalk_plugin.sender = _make_sender()
+
+        response = OutboundMessage(
+            channel="channel_dingtalk",
+            chat_id="conv-test",
+            content="fallback content",
+            media=["doc.pdf"],
+        )
+        dingtalk_plugin._kernel.handle_message.return_value = response
+
+        await dingtalk_plugin._on_message(
+            content="hi",
+            sender_id="u1",
+            sender_name="Alice",
+            chat_id="conv-test",
+            card_id=None,  # 无 card
+        )
+
+        dingtalk_plugin.sender.send.assert_awaited_once()
+        call_args = dingtalk_plugin.sender.send.await_args[0][0]
+        assert call_args.content == "fallback content"
+        assert call_args.media == ["doc.pdf"]
+
+    # ---- Branch C: streaming + card_id + NOT handled_by_streaming ----
+
+    @pytest.mark.asyncio
+    async def test_branch_c_streaming_card_not_handled_sends_content(
+        self, dingtalk_plugin,
+    ):
+        """流式 + card 存在但未被流式处理 → sender.send(content + media)。"""
+        from nanobee.channel.message import OutboundMessage
+
+        dingtalk_plugin.config.streaming = True
+        dingtalk_plugin.sender = _make_sender()
+        dingtalk_plugin.sender.is_card_handled_by_streaming.return_value = False
+
+        response = OutboundMessage(
+            channel="channel_dingtalk",
+            chat_id="conv-test",
+            content="not handled by streaming",
+            media=["file.xlsx"],
+        )
+        dingtalk_plugin._kernel.handle_message.return_value = response
+
+        await dingtalk_plugin._on_message(
+            content="hi",
+            sender_id="u1",
+            sender_name="Alice",
+            chat_id="conv-test",
+            card_id="card-001",
+        )
+
+        dingtalk_plugin.sender.send.assert_awaited_once()
+        call_args = dingtalk_plugin.sender.send.await_args[0][0]
+        assert call_args.content == "not handled by streaming"
+        assert call_args.media == ["file.xlsx"]
+        assert call_args.metadata["_card_id"] == "card-001"
+
+    # ---- Branch B: streaming + card_id + handled + normal ----
+
+    @pytest.mark.asyncio
+    async def test_branch_b_streaming_handled_normal_skips_send_only_media(
+        self, dingtalk_plugin,
+    ):
+        """流式 + card 已由流式处理 + 正常完成 → 跳过内容 send，仅投递 media。"""
+        from nanobee.channel.message import OutboundMessage
+
+        dingtalk_plugin.config.streaming = True
+        dingtalk_plugin.sender = _make_sender()
+        dingtalk_plugin.sender.is_card_handled_by_streaming.return_value = True
+
+        response = OutboundMessage(
+            channel="channel_dingtalk",
+            chat_id="conv-test",
+            content="already delivered via card",  # 内容应被跳过
+            media=["audio.mp3"],
+        )
+        dingtalk_plugin._kernel.handle_message.return_value = response
+
+        await dingtalk_plugin._on_message(
+            content="hi",
+            sender_id="u1",
+            sender_name="Alice",
+            chat_id="conv-test",
+            card_id="card-002",
+        )
+
+        # 正常完成不应调用 finalize_card_with_notification
+        dingtalk_plugin.sender.finalize_card_with_notification.assert_not_called()
+        # 仅投递 media
+        dingtalk_plugin.sender.send.assert_awaited_once()
+        call_args = dingtalk_plugin.sender.send.await_args[0][0]
+        assert call_args.content == ""  # 内容被跳过
+        assert call_args.media == ["audio.mp3"]
+
+    @pytest.mark.asyncio
+    async def test_branch_b_no_media_skips_send_entirely(
+        self, dingtalk_plugin,
+    ):
+        """流式 + card 已处理 + 正常完成 + 无 media → 完全不调用 send。"""
+        from nanobee.channel.message import OutboundMessage
+
+        dingtalk_plugin.config.streaming = True
+        dingtalk_plugin.sender = _make_sender()
+        dingtalk_plugin.sender.is_card_handled_by_streaming.return_value = True
+
+        response = OutboundMessage(
+            channel="channel_dingtalk",
+            chat_id="conv-test",
+            content="just text",
+            media=[],
+        )
+        dingtalk_plugin._kernel.handle_message.return_value = response
+
+        await dingtalk_plugin._on_message(
+            content="hi",
+            sender_id="u1",
+            sender_name="Alice",
+            chat_id="conv-test",
+            card_id="card-003",
+        )
+
+        dingtalk_plugin.sender.send.assert_not_called()
+
+    # ---- Branch A: streaming + card_id + handled + max_iterations ----
+
+    @pytest.mark.asyncio
+    async def test_branch_a_max_iterations_finalizes_card_with_notification(
+        self, dingtalk_plugin,
+    ):
+        """流式 + card 已处理 + max_iterations → finalize_card_with_notification + media。"""
+        from nanobee.channel.message import OutboundMessage
+
+        dingtalk_plugin.config.streaming = True
+        dingtalk_plugin.sender = _make_sender()
+        dingtalk_plugin.sender.is_card_handled_by_streaming.return_value = True
+
+        response = OutboundMessage(
+            channel="channel_dingtalk",
+            chat_id="conv-test",
+            content="notification text",
+            media=["report.pdf"],
+        )
+        # 设置 stop_reason = max_iterations
+        response.metadata = {"stop_reason": "max_iterations"}
+        dingtalk_plugin._kernel.handle_message.return_value = response
+
+        await dingtalk_plugin._on_message(
+            content="hi",
+            sender_id="u1",
+            sender_name="Alice",
+            chat_id="conv-test",
+            card_id="card-004",
+            msg_id="msg-004",
+        )
+
+        dingtalk_plugin.sender.finalize_card_with_notification.assert_awaited_once_with(
+            "card-004", "msg-004", "notification text",
+        )
+        # 还应投递 media
+        dingtalk_plugin.sender.send.assert_awaited_once()
+        call_args = dingtalk_plugin.sender.send.await_args[0][0]
+        assert call_args.content == ""
+        assert call_args.media == ["report.pdf"]

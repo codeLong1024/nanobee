@@ -9,7 +9,6 @@ from __future__ import annotations
 import asyncio
 import os
 import random
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -26,11 +25,9 @@ from .auth import (
 from .card_client import DingTalkCardClient
 from .card_manager import CardManager
 from .config import DingTalkConfig
-from .emotion_hook import EmotionContext
 from .message import NanobeeDingTalkHandler
 from .rate_limiter import RateLimiter
 from .sender import DingTalkSender
-from .session import build_session_key
 
 from nanobee.utils.logger import logger
 
@@ -182,7 +179,6 @@ class DingTalkChannelPlugin(ChannelPlugin):
         if self.sender is None:
             return
         # Convert nanobee OutboundMessage → internal format
-        from types import SimpleNamespace
         internal_msg = SimpleNamespace(
             channel=message.channel,
             chat_id=message.chat_id,
@@ -233,7 +229,6 @@ class DingTalkChannelPlugin(ChannelPlugin):
         """Forward streaming deltas to DingTalkSender."""
         if self.sender is None:
             return
-        from types import SimpleNamespace
         internal_msg = SimpleNamespace(
             channel=self.name,
             chat_id=context_id.split(":", 1)[-1] if ":" in context_id else context_id,
@@ -266,10 +261,11 @@ class DingTalkChannelPlugin(ChannelPlugin):
         card_id: str | None = None,
         msg_id: str | None = None,
     ) -> None:
-        """Handle incoming message — route to nanobee kernel with streaming.
+        """处理入站消息 — 路由到 nanobee 内核并投递响应。
 
-        card_id 由 message.py 在创建 AI Card 后传入，通过回调闭包嵌入 metadata，
-        sender 直接使用 card_id 作状态 key，无需共享 dict。
+        消息处理分为两步：
+        1. 调用内核 handle_message（流式/非流式两种模式）
+        2. 将响应投递到钉钉通道（5 种分支场景）
         """
         try:
             self.logger.info("inbound: {} from {}", content, sender_name)
@@ -282,6 +278,7 @@ class DingTalkChannelPlugin(ChannelPlugin):
 
             use_streaming = self.config is not None and self.config.streaming and self.sender is not None
 
+            # 1. 调用内核
             if use_streaming:
                 response = await self.kernel.handle_message(
                     str(content), context_id,
@@ -315,80 +312,151 @@ class DingTalkChannelPlugin(ChannelPlugin):
                     },
                 )
 
-            if response and self.sender:
-                content_reply = str(response.content or "")
-                outbound_media = getattr(response, "media", []) or media or []
-                # 构造响应 metadata，嵌入 card_id 和 msg_id 供 sender 使用
-                resp_metadata = {}
-                if card_id:
-                    resp_metadata["_card_id"] = card_id
-                if msg_id:
-                    resp_metadata["msg_id"] = msg_id
-                if use_streaming:
-                    if card_id:
-                        if self.sender.is_card_handled_by_streaming(card_id):
-                            # 卡片已有内容（流式 delta 已推送），检查是否为截断终止
-                            stop_reason = (getattr(response, "metadata", {}) or {}).get("stop_reason")
-                            if stop_reason == "max_iterations":
-                                # 流式被 max_iterations 打断：保留卡片已有碎片内容，
-                                # 追加分割线和超限提示，不额外发 markdown
-                                self.logger.debug(
-                                    "[STREAM] Card {} truncated by max_iterations, appending notification "
-                                    "(chat={})", card_id, chat_id)
-                                await self.sender.finalize_card_with_notification(
-                                    card_id, msg_id or chat_id, content_reply,
-                                )
-                                if outbound_media:
-                                    await self.sender.send(SimpleNamespace(
-                                        channel=self.name, chat_id=chat_id,
-                                        content="", metadata={"_card_id": card_id},
-                                        media=outbound_media,
-                                    ))
-                            else:
-                                # 正常完成，跳过（内容已在流式中完整送达）
-                                self.logger.debug(
-                                    "[STREAM] Card {} handled by streaming, skipping duplicate send "
-                                    "(chat={})", card_id, chat_id)
-                                if outbound_media:
-                                    await self.sender.send(SimpleNamespace(
-                                        channel=self.name, chat_id=chat_id,
-                                        content="", metadata={"_card_id": card_id},
-                                        media=outbound_media,
-                                    ))
-                        else:
-                            # max_iterations 等非流式终止：内容未通过 card 送达，
-                            # 必须交由 sender 处理（最终化卡片或 markdown 回退）
-                            self.logger.debug(
-                                "[STREAM] Non-streamed termination with card={}, routing to sender "
-                                "(chat={})", card_id, chat_id)
-                            if content_reply or outbound_media:
-                                await self.sender.send(SimpleNamespace(
-                                    channel=self.name, chat_id=chat_id,
-                                    content=content_reply,
-                                    metadata=resp_metadata, media=outbound_media,
-                                ))
-                    else:
-                        self.logger.debug(
-                            "[STREAM] No card was created, sending via markdown fallback "
-                            "(chat={}, content_len={})", chat_id, len(content_reply))
-                        if content_reply or outbound_media:
-                            await self.sender.send(SimpleNamespace(
-                                channel=self.name, chat_id=chat_id,
-                                content=content_reply,
-                                metadata=resp_metadata, media=outbound_media,
-                            ))
-                elif content_reply or outbound_media:
-                    self.logger.debug(
-                        "[OUTBOUND] chat_id={}, outbound_media={}, content_len={}",
-                        chat_id, outbound_media, len(content_reply))
-                    await self.sender.send(SimpleNamespace(
-                        channel=self.name, chat_id=chat_id,
-                        content=content_reply,
-                        metadata=resp_metadata, media=outbound_media,
-                    ))
+            # 2. 投递响应
+            await self._deliver_response(response, chat_id, card_id, msg_id, use_streaming, media)
         except Exception:
             self.logger.exception("Error processing DingTalk message")
             await self._fail_pending_card(card_id)
+
+    # ------------------------------------------------------------------
+    # 响应投递 — 5 种分支场景
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _build_resp_metadata(card_id: str | None, msg_id: str | None) -> dict[str, str]:
+        """构造响应 metadata，嵌入 card_id 和 msg_id 供 sender 使用。"""
+        metadata: dict[str, str] = {}
+        if card_id:
+            metadata["_card_id"] = card_id
+        if msg_id:
+            metadata["msg_id"] = msg_id
+        return metadata
+
+    async def _deliver_response(
+        self,
+        response: Any,
+        chat_id: str,
+        card_id: str | None,
+        msg_id: str | None,
+        use_streaming: bool,
+        media: list[str] | None,
+    ) -> None:
+        """投递内核响应到钉钉通道。
+
+        5 种场景，用 guard clause 扁平化处理：
+        E) 非流式 → sender.send(content + media)
+        D) 流式 + 无 card → markdown fallback sender.send
+        C) 流式 + card + 未被流式处理 → sender.send(content + media)
+        A) 流式 + card + 已处理 + max_iterations → finalize_card + media
+        B) 流式 + card + 已处理 + 正常完成 → 仅 media（内容已在流式中送达）
+        """
+        if not response or not self.sender:
+            return
+
+        content_reply = str(response.content or "")
+        outbound_media = getattr(response, "media", []) or media or []
+        resp_metadata = self._build_resp_metadata(card_id, msg_id)
+
+        # Branch E: 非流式
+        if not use_streaming:
+            await self._deliver_non_streaming(chat_id, content_reply, outbound_media, resp_metadata)
+            return
+
+        # Branch D: 流式但无 card_id
+        if not card_id:
+            await self._deliver_markdown_fallback(chat_id, content_reply, outbound_media, resp_metadata)
+            return
+
+        # Branch C: 流式 + card 未被流式处理
+        if not self.sender.is_card_handled_by_streaming(card_id):
+            await self._deliver_unhandled_card(chat_id, content_reply, outbound_media, resp_metadata)
+            return
+
+        # Branch A/B: 流式 + card 已被流式处理，按 stop_reason 分流
+        stop_reason = (getattr(response, "metadata", {}) or {}).get("stop_reason")
+        if stop_reason == "max_iterations":
+            await self._deliver_max_iterations(card_id, chat_id, msg_id, content_reply, outbound_media)
+        else:
+            await self._deliver_normal_completion(card_id, chat_id, outbound_media)
+
+    async def _deliver_non_streaming(
+        self, chat_id: str, content_reply: str, outbound_media: list[str],
+        resp_metadata: dict[str, str],
+    ) -> None:
+        """Branch E: 非流式模式，直接发送 content + media。"""
+        if content_reply or outbound_media:
+            self.logger.debug(
+                "[OUTBOUND] chat_id={}, outbound_media={}, content_len={}",
+                chat_id, outbound_media, len(content_reply))
+            await self.sender.send(SimpleNamespace(
+                channel=self.name, chat_id=chat_id,
+                content=content_reply,
+                metadata=resp_metadata, media=outbound_media,
+            ))
+
+    async def _deliver_markdown_fallback(
+        self, chat_id: str, content_reply: str, outbound_media: list[str],
+        resp_metadata: dict[str, str],
+    ) -> None:
+        """Branch D: 流式但未创建 AI Card，回退到 markdown 发送。"""
+        self.logger.debug(
+            "[STREAM] No card was created, sending via markdown fallback "
+            "(chat={}, content_len={})", chat_id, len(content_reply))
+        if content_reply or outbound_media:
+            await self.sender.send(SimpleNamespace(
+                channel=self.name, chat_id=chat_id,
+                content=content_reply,
+                metadata=resp_metadata, media=outbound_media,
+            ))
+
+    async def _deliver_unhandled_card(
+        self, chat_id: str, content_reply: str, outbound_media: list[str],
+        resp_metadata: dict[str, str],
+    ) -> None:
+        """Branch C: 流式 + card 存在但未被流式送达，交由 sender 兜底发送。"""
+        self.logger.debug(
+            "[STREAM] Non-streamed termination with card={}, routing to sender "
+            "(chat={})", resp_metadata.get("_card_id", ""), chat_id)
+        if content_reply or outbound_media:
+            await self.sender.send(SimpleNamespace(
+                channel=self.name, chat_id=chat_id,
+                content=content_reply,
+                metadata=resp_metadata, media=outbound_media,
+            ))
+
+    async def _deliver_normal_completion(
+        self, card_id: str, chat_id: str, outbound_media: list[str],
+    ) -> None:
+        """Branch B: 流式正常完成，内容已通过 card 送达，仅投递 media。"""
+        self.logger.debug(
+            "[STREAM] Card {} handled by streaming, skipping duplicate send "
+            "(chat={})", card_id, chat_id)
+        if outbound_media:
+            await self._send_media(card_id, chat_id, outbound_media)
+
+    async def _deliver_max_iterations(
+        self, card_id: str, chat_id: str, msg_id: str | None,
+        content_reply: str, outbound_media: list[str],
+    ) -> None:
+        """Branch A: 流式被 max_iterations 打断，在卡片上追加通知并投递 media。"""
+        self.logger.debug(
+            "[STREAM] Card {} truncated by max_iterations, appending notification "
+            "(chat={})", card_id, chat_id)
+        await self.sender.finalize_card_with_notification(
+            card_id, msg_id or chat_id, content_reply,
+        )
+        if outbound_media:
+            await self._send_media(card_id, chat_id, outbound_media)
+
+    async def _send_media(
+        self, card_id: str, chat_id: str, outbound_media: list[str],
+    ) -> None:
+        """投递媒体附件到指定 card。"""
+        await self.sender.send(SimpleNamespace(
+            channel=self.name, chat_id=chat_id,
+            content="", metadata={"_card_id": card_id},
+            media=outbound_media,
+        ))
 
     async def _fail_pending_card(self, card_id: str | None = None) -> None:
         """出错时清理挂起的 AI Card，避免永久 INPUTING。
@@ -434,7 +502,6 @@ class DingTalkChannelPlugin(ChannelPlugin):
         """
         async def _on_stream(delta: str) -> None:
             if self.sender and delta:
-                from types import SimpleNamespace
                 metadata: dict[str, Any] = {"_stream_delta": True}
                 if card_id:
                     metadata["_card_id"] = card_id
@@ -456,7 +523,6 @@ class DingTalkChannelPlugin(ChannelPlugin):
         """
         async def _on_stream_end(*, resuming: bool) -> None:
             if self.sender:
-                from types import SimpleNamespace
                 metadata: dict[str, Any] = {"_stream_end": True, "_resuming": resuming}
                 if card_id:
                     metadata["_card_id"] = card_id
