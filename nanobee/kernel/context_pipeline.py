@@ -157,20 +157,27 @@ class RulesStage(PipelineStage):
         parser = CoreMDParser(self.core_md_path)
         rules_content = parser.rules
 
-        # 注入用户身份 + 工作目录信息 —— 让 LLM 知道自己的 user_id 和文件操作的基准路径
+        # 注入用户身份 + 目录信息 —— 让 LLM 知道自己的 user_id 和两类目录的区别
         # 注：此为持久信息（注入 system prompt，每条会话一次）。
         # 轮次变化信息（时间/通道/会话统计）由 helpers.build_runtime_context() 注入到每条 user 消息末尾。
         user_ctx = ctx.user_context
         if user_ctx is not None:
             user_id = getattr(user_ctx, "user_id", None)
             context_root = getattr(user_ctx, "context_root", None)
+            work_dir = getattr(user_ctx, "work_dir", None)
             extra_lines: list[str] = []
             if user_id:
                 extra_lines.append(f"你的用户 ID 是：`{user_id}`。")
             if context_root:
                 extra_lines.append(
-                    f"你的工作目录是：`{context_root}`。\n"
+                    f"你的用户根目录是：`{context_root}`。\n"
                     f"所有相对路径（如 `memory/facts.md`）都基于此目录解析。"
+                )
+            if work_dir:
+                extra_lines.append(
+                    f"你的可写 shell 工作目录是：`{work_dir}`。\n"
+                    f"execute_shell 的 working_dir 默认为此目录，"
+                    f"通常无需显式传递 working_dir。"
                 )
             if extra_lines:
                 workspace_section = "\n## 用户身份\n\n" + "\n".join(extra_lines)

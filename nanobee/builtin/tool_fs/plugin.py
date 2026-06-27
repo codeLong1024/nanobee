@@ -38,6 +38,7 @@ class ToolFileSystemPlugin(ToolPlugin):
                             "path": {
                                 "type": "string",
                                 "description": "文件路径",
+                                "x-constraint": "sandbox",
                             },
                             "offset": {
                                 "type": "integer",
@@ -65,6 +66,7 @@ class ToolFileSystemPlugin(ToolPlugin):
                             "path": {
                                 "type": "string",
                                 "description": "文件路径",
+                                "x-constraint": "writable",
                             },
                             "content": {
                                 "type": "string",
@@ -86,6 +88,7 @@ class ToolFileSystemPlugin(ToolPlugin):
                             "path": {
                                 "type": "string",
                                 "description": "文件路径",
+                                "x-constraint": "writable",
                             },
                             "old_text": {
                                 "type": "string",
@@ -115,6 +118,7 @@ class ToolFileSystemPlugin(ToolPlugin):
                             "path": {
                                 "type": "string",
                                 "description": "目录路径",
+                                "x-constraint": "sandbox",
                             },
                             "recursive": {
                                 "type": "boolean",

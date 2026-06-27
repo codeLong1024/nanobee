@@ -76,43 +76,46 @@ def test_resolve_safe_root_itself(tmp_path: Path):
     assert result == root.resolve()
 
 
-# ====== sanitize_params ======
+# ====== sanitize_params (schema-driven) ======
 
 
 def test_sanitize_params_path_field(tmp_path: Path):
-    """清洗 path 参数"""
+    """清洗 path 参数（通过 x-constraint: sandbox）"""
     root = tmp_path / "users" / "user-a"
     sandbox = ContextSandbox(root)
     allowed = root / "test.txt"
     allowed.parent.mkdir(parents=True, exist_ok=True)
 
-    result = sandbox.sanitize_params("read_file", {"path": str(allowed)})
+    schema = {"properties": {"path": {"x-constraint": "sandbox"}}}
+    result = sandbox.sanitize_params("read_file", {"path": str(allowed)}, param_schema=schema)
     assert result["path"] == str(allowed.resolve())
 
 
 def test_sanitize_params_directory_field(tmp_path: Path):
-    """清洗 directory 参数"""
+    """清洗 directory 参数（通过 x-constraint: sandbox）"""
     root = tmp_path / "users" / "user-a"
     sandbox = ContextSandbox(root)
     allowed = root / "subdir"
     allowed.mkdir(parents=True, exist_ok=True)
 
-    result = sandbox.sanitize_params("list_dir", {"directory": str(allowed)})
+    schema = {"properties": {"directory": {"x-constraint": "sandbox"}}}
+    result = sandbox.sanitize_params("list_dir", {"directory": str(allowed)}, param_schema=schema)
     assert result["directory"] == str(allowed.resolve())
 
 
 def test_sanitize_params_escape_raises(tmp_path: Path):
-    """越界路径在清洗时抛出异常"""
+    """越界路径在清洗时抛出异常（x-constraint: sandbox）"""
     root = tmp_path / "users" / "user-a"
     sandbox = ContextSandbox(root)
     bad_path = str(root / "../../../etc/passwd")
 
+    schema = {"properties": {"path": {"x-constraint": "sandbox"}}}
     with pytest.raises(SandboxViolationError):
-        sandbox.sanitize_params("read_file", {"path": bad_path})
+        sandbox.sanitize_params("read_file", {"path": bad_path}, param_schema=schema)
 
 
 def test_sanitize_params_non_path_untouched(tmp_path: Path):
-    """非路径参数不会被修改"""
+    """非路径参数不会被修改（无 x-constraint 声明）"""
     root = tmp_path / "users" / "user-a"
     sandbox = ContextSandbox(root)
     params = {"name": "hello", "count": 42, "flag": True}
@@ -120,8 +123,18 @@ def test_sanitize_params_non_path_untouched(tmp_path: Path):
     assert result == params
 
 
+def test_sanitize_params_no_schema_passthrough(tmp_path: Path):
+    """无 param_schema 时所有参数直通（框架不猜测语义）"""
+    root = tmp_path / "users" / "user-a"
+    sandbox = ContextSandbox(root)
+    params = {"path": "/etc/passwd", "command": "ls"}
+    result = sandbox.sanitize_params("some_tool", params)
+    # 无 schema = 无约束，全部直通
+    assert result == params
+
+
 def test_sanitize_params_mixed(tmp_path: Path):
-    """混合参数：路径被清洗，非路径不变"""
+    """混合参数：有约束的清洗，无约束的直通"""
     root = tmp_path / "users" / "user-a"
     sandbox = ContextSandbox(root)
     allowed = root / "f.txt"
@@ -132,21 +145,50 @@ def test_sanitize_params_mixed(tmp_path: Path):
         "path": str(allowed),
         "count": 10,
     }
-    result = sandbox.sanitize_params("write_file", params)
+    schema = {"properties": {"path": {"x-constraint": "writable"}}}
+    result = sandbox.sanitize_params("write_file", params, param_schema=schema)
     assert result["text"] == "content"
     assert result["path"] == str(allowed.resolve())
     assert result["count"] == 10
 
 
-def test_sanitize_params_working_dir(tmp_path: Path):
-    """working_dir 参数被清洗"""
+def test_sanitize_params_workspace_constraint(tmp_path: Path):
+    """x-constraint: workspace — 约束在 process_workspace 边界内"""
     root = tmp_path / "users" / "user-a"
-    sandbox = ContextSandbox(root)
-    wd = root / "sub_wd"
-    wd.mkdir(parents=True, exist_ok=True)
+    ws = root / "workspace"
+    ws.mkdir(parents=True, exist_ok=True)
+    sandbox = ContextSandbox(root, process_workspace=ws)
 
-    result = sandbox.sanitize_params("exec", {"working_dir": str(wd)})
-    assert result["working_dir"] == str(wd.resolve())
+    # 在 workspace 内的路径通过
+    inside_wd = ws / "subtask"
+    inside_wd.mkdir(parents=True, exist_ok=True)
+    schema = {"properties": {"working_dir": {"x-constraint": "workspace"}}}
+    result = sandbox.sanitize_params("execute_shell", {"working_dir": str(inside_wd)}, param_schema=schema)
+    assert result["working_dir"] == str(inside_wd.resolve())
+
+
+def test_sanitize_params_workspace_escape_raises(tmp_path: Path):
+    """x-constraint: workspace — 超出边界抛出异常"""
+    root = tmp_path / "users" / "user-a"
+    ws = root / "workspace"
+    ws.mkdir(parents=True, exist_ok=True)
+    sandbox = ContextSandbox(root, process_workspace=ws)
+
+    outside = root / "outside_wd"
+    outside.mkdir(parents=True, exist_ok=True)
+    schema = {"properties": {"working_dir": {"x-constraint": "workspace"}}}
+    with pytest.raises(SandboxViolationError, match="进程工作目录边界"):
+        sandbox.sanitize_params("execute_shell", {"working_dir": str(outside)}, param_schema=schema)
+
+
+def test_sanitize_params_workspace_no_constraint_passthrough(tmp_path: Path):
+    """无 process_workspace 设置时 workspace 约束不校验"""
+    root = tmp_path / "users" / "user-a"
+    sandbox = ContextSandbox(root)  # 未设置 process_workspace
+
+    schema = {"properties": {"working_dir": {"x-constraint": "workspace"}}}
+    result = sandbox.sanitize_params("execute_shell", {"working_dir": "/tmp/somewhere"}, param_schema=schema)
+    assert result["working_dir"] == str(Path("/tmp/somewhere").resolve())
 
 
 # ====== assert_allowed ======
@@ -381,7 +423,7 @@ def test_assert_allowed_writable_in_writable_allowed(tmp_path: Path):
 
 
 def test_sanitize_params_with_read_only_root(tmp_path: Path):
-    """sanitize_params 对只读根内的路径应正常解析"""
+    """sanitize_params 对只读根内的路径应正常解析（x-constraint: sandbox）"""
     writable = tmp_path / "users" / "user-a"
     writable.mkdir(parents=True)
     readonly = tmp_path / "skills"
@@ -392,7 +434,8 @@ def test_sanitize_params_with_read_only_root(tmp_path: Path):
     skill_file = readonly / "test_skill" / "SKILL.md"
     skill_file.parent.mkdir(parents=True)
 
-    result = sandbox.sanitize_params("read_file", {"path": str(skill_file)})
+    schema = {"properties": {"path": {"x-constraint": "sandbox"}}}
+    result = sandbox.sanitize_params("read_file", {"path": str(skill_file)}, param_schema=schema)
     assert result["path"] == str(skill_file.resolve())
 
 
@@ -406,9 +449,20 @@ def test_repr_with_read_only_roots(tmp_path: Path):
     assert "read_only" in rep
 
 
+def test_repr_with_process_workspace(tmp_path: Path):
+    """repr 包含 process_workspace 信息"""
+    writable = tmp_path / "ctx"
+    ws = writable / "workspace"
+    sandbox = ContextSandbox(writable, process_workspace=ws)
+    rep = repr(sandbox)
+    assert "process_workspace" in rep
+    assert str(ws.resolve()) in rep
+
+
 def test_no_read_only_roots_repr_stable(tmp_path: Path):
-    """无只读根时 repr 保持旧格式"""
+    """无只读根和 process_workspace 时 repr 简化为 writable 格式"""
     root = tmp_path / "ctx"
     sandbox = ContextSandbox(root)
     rep = repr(sandbox)
-    assert rep == f"ContextSandbox(root={root.resolve()})"
+    assert str(root.resolve()) in rep
+    assert "ContextSandbox" in rep

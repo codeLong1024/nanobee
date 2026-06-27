@@ -295,7 +295,7 @@ class SkillsLoader:
             return []
         result: list[Skill] = []
         for child in sorted(base_dir.iterdir()):
-            if child.is_dir():
+            if not child.is_symlink() and child.is_dir():
                 skill = self._load_skill(child / "SKILL.md", source=source)
                 if skill is not None:
                     result.append(skill)

@@ -20,6 +20,7 @@ from typing import Any
 from nanobee.builtin.tool_shell.sandbox import wrap_command as _wrap_sandbox_command
 from nanobee.kernel.context_sandbox_var import (
     current_bwrap_ro_bind,
+    current_bwrap_rw_bind,
     current_process_workspace,
     current_sandbox as _current_sandbox,
 )
@@ -120,6 +121,7 @@ class ToolShellPlugin(ToolPlugin):
                                     "不要用 cd 切换目录。"
                                     "沙箱仅允许在此目录及其子目录中写入文件。"
                                 ),
+                                "x-constraint": "workspace",
                             },
                             "timeout": {
                                 "type": "integer",
@@ -264,10 +266,13 @@ class ToolShellPlugin(ToolPlugin):
     def _resolve_and_validate_working_dir(
         self, working_dir: str | None
     ) -> tuple[str, str | None]:
-        """解析并校验工作目录（统一入口，单点决策）。
+        """解析工作目录（统一入口）。
+
+        显式传入的 working_dir 已由框架层（ContextSandbox.sanitize_params）
+        通过 x-constraint 声明完成边界校验。插件层只做默认值回退。
 
         优先级：
-        1. working_dir 显式传入 → 校验边界后使用
+        1. working_dir 显式传入 → 框架已校验，直接使用
         2. 回退到 process_workspace（必须有）
 
         Args:
@@ -279,53 +284,14 @@ class ToolShellPlugin(ToolPlugin):
             - 失败: ("", error_str)
         """
         if working_dir:
-            return self._validate_explicit_cwd(working_dir)
+            # 框架已通过 x-constraint 完成校验，插件直接使用
+            return working_dir, None
 
-        # 默认值：process_workspace
+        # 默认值：process_workspace（由框架绑定，bwrap 挂载以它为准）
         process_ws = current_process_workspace()
         if process_ws is None:
             return "", "错误：未设置 process_workspace，无法确定工作目录"
         return str(process_ws), None
-
-    def _validate_explicit_cwd(self, cwd: str) -> tuple[str, str | None]:
-        """校验显式传入的 working_dir
-
-        Args:
-            cwd: 用户指定的工作目录路径
-
-        Returns:
-            (resolved_cwd, error_message)
-            - 成功: (path_str, None)
-            - 失败: ("", error_str)
-        """
-        try:
-            requested = Path(cwd).expanduser().resolve()
-        except Exception:
-            return "", "错误：working_dir 无法解析为有效路径"
-
-        # L1：process_workspace 边界校验
-        process_ws = current_process_workspace()
-        if process_ws is not None:
-            ws_root = process_ws.resolve()
-            if requested != ws_root and ws_root not in requested.parents:
-                return "", (
-                    "错误：working_dir 超出可写工作目录\n"
-                    f"  你指定的路径: {requested}\n"
-                    f"  可写工作目录: {ws_root}\n"
-                    "  请将 working_dir 设为工作目录或其子目录，"
-                    "或不传 working_dir 使用默认值"
-                )
-
-        # L2：ContextVar 沙箱校验
-        sandbox = _current_sandbox()
-        if sandbox is not None:
-            try:
-                sandbox.resolve_safe(cwd)
-            except Exception as e:
-                logger.warning("L2 沙箱拦截: {}", e)
-                return "", f"错误：沙箱拦截 - {e}"
-
-        return str(requested), None
 
     def _prepare_command(
         self,
@@ -396,11 +362,17 @@ class ToolShellPlugin(ToolPlugin):
 
         for pattern in _INSTALL_DENY_PATTERNS:
             if re.search(pattern, lower):
-                return "运行时安装或卸载软件包已被安全策略禁止。缺失依赖请联系管理员处理。"
+                return (
+                    "命令中包含安装或卸载软件包的操作（如 pip install / npm install / apt-get 等），"
+                    "当前执行环境禁止此类操作。缺失依赖请联系管理员处理。请勿重试。"
+                )
 
         for pattern in _DANGER_DENY_PATTERNS:
             if re.search(pattern, lower):
-                return "危险系统操作（rm -rf / dd / shutdown 等）已被安全策略禁止。"
+                return (
+                    "命令中包含禁止执行的模式（如 rm -r/-f、dd、shutdown 等）。"
+                    "请勿重试，改用不带这些标志/命令的替代方式。"
+                )
 
         # SSRF 守卫：检测命令中的内网 URL（如 curl http://169.254.169.254/）
         if contains_internal_url(cmd):
@@ -538,6 +510,7 @@ class ToolShellPlugin(ToolPlugin):
             process_workspace = current_process_workspace()
             ws = str(process_workspace) if process_workspace else cwd
             extra_ro_bind = list(current_bwrap_ro_bind() or [])
+            extra_rw_bind = list(current_bwrap_rw_bind() or [])
 
             # 自动从 ContextSandbox 获取只读根目录（如内置/实例技能目录），
             # 映射为 bwrap 只读挂载，让 LLM 的 execute_shell 脚本可用
@@ -569,6 +542,7 @@ class ToolShellPlugin(ToolPlugin):
             wrapped = _wrap_sandbox_command(
                 sandbox_backend, command, ws, cwd,
                 extra_ro_bind=extra_ro_bind,
+                extra_rw_bind=extra_rw_bind,
             )
             logger.info("命令已通过沙箱 '{}' 包裹 (ws={})", sandbox_backend, ws)
             return wrapped

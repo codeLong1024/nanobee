@@ -253,13 +253,27 @@ class Tool(ABC):
         return Schema.validate_json_schema_value(params, {**schema, "type": "object"}, "")
 
     def to_schema(self) -> dict[str, Any]:
-        """转换为 OpenAI function schema 格式。"""
+        """转换为 OpenAI function schema 格式。
+
+        剥离 x- 前缀的扩展属性（如 x-constraint），这些是框架内部约束声明，
+        不应暴露给 LLM。
+        """
+        params = self.parameters
+        # 深拷贝并剥离 x- 前缀属性，避免污染缓存的 parameters
+        properties = params.get("properties", {})
+        if properties:
+            cleaned_props = {}
+            for prop_name, prop_schema in properties.items():
+                cleaned_props[prop_name] = {
+                    k: v for k, v in prop_schema.items() if not k.startswith("x-")
+                }
+            params = {**params, "properties": cleaned_props}
         return {
             "type": "function",
             "function": {
                 "name": self.name,
                 "description": self.description,
-                "parameters": self.parameters,
+                "parameters": params,
             },
         }
 

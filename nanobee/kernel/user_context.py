@@ -83,6 +83,7 @@ class UserContext:
         self.base_dir.mkdir(parents=True, exist_ok=True)
         (self.base_dir / "workspace").mkdir(parents=True, exist_ok=True)
         (self.base_dir / "memory").mkdir(parents=True, exist_ok=True)
+        (self.base_dir / "skills").mkdir(parents=True, exist_ok=True)
         (self.base_dir / ".tmp").mkdir(parents=True, exist_ok=True)
 
         # 元数据
@@ -145,6 +146,11 @@ class UserContext:
     def memory_dir(self) -> Path:
         """记忆目录"""
         return self.base_dir / "memory"
+
+    @property
+    def skills_dir(self) -> Path:
+        """用户技能目录（可读可写，LLM 通过 execute_shell 创建技能时写入此处）"""
+        return self.base_dir / "skills"
 
     @property
     def tmp_dir(self) -> Path:

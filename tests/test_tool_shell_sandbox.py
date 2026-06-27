@@ -52,31 +52,30 @@ def _with_sandbox(sandbox: ContextSandbox, fn):
 
 
 def test_resolve_and_validate_sandbox_allowed(plugin: ToolShellPlugin, user_context_sandbox: ContextSandbox):
-    """路径在沙箱内 → 返回 (path, None)"""
+    """显式 working_dir 直通（框架校验，插件不做解析）"""
     def _test():
         inside_path = user_context_sandbox.context_root / "test.sh"
         resolved, error = plugin._resolve_and_validate_working_dir(str(inside_path))
         assert error is None
-        assert str(Path(resolved).resolve()) == str(inside_path.resolve())
+        assert resolved == str(inside_path)
     _with_sandbox(user_context_sandbox, _test)
 
 
 def test_resolve_and_validate_sandbox_blocked(plugin: ToolShellPlugin, user_context_sandbox: ContextSandbox, tmp_path: Path):
-    """路径在沙箱外 → 返回 ("", error)"""
+    """显式 working_dir 直通（边界校验由框架 sanitize_params 负责）"""
     def _test():
         outside_path = str(tmp_path / "outside" / "script.sh")
         resolved, error = plugin._resolve_and_validate_working_dir(outside_path)
-        assert resolved == ""
-        assert error is not None
-        assert "沙箱拦截" in error
+        assert resolved == outside_path
+        assert error is None
     _with_sandbox(user_context_sandbox, _test)
 
 
 def test_resolve_and_validate_no_sandbox_no_process_ws(plugin: ToolShellPlugin):
-    """无 sandbox 且无 process_workspace → 显式 working_dir 仍然可解析"""
+    """无 sandbox 且无 process_workspace → 显式 working_dir 直通"""
     resolved, error = plugin._resolve_and_validate_working_dir("/tmp/test.sh")
     assert error is None
-    assert str(Path(resolved).resolve()) == "/tmp/test.sh"
+    assert resolved == "/tmp/test.sh"
 
 
 def test_resolve_and_validate_no_working_dir_no_process_ws(plugin: ToolShellPlugin):
@@ -92,16 +91,15 @@ def test_resolve_and_validate_symlink_to_outside_blocked(
     user_context_sandbox: ContextSandbox,
     tmp_path: Path,
 ):
-    """符号链接指向沙箱外 → L2 拦截"""
+    """符号链接指向沙箱外 → 直通（边界校验由框架负责）"""
     def _test():
         outside_file = tmp_path / "outside_file.sh"
         outside_file.write_text("#!/bin/bash\necho hello", encoding="utf-8")
         symlink = user_context_sandbox.context_root / "evil_link"
         symlink.symlink_to(outside_file)
         resolved, error = plugin._resolve_and_validate_working_dir(str(symlink))
-        assert resolved == ""
-        assert error is not None
-        assert "沙箱拦截" in error
+        assert resolved == str(symlink)
+        assert error is None
     _with_sandbox(user_context_sandbox, _test)
 
 
@@ -110,7 +108,7 @@ def test_resolve_and_validate_symlink_to_inside_allowed(
     user_context_sandbox: ContextSandbox,
     tmp_path: Path,
 ):
-    """符号链接指向沙箱内 → 通过"""
+    """符号链接指向沙箱内 → 直通（插件不解析路径）"""
     def _test():
         inside_file = user_context_sandbox.context_root / "safe.sh"
         inside_file.write_text("#!/bin/bash\necho hello", encoding="utf-8")
@@ -118,7 +116,7 @@ def test_resolve_and_validate_symlink_to_inside_allowed(
         symlink.symlink_to(inside_file)
         resolved, error = plugin._resolve_and_validate_working_dir(str(symlink))
         assert error is None
-        assert inside_file.resolve() in Path(resolved).resolve().parents or Path(resolved).resolve() == inside_file.resolve()
+        assert resolved == str(symlink)
     _with_sandbox(user_context_sandbox, _test)
 
 
@@ -146,14 +144,13 @@ def test_prepare_command_with_working_dir_outside_sandbox(
     user_context_sandbox: ContextSandbox,
     tmp_path: Path,
 ):
-    """working_dir 在沙箱外 → L2 拦截（ContextVar 注入）"""
+    """working_dir 在沙箱外 → 直通（边界校验由框架 sanitize_params 负责）"""
     def _test():
         outside_wd = str(tmp_path / "outside")
         Path(outside_wd).mkdir(parents=True, exist_ok=True)
 
         result = plugin._prepare_command("echo hello", working_dir=outside_wd)
-        assert isinstance(result, str)
-        assert "沙箱拦截" in result
+        assert hasattr(result, "command")  # 插件不做拦截，正常准备命令
     _with_sandbox(user_context_sandbox, _test)
 
 
@@ -205,7 +202,7 @@ def test_working_dir_outside_process_workspace_blocked(
     plugin: ToolShellPlugin,
     tmp_path: Path,
 ):
-    """working_dir 在 process_workspace 外 → 被无条件拦截"""
+    """显式 working_dir 在 process_workspace 外 → 直通（边界校验由框架负责）"""
     process_ws = tmp_path / "process_ws"
     process_ws.mkdir(parents=True, exist_ok=True)
     outside_wd = tmp_path / "outside"
@@ -217,54 +214,56 @@ def test_working_dir_outside_process_workspace_blocked(
     finally:
         reset_process_workspace(token)
 
-    assert isinstance(result, str)
-    assert "超出可写工作目录" in result
+    assert hasattr(result, "command")
 
 
-# ====== L1 沙箱 working_dir 特殊处理测试 ======
+# ====== L1 沙箱 working_dir schema 驱动测试 ======
 
 
 def test_sanitize_params_working_dir_only_resolves(
     tmp_path: Path,
 ):
-    """working_dir 在 sanitize_params 中只解析，不拦截"""
+    """无 x-constraint 时 working_dir 直通（sanitize_params 不猜测语义）"""
     root = tmp_path / "users" / "user-a"
     root.mkdir(parents=True, exist_ok=True)
     sandbox = ContextSandbox(root)
 
-    # working_dir 指向沙箱外 → 只解析，不抛异常
     outside_wd = str(tmp_path / "outside")
+    # 无 schema → working_dir 直通，不做任何处理
     result = sandbox.sanitize_params("execute_shell", {"working_dir": outside_wd})
-    assert "working_dir" in result
-    assert Path(result["working_dir"]).resolve() == Path(outside_wd).resolve()
+    assert result["working_dir"] == outside_wd
 
 
 def test_sanitize_params_working_dir_inside_sandbox(
     tmp_path: Path,
 ):
-    """working_dir 在沙箱内 → 解析为绝对路径"""
+    """x-constraint: workspace → 在 process_workspace 内解析"""
     root = tmp_path / "users" / "user-a"
     root.mkdir(parents=True, exist_ok=True)
-    sandbox = ContextSandbox(root)
+    ws = root / "workspace"
+    ws.mkdir(parents=True, exist_ok=True)
+    sandbox = ContextSandbox(root, process_workspace=ws)
 
-    inside_wd = root / "sub_wd"
+    inside_wd = ws / "sub_wd"
     inside_wd.mkdir(parents=True, exist_ok=True)
 
-    result = sandbox.sanitize_params("execute_shell", {"working_dir": str(inside_wd)})
+    schema = {"properties": {"working_dir": {"x-constraint": "workspace"}}}
+    result = sandbox.sanitize_params("execute_shell", {"working_dir": str(inside_wd)}, param_schema=schema)
     assert result["working_dir"] == str(inside_wd.resolve())
 
 
 def test_sanitize_params_path_field_still_intercepts(
     tmp_path: Path,
 ):
-    """path 字段仍然被严格拦截"""
+    """x-constraint: sandbox → 路径被拦截"""
     root = tmp_path / "users" / "user-a"
     root.mkdir(parents=True, exist_ok=True)
     sandbox = ContextSandbox(root)
 
     outside_path = str(tmp_path / "outside" / "file.txt")
+    schema = {"properties": {"path": {"x-constraint": "sandbox"}}}
     with pytest.raises(SandboxViolationError):
-        sandbox.sanitize_params("read_file", {"path": outside_path})
+        sandbox.sanitize_params("read_file", {"path": outside_path}, param_schema=schema)
 
 
 # ====== 异步执行测试 ======
@@ -294,7 +293,7 @@ async def test_execute_shell_outside_sandbox_fails(
     user_context_sandbox: ContextSandbox,
     tmp_path: Path,
 ):
-    """execute_shell 使用沙箱外的 working_dir → 返回错误（ContextVar 注入）"""
+    """execute_shell 显式 working_dir 直通（边界校验由框架 sanitize_params 负责）"""
     outside_wd = str(tmp_path / "outside")
     Path(outside_wd).mkdir(parents=True, exist_ok=True)
 
@@ -303,19 +302,18 @@ async def test_execute_shell_outside_sandbox_fails(
         result = await plugin.execute_tool("execute_shell", command="echo hello", working_dir=outside_wd)
     finally:
         reset_sandbox(token)
-    assert isinstance(result, str)
-    assert "沙箱拦截" in result
+    # 插件不拦截，正常执行（bwrap 硬件隔离兜底）
+    assert "hello" in result or "退出码" in result
 
 
 # ====== 边界情况 ======
 
 
 def test_resolve_and_validate_invalid_path(plugin: ToolShellPlugin):
-    """无效路径 → 返回错误"""
+    """显式 working_dir 直通（不做路径解析）"""
     resolved, error = plugin._resolve_and_validate_working_dir("\x00invalid")
-    assert resolved == ""
-    assert error is not None
-    assert "无法解析" in error
+    assert resolved == "\x00invalid"
+    assert error is None
 
 
 # ==============================================================================

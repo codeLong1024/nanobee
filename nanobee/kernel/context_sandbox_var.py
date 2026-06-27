@@ -122,6 +122,11 @@ CURRENT_PROCESS_WORKSPACE = SandboxVar[Path | None]("nanobee_process_workspace",
 # tool_shell 插件在 _wrap_sandbox 中消费此 ContextVar。
 CURRENT_BWRAP_RO_BIND = SandboxVar[list[str] | None]("nanobee_bwrap_ro_bind", default=None)
 
+# bwrap 额外可读写挂载路径列表 —— loop.py 绑定用户 skills_dir，
+# 让子进程通过 execute_shell 创建/修改的技能目录持久化到真实文件系统。
+# tool_shell 插件在 _wrap_sandbox 中盲消费此 ContextVar。
+CURRENT_BWRAP_RW_BIND = SandboxVar[list[str] | None]("nanobee_bwrap_rw_bind", default=None)
+
 # Per-turn 路由上下文
 CURRENT_REQUEST_CONTEXT = SandboxVar[RequestContext | None]("nanobee_request_context", default=None)
 
@@ -148,6 +153,10 @@ bind_bwrap_ro_bind = CURRENT_BWRAP_RO_BIND.bind
 reset_bwrap_ro_bind = CURRENT_BWRAP_RO_BIND.reset
 current_bwrap_ro_bind = CURRENT_BWRAP_RO_BIND.current
 
+bind_bwrap_rw_bind = CURRENT_BWRAP_RW_BIND.bind
+reset_bwrap_rw_bind = CURRENT_BWRAP_RW_BIND.reset
+current_bwrap_rw_bind = CURRENT_BWRAP_RW_BIND.current
+
 bind_request_context = CURRENT_REQUEST_CONTEXT.bind
 reset_request_context = CURRENT_REQUEST_CONTEXT.reset
 current_request_context = CURRENT_REQUEST_CONTEXT.current
@@ -168,6 +177,9 @@ __all__ = [
     "bind_bwrap_ro_bind",
     "current_bwrap_ro_bind",
     "reset_bwrap_ro_bind",
+    "bind_bwrap_rw_bind",
+    "current_bwrap_rw_bind",
+    "reset_bwrap_rw_bind",
     "RequestContext",
     "bind_request_context",
     "current_request_context",

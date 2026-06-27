@@ -146,8 +146,8 @@ class ToolPipeline:
         if intercepted := self._guard_filter(spec, tool_call):
             return intercepted
 
-        # 守卫 3：沙箱参数清洗
-        params, sandbox_error = self._guard_sandbox(tool_call, params)
+        # 守卫 3：沙箱参数清洗（传入 tool 以读取 x-constraint 声明）
+        params, sandbox_error = self._guard_sandbox(tool_call, params, tool)
         if sandbox_error:
             return sandbox_error + _HINT, self._error_event(tool_call.name, f"sandbox: {sandbox_error}"), None
 
@@ -217,13 +217,27 @@ class ToolPipeline:
     def _guard_sandbox(
         tool_call: ToolCallRequest,
         params: Any,
+        tool: Any = None,
     ) -> tuple[Any, str | None]:
-        """通过 ContextVar 获取沙箱，清洗路径参数。返回 (清洗后参数, 错误消息或 None)。"""
+        """通过 ContextVar 获取沙箱，读取工具声明的 x-constraint 清洗路径参数。
+
+        工具通过 JSON Schema 的 x-constraint 属性声明各参数需要的约束类型，
+        框架只读声明、执行对应约束，不猜测参数语义。
+
+        Returns:
+            (清洗后参数, 错误消息或 None)
+        """
         request_sandbox = current_sandbox()
         if request_sandbox is None or not isinstance(params, dict):
             return params, None
+        # 从工具声明中提取参数约束信息
+        param_schema = None
+        if tool is not None:
+            param_schema = getattr(tool, "parameters", None)
         try:
-            params = request_sandbox.sanitize_params(tool_call.name, params)
+            params = request_sandbox.sanitize_params(
+                tool_call.name, params, param_schema=param_schema,
+            )
             return params, None
         except (PermissionError, SandboxViolationError) as e:
             return params, str(e)
