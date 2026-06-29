@@ -466,3 +466,37 @@ def test_no_read_only_roots_repr_stable(tmp_path: Path):
     rep = repr(sandbox)
     assert str(root.resolve()) in rep
     assert "ContextSandbox" in rep
+
+
+# ---- 元数据保护测试 ----
+
+
+def test_meta_blocked_sessions(tmp_path: Path):
+    """sessions/ 目录被 _META_BLOCKED_DIRS 保护，LLM 不可写/删"""
+    root = tmp_path / "ctx"
+    sessions_dir = root / "sessions"
+    sessions_dir.mkdir(parents=True)
+    (sessions_dir / "test.jsonl").write_text("{}", encoding="utf-8")
+
+    sandbox = ContextSandbox(root)
+
+    # resolve_safe（读）应拒绝访问 sessions/
+    from nanobee.exceptions import SandboxViolationError
+    with pytest.raises(SandboxViolationError):
+        sandbox.resolve_safe("sessions/test.jsonl")
+
+    # resolve_safe_writable（写/删）应拒绝
+    with pytest.raises(SandboxViolationError):
+        sandbox.resolve_safe_writable("sessions/test.jsonl")
+
+
+def test_meta_blocked_identity_yaml(tmp_path: Path):
+    """identity.yaml 被 _META_BLOCKED_FILES 保护"""
+    root = tmp_path / "ctx"
+    root.mkdir(parents=True)
+
+    sandbox = ContextSandbox(root)
+
+    from nanobee.exceptions import SandboxViolationError
+    with pytest.raises(SandboxViolationError):
+        sandbox.resolve_safe("identity.yaml")

@@ -8,11 +8,12 @@
 
 受保护的元数据文件（_META_BLOCKED_FILES）：
 - identity.yaml：用户身份配置，LLM 不可修改
-- default.jsonl：会话历史（在 .history/ 下），LLM 不可修改
+- default.jsonl：会话历史（已在 .history/ 下保护）
 
-受保护的隐藏目录（_META_BLOCKED_DIRS）：
+受保护的目录（_META_BLOCKED_DIRS）：
 - .history/：所有会话历史文件
 - .tmp/：插件临时文件
+- sessions/：会话 JSONL 文件（SessionManager 托管，LLM 不可读写删）
 """
 
 from __future__ import annotations
@@ -36,6 +37,7 @@ _META_BLOCKED_FILES: frozenset[str] = frozenset({
 _META_BLOCKED_DIRS: frozenset[str] = frozenset({
     ".history",
     ".tmp",
+    "sessions",
 })
 
 
@@ -56,10 +58,11 @@ class ContextSandbox:
     "用户目录没找到，回退到内置目录"的 overlay 语义，
     曾分散在 tool_fs 插件的 _overlay_dirs 中，现统一到沙箱层。
 
-    同时包含元数据文件写保护：
+    同时包含元数据文件/目录写保护：
     - identity.yaml：用户配置，LLM 不可修改
     - .history/ 下的所有文件：会话历史，LLM 不可修改
     - .tmp/ 下的所有文件：插件临时文件，LLM 不可修改
+    - sessions/ 下的所有文件：会话 JSONL，LLM 不可修改（SessionManager 托管）
 
     单用户模式下可设为 None（不启用沙箱）。
     """

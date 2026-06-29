@@ -139,22 +139,13 @@ channels:
 #   "cli:default": "user-alice"
 #   "http:chat-123": "user-bob"
 
-# 技能配置 —— 部署方声明哪些实例技能需要注入提示词
-# 三级技能机制（框架提供，部署方声明）：
-#   - 内置技能（nanobee/skills/）：框架打包，始终注入
-#   - 实例技能（<data_dir>/skills/）：管理员配属，由 enabled 列表控制
-#   - 用户技能（<context_root>/skills/）：用户自主管理，始终注入
+# 技能配置 —— 实例技能自动从 <data_dir>/skills/ 加载（和插件机制一致）
+# 三级技能机制（框架提供，零配置）：
+#   - 内置技能（nanobee/skills/）：框架打包，自动注入
+#   - 实例技能（<data_dir>/skills/）：管理员配属，自动注入
+#   - 用户技能（<context_root>/skills/）：用户自主管理，自动注入
 # 
-# enabled 为空列表时，所有实例技能自动注入（向后兼容）。
-# enabled 非空时，仅注入列表中指定的技能，同时对应目录加入：
-#   - 沙箱只读白名单（LLM 可通过 read_file 读取）
-#   - bwrap 进程沙箱（LLM 可通过 execute_shell 执行脚本）
-#
-# 示例：仅启用 company-risk-scanner
-# skills:
-#   enabled:
-#     - company-risk-scanner
-#     - <skill-name>
+# 无需白名单配置，框架只提供机制（扫描目录），不持有策略（哪些技能可用）。
 
 # 安全配置
 # tools:

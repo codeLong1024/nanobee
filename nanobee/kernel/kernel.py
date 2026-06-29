@@ -88,7 +88,6 @@ class NanobeeKernel:
         self.skill_manager = SkillsLoader(
             builtin_skills_dir=_builtin_skills,
             instance_skills_dir=_instance_skills,
-            enabled_instance_skills=self.config.skills.enabled,
         )
         self._core_md_path = Path(self.config.core_md_path).expanduser()
         self.soul_guard = SoulGuard(self, core_md_path=str(self._core_md_path))

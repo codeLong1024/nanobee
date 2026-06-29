@@ -1106,8 +1106,8 @@ class AgentLoop:
                     builtin_skills = builtin / "skills"
                     if builtin_skills.is_dir():
                         prefix_map = {"skills/": builtin_skills}
-                # 实例级技能目录（管理员配属，只读 —— 仅已启用的）
-                enabled_dirs = self.skill_manager.get_enabled_instance_dirs()
+                # 实例级技能目录（管理员配属，只读 —— 自动全量加载）
+                enabled_dirs = self.skill_manager.get_instance_dirs()
                 for d in enabled_dirs:
                     read_only.append(d)
                 if not read_only:
@@ -1156,12 +1156,12 @@ class AgentLoop:
             metadata=ctx.msg.metadata,
         ))
 
-        # 根据部署方 skills.enabled 推导 bwrap 额外只读挂载路径
-        # 已启用实例技能目录在子进程（bwrap）中只读可见，
+        # 根据实例技能目录推导 bwrap 额外只读挂载路径
+        # 实例技能目录在子进程（bwrap）中只读可见，
         # 确保 LLM 通过 execute_shell 执行技能脚本时路径可达
         _bwrap_ro_bind_token = None
         if self.skill_manager is not None:
-            enabled_dirs = self.skill_manager.get_enabled_instance_dirs()
+            enabled_dirs = self.skill_manager.get_instance_dirs()
             if enabled_dirs:
                 _bwrap_ro_bind_token = bind_bwrap_ro_bind(
                     [str(d) for d in enabled_dirs]

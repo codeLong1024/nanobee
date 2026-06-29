@@ -117,8 +117,8 @@ CURRENT_CONTEXT_ROOT = SandboxVar[Path | None]("nanobee_context_root", default=N
 # 定义子进程可访问的目录边界，与 ContextRoot（路径校验边界）解耦。
 CURRENT_PROCESS_WORKSPACE = SandboxVar[Path | None]("nanobee_process_workspace", default=None)
 
-# bwrap 额外只读挂载路径列表 —— 部署方通过 skills.enabled 声明后，
-# 框架自动推导 enabled 实例技能目录为 bwrap --ro-bind-try 目标。
+# bwrap 额外只读挂载路径列表 —— 实例技能目录自动全量加载，
+# 框架自动推导实例技能目录为 bwrap --ro-bind-try 目标。
 # tool_shell 插件在 _wrap_sandbox 中消费此 ContextVar。
 CURRENT_BWRAP_RO_BIND = SandboxVar[list[str] | None]("nanobee_bwrap_ro_bind", default=None)
 
