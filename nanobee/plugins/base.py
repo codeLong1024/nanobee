@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -77,24 +77,18 @@ class NanobeePlugin(PluginHookMixin, ABC):
 
     所有插件必须继承此类，并实现必要的生命周期方法。
     继承 PluginHookMixin 以获得 5 个生命周期 Hook 的默认实现。
+
+    元数据由 PluginManager 从 plugin.toml 解析后强制传入，
+    不存在类级兜底——plugin.toml 是唯一真实源。
     """
 
-    # 类级元数据（可通过 plugin.toml 覆盖）
-    name: ClassVar[str] = "base"
-    version: ClassVar[str] = "0.0.1"
-    plugin_type: ClassVar[str] = "unknown"
-
-    def __init__(self, metadata: PluginMetadata | None = None):
+    def __init__(self, metadata: PluginMetadata):
         """初始化插件
 
         Args:
-            metadata: 从 plugin.toml 解析的元数据，为 None 时使用类级默认值
+            metadata: 从 plugin.toml 解析的元数据，必传。测试中显式构造 PluginMetadata。
         """
-        self._metadata = metadata or PluginMetadata(
-            name=self.name,
-            version=self.version,
-            plugin_type=self.plugin_type,
-        )
+        self._metadata = metadata
         self._kernel: Any | None = None  # 私有属性，禁止插件直接访问
         self._enabled = False
         self._config: dict[str, Any] = {}  # 插件专属配置（隔离）
@@ -104,6 +98,21 @@ class NanobeePlugin(PluginHookMixin, ABC):
     def metadata(self) -> PluginMetadata:
         """获取插件元数据"""
         return self._metadata
+
+    @property
+    def name(self) -> str:
+        """插件名称（委托 metadata.name）"""
+        return self._metadata.name
+
+    @property
+    def version(self) -> str:
+        """插件版本（委托 metadata.version）"""
+        return self._metadata.version
+
+    @property
+    def plugin_type(self) -> str:
+        """插件类型（委托 metadata.plugin_type）"""
+        return self._metadata.plugin_type
 
     @property
     def hook_config(self) -> dict[str, "HookConfig"]:

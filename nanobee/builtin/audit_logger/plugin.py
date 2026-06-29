@@ -23,10 +23,6 @@ class AuditLoggerPlugin(NanobeePlugin):
     内部维护 ``call_count`` 用于测试验证。
     """
 
-    name = "audit_logger"
-    version = "1.0.0"
-    plugin_type = "audit"
-
     def __init__(self, metadata: Any = None) -> None:
         super().__init__(metadata)
         self._call_count: dict[str, int] = {}

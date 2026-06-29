@@ -14,8 +14,10 @@ from nanobee.plugins.memory import MemoryPlugin
 class MockToolPlugin(ToolPlugin):
     """测试用工具插件"""
 
-    name = "mock-tool"
-    version = "1.0.0"
+    def __init__(self, metadata=None):
+        if metadata is None:
+            metadata = PluginMetadata(name="mock-tool", plugin_type="tool")
+        super().__init__(metadata)
 
     def get_tools(self):
         return [{
@@ -36,8 +38,10 @@ class MockToolPlugin(ToolPlugin):
 class MockChannelPlugin(ChannelPlugin):
     """测试用通道插件"""
 
-    name = "mock-channel"
-    version = "1.0.0"
+    def __init__(self, metadata=None):
+        if metadata is None:
+            metadata = PluginMetadata(name="mock-channel", plugin_type="channel")
+        super().__init__(metadata)
 
     async def start(self):
         pass

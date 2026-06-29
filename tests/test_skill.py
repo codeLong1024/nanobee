@@ -229,7 +229,7 @@ class TestSkillSerialization:
 
         loader = SkillsLoader(tmp_path / "skills")
         skills = loader.list_user_skills()
-        # 坏的 frontmatter 被静默跳过
+        # 坏的 frontmatter 被静默跳过（错误仅记录日志，不注入 system prompt）
         assert len(skills) == 1
         assert skills[0].meta.name == "good"
 

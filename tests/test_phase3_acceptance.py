@@ -18,6 +18,7 @@ import pytest
 from nanobee.builtin.audit_logger.plugin import AuditLoggerPlugin
 from nanobee.kernel.context_pipeline import ContextPipeline, SkillStage
 from nanobee.kernel.skill_manager import SkillsLoader
+from nanobee.plugins.base import PluginMetadata
 
 
 def _make_core_md(tmp_path: Path) -> Path:
@@ -140,7 +141,7 @@ class TestAuditLoggerPlugin:
 
     @pytest.mark.asyncio
     async def test_call_count_increments(self):
-        plugin = AuditLoggerPlugin()
+        plugin = AuditLoggerPlugin(PluginMetadata(name="audit_logger", plugin_type="audit"))
         ctx = MagicMock()
         ctx.user_id = "test-user"
 
@@ -152,7 +153,7 @@ class TestAuditLoggerPlugin:
 
     @pytest.mark.asyncio
     async def test_counts_tool_calls(self):
-        plugin = AuditLoggerPlugin()
+        plugin = AuditLoggerPlugin(PluginMetadata(name="audit_logger", plugin_type="audit"))
         ctx = MagicMock()
         ctx.user_id = "test-user"
 
@@ -168,7 +169,7 @@ class TestAuditLoggerPlugin:
 
     @pytest.mark.asyncio
     async def test_no_tool_calls(self):
-        plugin = AuditLoggerPlugin()
+        plugin = AuditLoggerPlugin(PluginMetadata(name="audit_logger", plugin_type="audit"))
         ctx = MagicMock()
         ctx.user_id = "test-user"
 
@@ -187,7 +188,7 @@ class TestAllPluginsTogether:
     async def test_audit_logger_does_not_affect_prompt(self, tmp_path: Path):
         """audit_logger 不贡献提示词内容。"""
         ctx = MagicMock()
-        plugin = AuditLoggerPlugin()
+        plugin = AuditLoggerPlugin(PluginMetadata(name="audit_logger", plugin_type="audit"))
 
         pipeline = _make_context_pipeline(tmp_path)
 

@@ -41,6 +41,8 @@ class _SlowPlugin(NanobeePlugin):
     plugin_type = "dream"
 
     def __init__(self, metadata=None, delay: float = 0.05):
+        if metadata is None:
+            metadata = PluginMetadata(name="slow_plugin", plugin_type="dream")
         super().__init__(metadata)
         self._delay = delay
         self.call_count = 0
@@ -69,6 +71,8 @@ class _PriorityPlugin(NanobeePlugin):
     plugin_type = "memory"
 
     def __init__(self, metadata=None):
+        if metadata is None:
+            metadata = PluginMetadata(name="priority_plugin", plugin_type="memory")
         super().__init__(metadata)
         self._on_message_completed = None  # 由测试注入
 
@@ -301,7 +305,7 @@ class TestNanobeePluginHookConfig:
 
     def test_plugin_hook_config_defaults(self):
         """无 metadata.hooks 时 hook_config 返回空字典。"""
-        plugin = _NonBlockingPlugin()
+        plugin = _NonBlockingPlugin(PluginMetadata(name="non_blocking_plugin", plugin_type="audit"))
         assert plugin.hook_config == {}
 
     def test_plugin_hook_config_from_metadata(self):
@@ -444,7 +448,7 @@ class TestHookSchedulingFIP:
         """单个插件异常不影响其他插件的 on_message_completed 执行。"""
         from nanobee.plugins.base import HookConfig
 
-        fail_plugin = _FailingPlugin()
+        fail_plugin = _FailingPlugin(PluginMetadata(name="failing_plugin", plugin_type="audit"))
         fail_plugin._metadata = PluginMetadata(
             name="failing", plugin_type="audit",
             hooks={"on_message_completed": HookConfig(block_next=False, priority=10)},
@@ -477,14 +481,14 @@ class TestHookSchedulingFIP:
 
         order: list[str] = []
 
-        p1 = _PriorityPlugin()
+        p1 = _PriorityPlugin(PluginMetadata(name="p_low", plugin_type="memory"))
         p1._metadata = PluginMetadata(
             name="p_low", plugin_type="memory",
             hooks={"on_message_completed": HookConfig(block_next=True, priority=10)},
         )
         p1._on_message_completed = AsyncMock(side_effect=lambda ctx, msgs: order.append("p_low"))
 
-        p2 = _PriorityPlugin()
+        p2 = _PriorityPlugin(PluginMetadata(name="p_high", plugin_type="memory"))
         p2._metadata = PluginMetadata(
             name="p_high", plugin_type="memory",
             hooks={"on_message_completed": HookConfig(block_next=True, priority=100)},
@@ -563,6 +567,8 @@ class _TimeoutPlugin(NanobeePlugin):
     plugin_type = "memory"
 
     def __init__(self, metadata=None, hang_forever: bool = False):
+        if metadata is None:
+            metadata = PluginMetadata(name="timeout_plugin", plugin_type="memory")
         super().__init__(metadata)
         self.hang_forever = hang_forever
         self.call_count = 0
@@ -853,6 +859,8 @@ class _PreInvokePlugin(NanobeePlugin):
     plugin_type = "tool"
 
     def __init__(self, metadata=None):
+        if metadata is None:
+            metadata = PluginMetadata(name="pre_invoke_plugin", plugin_type="tool")
         super().__init__(metadata)
         self._on_pre_invoke = None
 
@@ -868,6 +876,8 @@ class _PostInvokePlugin(NanobeePlugin):
     plugin_type = "tool"
 
     def __init__(self, metadata=None):
+        if metadata is None:
+            metadata = PluginMetadata(name="post_invoke_plugin", plugin_type="tool")
         super().__init__(metadata)
         self._on_post_invoke = None
 
@@ -883,6 +893,8 @@ class _DualHookPlugin(NanobeePlugin):
     plugin_type = "tool"
 
     def __init__(self, metadata=None):
+        if metadata is None:
+            metadata = PluginMetadata(name="dual_hook", plugin_type="tool")
         super().__init__(metadata)
         self._on_pre_invoke = None
         self._on_post_invoke = None
@@ -908,14 +920,14 @@ class TestPreInvokePriority:
 
         order: list[str] = []
 
-        p_low = _PreInvokePlugin()
+        p_low = _PreInvokePlugin(PluginMetadata(name="p_low", plugin_type="tool"))
         p_low._metadata = PluginMetadata(
             name="p_low", plugin_type="tool",
             hooks={"on_pre_invoke": HookConfig(priority=10)},
         )
         p_low._on_pre_invoke = AsyncMock(side_effect=lambda ctx, name, args: order.append("p_low") or args)
 
-        p_high = _PreInvokePlugin()
+        p_high = _PreInvokePlugin(PluginMetadata(name="p_high", plugin_type="tool"))
         p_high._metadata = PluginMetadata(
             name="p_high", plugin_type="tool",
             hooks={"on_pre_invoke": HookConfig(priority=100)},
@@ -939,12 +951,12 @@ class TestPreInvokePriority:
         """未声明 on_pre_invoke hook_config 时 priority=10。"""
         order: list[str] = []
 
-        p_default = _PreInvokePlugin()
+        p_default = _PreInvokePlugin(PluginMetadata(name="p_default", plugin_type="tool"))
         p_default._metadata = PluginMetadata(name="p_default", plugin_type="tool")
         p_default._on_pre_invoke = AsyncMock(side_effect=lambda ctx, name, args: order.append("p_default") or args)
 
         from nanobee.plugins.base import HookConfig
-        p_explicit = _PreInvokePlugin()
+        p_explicit = _PreInvokePlugin(PluginMetadata(name="p_explicit", plugin_type="tool"))
         p_explicit._metadata = PluginMetadata(
             name="p_explicit", plugin_type="tool",
             hooks={"on_pre_invoke": HookConfig(priority=50)},
@@ -978,14 +990,14 @@ class TestPostInvokePriority:
 
         order: list[str] = []
 
-        p_low = _PostInvokePlugin()
+        p_low = _PostInvokePlugin(PluginMetadata(name="p_low", plugin_type="tool"))
         p_low._metadata = PluginMetadata(
             name="p_low", plugin_type="tool",
             hooks={"on_post_invoke": HookConfig(priority=5)},
         )
         p_low._on_post_invoke = AsyncMock(side_effect=lambda ctx, name, result: order.append("p_low") or result)
 
-        p_high = _PostInvokePlugin()
+        p_high = _PostInvokePlugin(PluginMetadata(name="p_high", plugin_type="tool"))
         p_high._metadata = PluginMetadata(
             name="p_high", plugin_type="tool",
             hooks={"on_post_invoke": HookConfig(priority=90)},
@@ -1013,7 +1025,7 @@ class TestPostInvokePriority:
         post_order: list[str] = []
 
         # p1: pre=100, post=10
-        p1 = _DualHookPlugin()
+        p1 = _DualHookPlugin(PluginMetadata(name="p1", plugin_type="tool"))
         p1._metadata = PluginMetadata(
             name="p1", plugin_type="tool",
             hooks={
@@ -1024,14 +1036,14 @@ class TestPostInvokePriority:
         p1._on_pre_invoke = AsyncMock(side_effect=lambda ctx, name, args: pre_order.append("p1") or args)
         p1._on_post_invoke = AsyncMock(side_effect=lambda ctx, name, result: post_order.append("p1") or result)
 
-        p2 = _PostInvokePlugin()
+        p2 = _PostInvokePlugin(PluginMetadata(name="p2", plugin_type="tool"))
         p2._metadata = PluginMetadata(
             name="p2", plugin_type="tool",
             hooks={"on_post_invoke": HookConfig(priority=50)},
         )
         p2._on_post_invoke = AsyncMock(side_effect=lambda ctx, name, result: post_order.append("p2") or result)
 
-        p3 = _PostInvokePlugin()
+        p3 = _PostInvokePlugin(PluginMetadata(name="p3", plugin_type="tool"))
         p3._metadata = PluginMetadata(
             name="p3", plugin_type="tool",
             hooks={"on_post_invoke": HookConfig(priority=90)},

@@ -27,6 +27,7 @@ from nanobee.builtin.channel_http.plugin import (
     _build_sse_chunk,
     _parse_openai_messages,
 )
+from nanobee.plugins.base import PluginMetadata
 
 
 # =============================================================================
@@ -50,7 +51,7 @@ def _mock_kernel(booted: bool = True) -> MagicMock:
 
 def _create_plugin(api_key: str | None = None) -> HTTPChannelPlugin:
     """创建测试插件实例，可选配置 API Key。"""
-    plugin = HTTPChannelPlugin()
+    plugin = HTTPChannelPlugin(PluginMetadata(name="channel_http", plugin_type="channel"))
     kernel = _mock_kernel()
     plugin.initialize(kernel)
     # 模拟 get_config 返回 api_key

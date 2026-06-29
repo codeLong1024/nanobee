@@ -13,9 +13,6 @@ from nanobee.utils.logger import logger
 class ToolEchoPlugin(ToolPlugin):
     """回显工具"""
 
-    name = "tool_echo"
-    version = "1.0.0"
-
     def get_tools(self) -> list[dict[str, Any]]:
         return [{
             "type": "function",

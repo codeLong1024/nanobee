@@ -1,6 +1,7 @@
 ---
 name: skill_creator
-description: "创建、编辑、管理技能（Skill）。技能是扩展 AI Agent 能力的模块化知识包，相当于特定领域/任务的「上岗指南」。适用场景：设计新技能、编辑已有技能、打包技能为可分发文件、校验技能结构。"
+description: "创建、编辑、打包、校验 Skill 的完整指南。触发: 创建技能/新建skill/写skill/设计技能/编辑技能/修改技能/打包技能/校验技能/验证技能/init_skill/package_skill/quick_validate/技能目录结构/SKILL.md格式/frontmatter/skill creator/命名规范/snake_case/技能初始化"
+
 ---
 
 # Skill Creator
@@ -61,7 +62,7 @@ description: "创建、编辑、管理技能（Skill）。技能是扩展 AI Age
 ### 3. 初始化
 
 ```bash
-python <本SKILL.md所在目录>/scripts/init_skill.py <名称> --path <路径> [--resources scripts,references,assets] [--examples]
+python3 <本SKILL.md所在目录>/scripts/init_skill.py <名称> --path <路径> [--resources scripts,references,assets] [--examples]
 ```
 
 脚本会创建目录、生成带 TODO 占位符的 SKILL.md、根据 `--resources` 创建资源目录。
@@ -79,7 +80,7 @@ python <本SKILL.md所在目录>/scripts/init_skill.py <名称> --path <路径> 
 ### 5. 打包
 
 ```bash
-python <本SKILL.md所在目录>/scripts/package_skill.py <技能目录> [输出目录]
+python3 <本SKILL.md所在目录>/scripts/package_skill.py <技能目录> [输出目录]
 ```
 
 自动校验 frontmatter 格式和命名规范，通过后创建 `.skill` 文件（Zip 格式）。
@@ -96,7 +97,7 @@ python <本SKILL.md所在目录>/scripts/package_skill.py <技能目录> [输出
 ## 校验
 
 ```bash
-python <本SKILL.md所在目录>/scripts/quick_validate.py <技能目录>
+python3 <本SKILL.md所在目录>/scripts/quick_validate.py <技能目录>
 ```
 
 也可在打包时自动校验。编辑用户技能后，框架自动发现（缓存 TTL 2 秒），或通过 `invalidate_cache` 立即生效。

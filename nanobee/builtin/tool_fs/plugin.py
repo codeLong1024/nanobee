@@ -17,10 +17,6 @@ from nanobee.utils.logger import logger
 class ToolFileSystemPlugin(ToolPlugin):
     """文件系统工具插件"""
 
-    name = "tool_fs"
-    version = "1.0.0"
-    plugin_type = "tool"
-
     def __init__(self, metadata: Any = None):
         super().__init__(metadata)
 
@@ -129,6 +125,31 @@ class ToolFileSystemPlugin(ToolPlugin):
                     },
                 },
             },
+            {
+                "type": "function",
+                "function": {
+                    "name": "delete_file",
+                    "description": (
+                        "删除文件或目录。支持递归删除目录及其所有内容。"
+                        "路径受 writable 沙箱约束保护，删除操作不可撤销，请谨慎使用。"
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {
+                                "type": "string",
+                                "description": "要删除的文件或目录路径",
+                                "x-constraint": "writable",
+                            },
+                            "recursive": {
+                                "type": "boolean",
+                                "description": "删除目录时是否递归删除（默认 false，仅允许删除空目录）",
+                            },
+                        },
+                        "required": ["path"],
+                    },
+                },
+            },
         ]
 
     def _read_file_desc(self) -> str:
@@ -151,6 +172,8 @@ class ToolFileSystemPlugin(ToolPlugin):
             return await self._execute_edit_file(**kwargs)
         elif tool_name == "list_dir":
             return await self._execute_list_dir(**kwargs)
+        elif tool_name == "delete_file":
+            return await self._execute_delete_file(**kwargs)
         else:
             raise ValueError(f"未知工具: {tool_name}")
 
@@ -172,10 +195,7 @@ class ToolFileSystemPlugin(ToolPlugin):
             文件内容字符串，格式为 LINE_NUM|CONTENT
         """
         try:
-            if not path:
-                return "错误：未知文件路径"
-
-            fp = self._resolve_path(path)
+            fp = self._resolve_and_check(path)
             if not fp.exists():
                 return f"错误：文件不存在: {path}"
             if not fp.is_file():
@@ -248,44 +268,11 @@ class ToolFileSystemPlugin(ToolPlugin):
             写入结果消息
         """
         try:
-            if not path:
-                raise ValueError("未知文件路径")
+            fp = self._resolve_and_check(path, writable=True)
             if content is None:
                 raise ValueError("未知内容")
-
-            fp = self._resolve_write_path(path)
             fp.parent.mkdir(parents=True, exist_ok=True)
             fp.write_text(content, encoding="utf-8")
-
-            # 写入 SKILL.md 后立即校验 frontmatter，错误反馈给 LLM 自行修正
-            if fp.name == "SKILL.md":
-                lines = content.splitlines()
-                if not lines or lines[0].strip() != "---":
-                    return (
-                        "错误：SKILL.md 必须包含 YAML frontmatter。"
-                        " 文件必须以 '---' 开头，包含 name 和 description 字段，"
-                        " 再以 '---' 结束。\n"
-                        "建议：创建技能应使用 skill_creator 提供的 init_skill.py 脚本，"
-                        "它会自动生成正确的 frontmatter 模板。\n"
-                        "手动写入的示例格式：\n"
-                        "---\n"
-                        "name: my_skill\n"
-                        "description: \"技能说明\"\n"
-                        "---\n\n"
-                        "# 技能正文"
-                    )
-                end = -1
-                for i in range(1, len(lines)):
-                    if lines[i].strip() == "---":
-                        end = i
-                        break
-                if end == -1:
-                    return (
-                        "错误：SKILL.md frontmatter 未正确关闭。"
-                        " 请在 YAML 元数据后添加 '---' 结束分隔符。"
-                        "建议：使用 skill_creator 的 init_skill.py 脚本创建技能，"
-                        "避免手动编辑 frontmatter 出错。"
-                    )
 
             return f"成功写入 {len(content)} 个字符到 {fp}"
 
@@ -316,14 +303,11 @@ class ToolFileSystemPlugin(ToolPlugin):
             编辑结果消息
         """
         try:
-            if not path:
-                raise ValueError("未知文件路径")
+            fp = self._resolve_and_check(path, writable=True)
             if old_text is None:
                 raise ValueError("未知 old_text")
             if new_text is None:
                 raise ValueError("未知 new_text")
-
-            fp = self._resolve_write_path(path)
 
             # 创建文件语义：old_text='' 且文件不存在时创建
             if not fp.exists():
@@ -385,10 +369,7 @@ class ToolFileSystemPlugin(ToolPlugin):
             目录内容字符串
         """
         try:
-            if path is None:
-                raise ValueError("未知路径")
-
-            dp = self._resolve_path(path)
+            dp = self._resolve_and_check(path)
             if not dp.exists():
                 return f"错误：目录不存在: {path}"
             if not dp.is_dir():
@@ -425,26 +406,40 @@ class ToolFileSystemPlugin(ToolPlugin):
         except Exception as e:
             return f"列出目录失败: {e}"
 
-    def _resolve_path(self, path: str) -> Path:
-        """解析文件路径，支持沙箱校验 + overlay 回退
-
-        通过 ContextVar 获取当前任务的沙箱实例进行路径边界校验。
-        如果当前任务未绑定沙箱，回退到 Path.cwd() 作为默认工作目录。
+    def _resolve_and_check(self, path: str | None, *, writable: bool = False) -> Path:
+        """解析路径并执行基础校验（空值检查 + 沙箱解析），消除各 execute 方法重复。
 
         Args:
-            path: 文件路径（可以是相对或绝对路径）
+            path: 文件或目录路径（可以是相对或绝对路径，不能为 None/空）
+            writable: True 使用可写根校验，False 使用可读根 + overlay 回退
 
         Returns:
-            解析后的安全绝对路径
+            沙箱校验后的安全绝对路径
 
         Raises:
-            SandboxViolationError: 路径逃逸 — 不在沙箱范围内
+            ValueError: path 为空
+            SandboxViolationError: 路径越界
         """
-        from nanobee.kernel.context_sandbox_var import current_sandbox as _current_sandbox
-        from nanobee.kernel.sandbox import ContextSandbox
+        if not path:
+            raise ValueError("未知路径")
+        return self._resolve_sandbox_path(path, writable=writable)
 
-        sandbox = _current_sandbox()
+    def _resolve_sandbox_path(self, path: str, *, writable: bool = False) -> Path:
+        """沙箱路径解析。
+
+        通过 ContextVar 获取当前任务沙箱实例，根据 writable 参数选择校验策略：
+        - writable=False：可读根 + overlay 回退（用于 read_file / list_dir）
+        - writable=True：仅允许可写根（用于 write_file / edit_file / delete_file）
+
+        Raises:
+            SandboxViolationError: 路径越界
+        """
+        from nanobee.kernel.context_sandbox_var import current_sandbox
+
+        sandbox = current_sandbox()
         if sandbox is not None:
+            if writable:
+                return sandbox.resolve_safe_writable(path)
             return sandbox.resolve_with_fallback(path)
 
         # 无沙箱时回退到普通路径解析
@@ -455,32 +450,54 @@ class ToolFileSystemPlugin(ToolPlugin):
             p = p.resolve()
         return p
 
-    def _resolve_write_path(self, path: str) -> Path:
-        """解析写操作文件路径，仅允许可写根
+    async def _execute_delete_file(
+        self,
+        path: str | None = None,
+        recursive: bool = False,
+        **kwargs: Any,
+    ) -> str:
+        """删除文件或目录。
 
         Args:
-            path: 文件路径（可以是相对或绝对路径）
+            path: 要删除的文件或目录路径
+            recursive: 删除目录时是否递归删除（默认 false，仅允许删除空目录）
 
         Returns:
-            解析后的安全绝对路径
-
-        Raises:
-            SandboxViolationError: 路径逃逸或试图写入只读根
+            操作结果消息
         """
-        from nanobee.kernel.context_sandbox_var import current_sandbox as _current_sandbox
-        from nanobee.kernel.sandbox import ContextSandbox
+        try:
+            import shutil
+            fp = self._resolve_and_check(path, writable=True)
+            if not fp.exists():
+                return f"错误：路径不存在: {path}"
 
-        sandbox = _current_sandbox()
-        if sandbox is not None:
-            return sandbox.resolve_safe_writable(path)
-
-        # 无沙箱时回退到普通路径解析
-        p = Path(path)
-        if not p.is_absolute():
-            p = (Path.cwd() / p).resolve()
-        else:
-            p = p.resolve()
-        return p
+            if fp.is_file():
+                fp.unlink()
+                return f"成功删除文件: {fp}"
+            elif fp.is_dir():
+                if recursive:
+                    shutil.rmtree(fp)
+                    return f"成功递归删除目录: {fp}"
+                else:
+                    try:
+                        fp.rmdir()
+                        return f"成功删除空目录: {fp}"
+                    except OSError:
+                        items = list(fp.iterdir())
+                        preview = ", ".join(p.name for p in items[:5])
+                        more = f" 等共 {len(items)} 项" if len(items) > 5 else ""
+                        return (
+                            f"错误：目录非空: {fp}（包含: {preview}{more}）。"
+                            " 使用 recursive=true 递归删除。"
+                        )
+            else:
+                return f"错误：不支持的文件类型: {path}"
+        except SandboxViolationError as e:
+            return f"错误：沙箱拦截 - {e}"
+        except PermissionError as e:
+            return f"错误：权限不足 - {e}"
+        except Exception as e:
+            return f"删除失败: {e}"
 
     @staticmethod
     def _find_matches(content: str, old_text: str) -> list[dict[str, Any]]:

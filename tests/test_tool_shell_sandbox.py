@@ -23,12 +23,13 @@ from nanobee.kernel.context_sandbox_var import (
 )
 from nanobee.kernel.sandbox import ContextSandbox
 from nanobee.exceptions import SandboxViolationError
+from nanobee.plugins.base import PluginMetadata
 
 
 @pytest.fixture
 def plugin(tmp_path: Path) -> ToolShellPlugin:
     """创建 tool_shell 插件实例"""
-    return ToolShellPlugin()
+    return ToolShellPlugin(PluginMetadata(name="tool_shell", plugin_type="tool"))
 
 
 @pytest.fixture

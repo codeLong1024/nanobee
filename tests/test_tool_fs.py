@@ -26,6 +26,7 @@ import pytest
 from nanobee.builtin.tool_fs import ToolFileSystemPlugin
 from nanobee.kernel.sandbox import ContextSandbox
 from nanobee.exceptions import SandboxViolationError
+from nanobee.plugins.base import PluginMetadata
 
 
 # ---- 辅助工具 ----
@@ -37,7 +38,7 @@ def _create_plugin(workspace: Path | None = None) -> ToolFileSystemPlugin:
         # 测试环境：切换到 tmp_path，这样相对路径才能解析到 tmp_path
         import os
         os.chdir(workspace)
-    return ToolFileSystemPlugin()
+    return ToolFileSystemPlugin(PluginMetadata(name="tool_fs", plugin_type="tool"))
 
 
 def _run_async(coro):
@@ -265,23 +266,108 @@ class TestListDirTool:
         assert "为空" in result
 
 
+# ---- delete_file 测试 ----
+
+
+class TestDeleteFileTool:
+    """验证 delete_file 工具功能"""
+
+    def test_delete_file_success(self, tmp_path: Path):
+        """delete_file 成功删除文件"""
+        test_file = tmp_path / "to_delete.txt"
+        test_file.write_text("content", encoding="utf-8")
+
+        plugin = _create_plugin(tmp_path)
+        result = _run_async(plugin.execute_tool("delete_file", path="to_delete.txt"))
+
+        assert "成功删除" in result
+        assert not test_file.exists()
+
+    def test_delete_empty_dir(self, tmp_path: Path):
+        """delete_file 成功删除空目录"""
+        empty_dir = tmp_path / "empty_dir"
+        empty_dir.mkdir()
+
+        plugin = _create_plugin(tmp_path)
+        result = _run_async(plugin.execute_tool("delete_file", path="empty_dir"))
+
+        assert "成功删除" in result
+        assert not empty_dir.exists()
+
+    def test_delete_dir_recursive(self, tmp_path: Path):
+        """delete_file 递归删除非空目录"""
+        test_dir = tmp_path / "nonempty"
+        test_dir.mkdir()
+        (test_dir / "file1.txt").write_text("a", encoding="utf-8")
+        (test_dir / "file2.txt").write_text("b", encoding="utf-8")
+
+        plugin = _create_plugin(tmp_path)
+        result = _run_async(plugin.execute_tool("delete_file", path="nonempty", recursive=True))
+
+        assert "成功递归删除" in result
+        assert not test_dir.exists()
+
+    def test_delete_nonempty_dir_without_recursive(self, tmp_path: Path):
+        """delete_file 非空目录未设置 recursive 时返回错误提示"""
+        test_dir = tmp_path / "nonempty2"
+        test_dir.mkdir()
+        (test_dir / "file.txt").write_text("c", encoding="utf-8")
+
+        plugin = _create_plugin(tmp_path)
+        result = _run_async(plugin.execute_tool("delete_file", path="nonempty2"))
+
+        assert "错误" in result
+        assert "目录非空" in result
+        assert "recursive=true" in result
+        assert test_dir.exists()
+
+    def test_delete_file_not_found(self, tmp_path: Path):
+        """delete_file 路径不存在时返回错误"""
+        plugin = _create_plugin(tmp_path)
+        result = _run_async(plugin.execute_tool("delete_file", path="nonexistent.txt"))
+
+        assert "错误" in result
+        assert "不存在" in result
+
+    def test_delete_file_missing_path(self, tmp_path: Path):
+        """delete_file 缺少路径参数"""
+        plugin = _create_plugin(tmp_path)
+        result = _run_async(plugin.execute_tool("delete_file", path=None))
+
+        assert "错误" in result or "失败" in result
+
+    def test_delete_file_sandbox_rejected(self, tmp_path: Path):
+        """delete_file 路径越界被沙箱拦截"""
+        # 在沙箱上下文中测试：writable 根在 tmp_path 内，../ 逃逸被拦截
+        plugin = _create_plugin(tmp_path)
+        token = _with_sandbox(tmp_path)
+        try:
+            result = _run_async(plugin.execute_tool("delete_file", path="../outside_dir"))
+        finally:
+            from nanobee.kernel.context_sandbox_var import reset_sandbox
+            reset_sandbox(token)
+
+        assert "沙箱拦截" in result or "错误" in result
+
+
 # ---- 工具定义测试 ----
 
 
 class TestToolDefinitions:
     """验证工具定义元数据"""
 
-    def test_get_tools_returns_four_tools(self):
-        """get_tools 返回 4 个工具定义"""
+    def test_get_tools_returns_five_tools(self):
+        """get_tools 返回 5 个工具定义"""
         plugin = _create_plugin()
         tools = plugin.get_tools()
 
-        assert len(tools) == 4
+        assert len(tools) == 5
         tool_names = [t["function"]["name"] for t in tools]
         assert "read_file" in tool_names
         assert "write_file" in tool_names
         assert "edit_file" in tool_names
         assert "list_dir" in tool_names
+        assert "delete_file" in tool_names
 
     def test_tool_parameters_valid(self):
         """工具参数定义有效"""
@@ -302,8 +388,8 @@ class TestToolDefinitions:
         plugin = _create_plugin()
         names = plugin.list_tool_names()
 
-        assert len(names) == 4
-        assert names == ["read_file", "write_file", "edit_file", "list_dir"]
+        assert len(names) == 5
+        assert names == ["read_file", "write_file", "edit_file", "list_dir", "delete_file"]
 
 
 # # ---- 路径沙箱拦截测试 ----

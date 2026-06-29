@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
 技能初始化器 —— 从模板创建新的技能目录。
 

@@ -27,10 +27,6 @@ class ToolCronPlugin(ToolPlugin):
     替代旧版 set_context() 实例属性写入模式。
     """
 
-    name = "tool_cron"
-    version = "1.0.0"
-    plugin_type = "tool"
-
     def __init__(self, metadata: Any = None):
         super().__init__(metadata)
         self._cron: CronService | None = None
