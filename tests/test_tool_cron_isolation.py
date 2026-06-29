@@ -11,12 +11,13 @@ from unittest.mock import MagicMock
 import pytest
 
 from nanobee.builtin.tool_cron.plugin import ToolCronPlugin
+from nanobee.plugins.base import PluginMetadata
 
 
 @pytest.fixture
 def plugin(tmp_path: Path) -> ToolCronPlugin:
     """创建插件实例，使用临时目录作为 work_dir。"""
-    plugin = ToolCronPlugin()
+    plugin = ToolCronPlugin(PluginMetadata(name="tool_cron", plugin_type="tool"))
 
     # 模拟 kernel
     kernel = MagicMock()

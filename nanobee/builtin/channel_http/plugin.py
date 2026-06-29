@@ -208,8 +208,6 @@ class HTTPChannelPlugin(ChannelPlugin):
     启动一个 aiohttp 服务器，将 nanobee 暴露为 OpenAI 兼容的 HTTP API。
     """
 
-    name = "channel_http"
-    version = "0.1.0"
     display_name = "HTTP API"
     supports_streaming = True
 

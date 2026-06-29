@@ -179,8 +179,8 @@ def test_user_context_exposes_tmp_dir(tmp_path: Path):
 
 def test_plugin_tmp_returns_none_without_context_var():
     """没有绑定 ContextVar 时 plugin.tmp 返回 None"""
-    from nanobee.plugins.base import NanobeePlugin
-    plugin = NanobeePlugin()
+    from nanobee.plugins.base import NanobeePlugin, PluginMetadata
+    plugin = NanobeePlugin(PluginMetadata(name="base", plugin_type="unknown"))
     assert plugin.tmp is None
 
 
@@ -188,9 +188,9 @@ def test_plugin_tmp_returns_none_without_context_var():
 async def test_plugin_tmp_with_context_var(tmp_path: Path):
     """绑定 ContextVar 后 plugin.tmp 返回 per-plugin 路径"""
     from nanobee.kernel.context_sandbox_var import bind_tmp, reset_tmp
-    from nanobee.plugins.base import NanobeePlugin
+    from nanobee.plugins.base import NanobeePlugin, PluginMetadata
 
-    plugin = NanobeePlugin()
+    plugin = NanobeePlugin(PluginMetadata(name="base", plugin_type="unknown"))
     token = bind_tmp(tmp_path)
     try:
         result = plugin.tmp

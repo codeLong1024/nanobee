@@ -19,6 +19,7 @@ import pytest
 
 from nanobee.builtin.tool_history import ToolHistoryPlugin
 from nanobee.kernel.context_sandbox_var import RequestContext, bind_request_context, reset_request_context
+from nanobee.plugins.base import PluginMetadata
 from nanobee.session.session_manager import SessionManager
 from nanobee.session.session_store import SessionStore
 
@@ -42,7 +43,7 @@ def _create_plugin(tmp_path: Path, user_id: str = "test-user", session_id: str =
     Returns:
         已初始化的 ToolHistoryPlugin 实例。
     """
-    plugin = ToolHistoryPlugin()
+    plugin = ToolHistoryPlugin(PluginMetadata(name="tool_history", plugin_type="tool"))
 
     # 创建真实的 SessionManager
     session_manager = SessionManager(tmp_path / "users")
@@ -122,7 +123,7 @@ class TestTrimHistory:
 
     def test_trim_history_no_user_context(self, tmp_path: Path) -> None:
         """缺少用户上下文时返回错误。"""
-        plugin = ToolHistoryPlugin()
+        plugin = ToolHistoryPlugin(PluginMetadata(name="tool_history", plugin_type="tool"))
         kernel = MagicMock()
         kernel.session_manager = SessionManager(tmp_path / "users")
         plugin.initialize(kernel)
@@ -133,7 +134,7 @@ class TestTrimHistory:
 
     def test_trim_history_no_session_manager(self) -> None:
         """无 session_manager 时返回错误。"""
-        plugin = ToolHistoryPlugin()
+        plugin = ToolHistoryPlugin(PluginMetadata(name="tool_history", plugin_type="tool"))
         kernel = MagicMock()
         kernel.session_manager = None
         plugin.initialize(kernel)
@@ -209,7 +210,7 @@ class TestConsolidateHistory:
     def test_consolidate_history_no_need(self, tmp_path: Path) -> None:
         """消息数未超过 keep_last_n 时无需压缩。"""
         # 创建仅有 3 条消息的 session
-        plugin = ToolHistoryPlugin()
+        plugin = ToolHistoryPlugin(PluginMetadata(name="tool_history", plugin_type="tool"))
         session_manager = SessionManager(tmp_path / "users")
         kernel = MagicMock()
         kernel.session_manager = session_manager
@@ -227,7 +228,7 @@ class TestConsolidateHistory:
 
     def test_consolidate_history_no_user_context(self, tmp_path: Path) -> None:
         """缺少用户上下文时返回错误。"""
-        plugin = ToolHistoryPlugin()
+        plugin = ToolHistoryPlugin(PluginMetadata(name="tool_history", plugin_type="tool"))
         kernel = MagicMock()
         kernel.session_manager = SessionManager(tmp_path / "users")
         plugin.initialize(kernel)
@@ -240,7 +241,7 @@ class TestConsolidateHistory:
 
     def test_consolidate_history_no_session_manager(self) -> None:
         """无 session_manager 时返回错误。"""
-        plugin = ToolHistoryPlugin()
+        plugin = ToolHistoryPlugin(PluginMetadata(name="tool_history", plugin_type="tool"))
         kernel = MagicMock()
         kernel.session_manager = None
         plugin.initialize(kernel)

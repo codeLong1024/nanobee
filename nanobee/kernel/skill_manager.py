@@ -302,6 +302,7 @@ class SkillsLoader:
         return result
 
     def _load_skill(self, skill_md: Path, *, source: str) -> Skill | None:
+        """加载单个技能文件，异常时记录日志并丢弃。"""
         if not skill_md.exists():
             return None
         try:

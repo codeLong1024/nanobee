@@ -123,10 +123,6 @@ def _format_results(query: str, items: list[dict[str, Any]], n: int) -> str:
 class ToolWebPlugin(ToolPlugin):
     """Web 工具插件 - 提供 web_search 和 web_fetch 工具"""
 
-    name = "tool_web"
-    version = "1.0.0"
-    plugin_type = "tool"
-
     def __init__(self, metadata: Any = None):
         super().__init__(metadata)
         self._max_results = 5

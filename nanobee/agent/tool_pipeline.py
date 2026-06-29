@@ -131,7 +131,11 @@ class ToolPipeline:
         if intercepted := self._guard_throttle(spec, tool_call, external_lookup_counts):
             return intercepted
 
-        self._debug_log_call(tool_call)
+        # 日志：工具请求
+        args_str = str(tool_call.arguments)
+        if len(args_str) > 500:
+            args_str = args_str[:500] + "...(truncated)"
+        logger.info("[TOOL] 请求: {} | args={}", tool_call.name, args_str)
 
         # 工具预备：获取工具实例和参数
         tool, params, prep_error = self._prepare(spec, tool_call)
@@ -149,6 +153,10 @@ class ToolPipeline:
         # 守卫 3：沙箱参数清洗（传入 tool 以读取 x-constraint 声明）
         params, sandbox_error = self._guard_sandbox(tool_call, params, tool)
         if sandbox_error:
+            result_str = str(sandbox_error)
+            if len(result_str) > 200:
+                result_str = result_str[:200] + "..."
+            logger.info("[TOOL] 结果: {} = 沙箱拦截: {}", tool_call.name, result_str)
             return sandbox_error + _HINT, self._error_event(tool_call.name, f"sandbox: {sandbox_error}"), None
 
         # 守卫 4：Plugin pre-invoke hooks
@@ -285,7 +293,11 @@ class ToolPipeline:
             # Plugin post-invoke hooks
             result = await self._apply_post_hooks(spec, tool_call, result)
 
-            self._debug_log_result(tool_call, result)
+            # 日志：工具结果
+            result_str = str(result)
+            if len(result_str) > 300:
+                result_str = result_str[:300] + "...(truncated)"
+            logger.info("[TOOL] 结果: {} = {}", tool_call.name, result_str)
 
         except asyncio.CancelledError:
             raise
@@ -504,20 +516,6 @@ class ToolPipeline:
         elif len(detail) > 120:
             detail = detail[:120] + "..."
         return {"name": name, "status": "ok", "detail": detail}
-
-    @staticmethod
-    def _debug_log_call(tool_call: ToolCallRequest) -> None:
-        args_str = str(tool_call.arguments)
-        if len(args_str) > 500:
-            args_str = args_str[:500] + "...(truncated)"
-        logger.debug("[TOOL] 请求: {} | args={}", tool_call.name, args_str)
-
-    @staticmethod
-    def _debug_log_result(tool_call: ToolCallRequest, result: Any) -> None:
-        result_str = str(result)
-        if len(result_str) > 300:
-            result_str = result_str[:300] + "...(truncated)"
-        logger.debug("[TOOL] 结果: {} = {}", tool_call.name, result_str)
 
     # =========================================================================
     # 批次分组

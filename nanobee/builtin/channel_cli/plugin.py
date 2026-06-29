@@ -16,8 +16,6 @@ from nanobee.utils.logger import logger
 class ChannelCLIPlugin(ChannelPlugin):
     """命令行交互通道"""
 
-    name = "channel_cli"
-    version = "1.0.0"
     display_name = "命令行"
     supports_streaming = True
     safe_for_gateway = False

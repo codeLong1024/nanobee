@@ -77,10 +77,6 @@ class _PreparedCommand:
 class ToolShellPlugin(ToolPlugin):
     """Shell 工具插件 — 提供 execute_shell 和 write_stdin 工具"""
 
-    name = "tool_shell"
-    version = "1.0.0"
-    plugin_type = "tool"
-
     _MAX_TIMEOUT = 600
     _MAX_OUTPUT = 10_000
 

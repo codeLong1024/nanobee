@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from nanobee.kernel.context_pipeline import ContextPipeline, _map_plugin_stage
-from nanobee.plugins.base import NanobeePlugin
+from nanobee.plugins.base import NanobeePlugin, PluginMetadata
 from nanobee.kernel.skill_manager import SkillsLoader
 
 
@@ -24,8 +24,11 @@ from nanobee.kernel.skill_manager import SkillsLoader
 
 class TestMemoryPlugin(NanobeePlugin):
     """模拟记忆插件，返回固定的记忆内容。"""
-    name = "test_memory"
-    plugin_type = "memory"
+
+    def __init__(self, metadata=None):
+        if metadata is None:
+            metadata = PluginMetadata(name="test_memory", plugin_type="memory")
+        super().__init__(metadata)
 
     def contribute_to_prompt(self, context) -> str | None:
         return "这是 Alice 的记忆内容"
@@ -33,8 +36,11 @@ class TestMemoryPlugin(NanobeePlugin):
 
 class TestSkillPlugin(NanobeePlugin):
     """模拟技能插件，注入技能描述。"""
-    name = "test_skill"
-    plugin_type = "skill"
+
+    def __init__(self, metadata=None):
+        if metadata is None:
+            metadata = PluginMetadata(name="test_skill", plugin_type="skill")
+        super().__init__(metadata)
 
     def contribute_to_prompt(self, context) -> str | None:
         return "可用技能：web-search, calc"
@@ -42,8 +48,11 @@ class TestSkillPlugin(NanobeePlugin):
 
 class TestToolAddPlugin(NanobeePlugin):
     """模拟插件，动态添加工具。"""
-    name = "test_tool_add"
-    plugin_type = "tool_add"
+
+    def __init__(self, metadata=None):
+        if metadata is None:
+            metadata = PluginMetadata(name="test_tool_add", plugin_type="tool_add")
+        super().__init__(metadata)
 
     def contribute_to_tools(self, context, current_tool_names):
         return current_tool_names + ["tool-web", "tool-calc"]
@@ -51,7 +60,11 @@ class TestToolAddPlugin(NanobeePlugin):
 
 class TestPostInvokePlugin(NanobeePlugin):
     """模拟插件，修改工具返回结果。"""
-    name = "test_post_invoke"
+
+    def __init__(self, metadata=None):
+        if metadata is None:
+            metadata = PluginMetadata(name="test_post_invoke", plugin_type="tool")
+        super().__init__(metadata)
 
     async def on_post_invoke(self, context, tool_name, result):
         if tool_name == "test_tool":
@@ -61,9 +74,10 @@ class TestPostInvokePlugin(NanobeePlugin):
 
 class TestMessageCompletedPlugin(NanobeePlugin):
     """模拟插件，记录消息完成事件。"""
-    name = "test_msg_completed"
 
     def __init__(self, metadata=None):
+        if metadata is None:
+            metadata = PluginMetadata(name="test_msg_completed", plugin_type="tool")
         super().__init__(metadata)
         self.completed_messages = []
 

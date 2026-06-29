@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
 技能打包器 —— 将技能目录打包为可分发的 .skill 文件。
 

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
 技能校验器 —— 校验 nanobee 技能文件夹结构和必需的 frontmatter。
 

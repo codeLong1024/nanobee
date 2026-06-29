@@ -165,20 +165,23 @@ class RulesStage(PipelineStage):
             user_id = getattr(user_ctx, "user_id", None)
             context_root = getattr(user_ctx, "context_root", None)
             work_dir = getattr(user_ctx, "work_dir", None)
+            skills_dir = getattr(user_ctx, "skills_dir", None)
+            memory_dir = getattr(user_ctx, "memory_dir", None)
             extra_lines: list[str] = []
             if user_id:
-                extra_lines.append(f"你的用户 ID 是：`{user_id}`。")
+                extra_lines.append(f"你的用户 ID：`{user_id}`")
             if context_root:
-                extra_lines.append(
-                    f"你的用户根目录是：`{context_root}`。\n"
-                    f"所有相对路径（如 `memory/facts.md`）都基于此目录解析。"
-                )
-            if work_dir:
-                extra_lines.append(
-                    f"你的可写 shell 工作目录是：`{work_dir}`。\n"
-                    f"execute_shell 的 working_dir 默认为此目录，"
-                    f"通常无需显式传递 working_dir。"
-                )
+                root_str = f"根目录：`{context_root}`"
+                sub_lines: list[str] = []
+                if work_dir:
+                    sub_lines.append(f"  workspace/ — Shell 执行目录")
+                if skills_dir:
+                    sub_lines.append(f"  skills/    — 用户技能（可写，另有实例及内置技能目录只读）")
+                if memory_dir:
+                    sub_lines.append(f"  memory/    — 记忆文件")
+                if sub_lines:
+                    root_str += "\n其下有：\n" + "\n".join(sub_lines)
+                extra_lines.append(root_str)
             if extra_lines:
                 workspace_section = "\n## 用户身份\n\n" + "\n".join(extra_lines)
                 if rules_content:
