@@ -101,13 +101,10 @@ class SkillsLoader:
         user_skills_dir: str | Path | None = None,
         builtin_skills_dir: str | Path | None = None,
         instance_skills_dir: str | Path | None = None,
-        enabled_instance_skills: list[str] | None = None,
     ) -> None:
         self._user_dir = Path(user_skills_dir).resolve() if user_skills_dir else None
         self._builtin_dir = Path(builtin_skills_dir).resolve() if builtin_skills_dir else None
         self._instance_dir = Path(instance_skills_dir).resolve() if instance_skills_dir else None
-        # 部署方声明的实例技能白名单：None 或空列表=全部注入，非空=仅注入列表中的
-        self._enabled_instance = enabled_instance_skills or []
 
         # 缓存：key -> (skills 列表, mtime, 缓存时间)
         self._cache: dict[str, list[Skill]] = {}
@@ -229,36 +226,29 @@ class SkillsLoader:
         self._dir_mtime[key] = self._scan_dir_mtime(self._instance_dir)
         return skills
 
-    def list_filtered_instance_skills(self) -> list[Skill]:
-        """列出实例技能，按 enabled_instance_skills 白名单过滤。
+    def list_all_instance_skills(self) -> list[Skill]:
+        """列出所有实例技能（自动全量加载，无需白名单）。
 
-        当 enabled_instance_skills 为空列表时，返回全部实例技能（向后兼容）。
-        当 enabled_instance_skills 非空时，仅返回列表中指定的技能。
+        实例技能由管理员配属，对实例内所有用户共享（只读）。
+        与插件机制一致：自动发现，零配置。
 
         Returns:
-            过滤后的实例技能列表
+            实例技能列表，按技能名排序
         """
-        all_instance = self.scan_instance_skills()
-        if not self._enabled_instance:
-            return all_instance
-        enabled_set = set(self._enabled_instance)
-        return [s for s in all_instance if s.meta.name in enabled_set]
+        return self.scan_instance_skills()
 
-    def get_enabled_instance_dirs(self) -> list[Path]:
-        """获取已启用的实例技能目录路径列表。
+    def get_instance_dirs(self) -> list[Path]:
+        """获取所有实例技能目录路径列表。
 
-        部署方声明了哪些技能，返回对应的目录绝对路径。
+        实例技能自动全量加载（和插件机制一致），返回对应目录绝对路径。
         调用方（如进程沙箱）可将这些路径用于只读挂载等用途。
 
-        当 enabled_instance_skills 为空时，返回所有实例技能目录。
-        当 enabled_instance_skills 非空时，仅返回列表中指定的目录。
-
         Returns:
-            已启用实例技能的目录绝对路径列表
+            实例技能目录绝对路径列表
         """
         if not self._instance_dir or not self._instance_dir.is_dir():
             return []
-        skills = self.list_filtered_instance_skills()
+        skills = self.scan_instance_skills()
         return [s.file_path.parent.resolve() for s in skills]
 
     def list_all_skills(self) -> list[Skill]:

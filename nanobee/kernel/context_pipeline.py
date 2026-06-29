@@ -240,8 +240,8 @@ class SkillStage(PipelineStage):
         ctx = PromptBuildContext._from_compat(context)  # type: ignore[arg-type]
 
         all_skills: list[Any] = list(self._loader.list_builtin_skills())
-        # 实例技能按 enabled 白名单过滤（部署方声明）
-        all_skills.extend(self._loader.list_filtered_instance_skills())
+        # 实例技能自动全量加载（和插件机制一致）
+        all_skills.extend(self._loader.scan_instance_skills())
         # 用户技能（始终注入，用户自主管理）
         all_skills.extend(self._loader.list_user_skills())
 
