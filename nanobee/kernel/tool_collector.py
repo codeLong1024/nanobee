@@ -89,14 +89,10 @@ class ToolCollector:
 
     @staticmethod
     def _schema_name(schema: dict[str, Any]) -> str:
-        """从 schema 中提取工具名称"""
-        fn = schema.get("function")
-        if isinstance(fn, dict):
-            name = fn.get("name")
-            if isinstance(name, str):
-                return name
-        name = schema.get("name")
-        return name if isinstance(name, str) else ""
+        """从 schema 中提取工具名称。"""
+        from nanobee.utils.helpers import extract_tool_name
+
+        return extract_tool_name(schema)
 
     @property
     def has_restrictions(self) -> bool:

@@ -6,8 +6,6 @@ from typing import Any
 
 from nanobee.plugins import ToolPlugin
 
-from nanobee.utils.logger import logger
-
 
 
 class ToolEchoPlugin(ToolPlugin):

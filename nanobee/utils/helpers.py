@@ -294,6 +294,31 @@ _TOOL_RESULT_RETENTION_SECS = 7 * 24 * 60 * 60
 _TOOL_RESULT_MAX_BUCKETS = 32
 
 
+def extract_tool_name(schema: dict[str, Any]) -> str:
+    """从 OpenAI 或扁平 schema 中提取标准化工具名称。
+
+    供 registry._schema_name、tool_collector._schema_name、runner 共用，
+    消除 _schema_name 逻辑在 3 处的重复。调用方使用延迟导入以避免循环依赖。
+
+    支持两种 schema 格式：
+    - OpenAI 格式: {"function": {"name": "tool_name", ...}}
+    - 扁平格式:     {"name": "tool_name", ...}
+
+    Args:
+        schema: 工具定义字典（OpenAI function schema 或扁平格式）
+
+    Returns:
+        工具名称字符串，提取失败时返回空字符串
+    """
+    fn = schema.get("function")
+    if isinstance(fn, dict):
+        name = fn.get("name")
+        if isinstance(name, str):
+            return name
+    name = schema.get("name")
+    return name if isinstance(name, str) else ""
+
+
 def safe_filename(name: str) -> str:
     """Replace unsafe path characters with underscores."""
     return _UNSAFE_CHARS.sub("_", name).strip()

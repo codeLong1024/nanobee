@@ -37,6 +37,7 @@ from nanobee.utils.helpers import (
     estimate_message_tokens,
     estimate_prompt_tokens_chain,
     extract_reasoning,
+    extract_tool_name,
     find_legal_message_start,
     strip_think,
 )
@@ -664,10 +665,9 @@ class AgentRunner:
         tool_definitions = spec.tools.get_definitions()
         if spec.filtered_tool_names is not None:
             allowed = set(spec.filtered_tool_names)
-            from nanobee.kernel.tool_collector import ToolCollector
             tool_definitions = [
                 d for d in tool_definitions
-                if ToolCollector._schema_name(d) in allowed
+                if extract_tool_name(d) in allowed
             ]
 
         kwargs = self._build_request_kwargs(

@@ -10,9 +10,6 @@ from typing import Any
 
 from nanobee.agent.tools.base import Tool
 
-# 工具执行错误提示后缀
-_HINT = "\n\n[Analyze the error above and try a different approach.]"
-
 
 class ToolPluginAdapter(Tool):
     """将 ToolPlugin 适配为 Tool 接口的适配器。
@@ -87,13 +84,9 @@ class ToolRegistry:
     @staticmethod
     def _schema_name(schema: dict[str, Any]) -> str:
         """从 OpenAI 或扁平 schema 中提取标准化工具名称。"""
-        fn = schema.get("function")
-        if isinstance(fn, dict):
-            name = fn.get("name")
-            if isinstance(name, str):
-                return name
-        name = schema.get("name")
-        return name if isinstance(name, str) else ""
+        from nanobee.utils.helpers import extract_tool_name
+
+        return extract_tool_name(schema)
 
     def get_definitions(self) -> list[dict[str, Any]]:
         """获取工具定义列表，内置工具优先排序，MCP 工具后置。
@@ -149,19 +142,17 @@ class ToolRegistry:
         return tool, cast_params, None
 
     async def execute(self, name: str, params: dict[str, Any]) -> Any:
-        """按名称和参数执行工具。"""
+        """按名称和参数执行工具。
+
+        Raises:
+            ValueError: 参数校验失败或工具未找到。
+            其他异常: 由工具插件直接传播，保留原始类型供 FaultClassifier 检测。
+        """
         tool, params, error = self.prepare_call(name, params)
         if error:
-            return error + _HINT
-
-        try:
-            assert tool is not None  # 由 prepare_call 保证
-            result = await tool.execute(**params)
-            if isinstance(result, str) and result.startswith("Error"):
-                return result + _HINT
-            return result
-        except Exception as e:
-            return f"Error executing {name}: {str(e)}" + _HINT
+            raise ValueError(error)
+        assert tool is not None  # 由 prepare_call 保证
+        return await tool.execute(**params)
 
     @property
     def tool_names(self) -> list[str]:

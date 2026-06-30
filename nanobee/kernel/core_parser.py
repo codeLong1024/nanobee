@@ -20,14 +20,12 @@ class CoreMDParser:
     core.md 结构：
     - ## Soul（人格）
     - ## Rules（行为规则）
-    - ## Memory Policy（记忆策略）
-    - ## Context Bindings（上下文绑定）
 
     默认模板位于 ``templates/core_default.md``，不硬编码在代码中。
     """
 
     # 支持的段落名
-    KNOWN_SECTIONS = ["Soul", "Rules", "Memory Policy", "Context Bindings"]
+    KNOWN_SECTIONS = ["Soul", "Rules"]
 
     def __init__(self, core_md_path: str | Path):
         """初始化解析器
@@ -146,9 +144,5 @@ class CoreMDParser:
             "\n- 任何创建、修改、删除或查询数据的操作",
             "（包括 cron 任务、文件、技能等）都必须调用对应工具",
             "\n- 工具返回的结果是唯一可靠的事实来源",
-            "\n\n## Memory Policy（记忆策略）\n",
-            "\n由 skills/_memory 技能定义记忆策略。\n",
-            "\n## Context Bindings（上下文绑定）\n",
-            "\n运行时注入时间/通道/会话/发送者信息。\n",
         ]
         return "".join(parts)

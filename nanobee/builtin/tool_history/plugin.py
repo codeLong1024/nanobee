@@ -25,8 +25,8 @@ class ToolHistoryPlugin(ToolPlugin):
     LLM 自主决定何时调用、使用哪个、参数值。
     框架只提供裁剪和压缩机制，不持有策略。
 
-    线程安全：通过 CURRENT_REQUEST_CONTEXT ContextVar 按 turn 注入会话上下文，
-    替代旧版 set_context() 实例属性写入模式。
+    线程安全：user_id/session_id 通过 execute_tool 局部变量传入内部方法，
+    不写入实例属性，无并发竞争风险。
     """
 
     # ------------------------------------------------------------------
@@ -124,17 +124,17 @@ class ToolHistoryPlugin(ToolPlugin):
         if not self.kernel or not self.kernel.session_manager:
             return f"错误: session_manager 不可用，{tool_name} 未能执行"
 
-        self._user_id = rctx.context_id
-        self._session_id = rctx.session_id
+        user_id = rctx.context_id
+        session_id = rctx.session_id
 
         try:
             if tool_name == "trim_history":
-                return await self._execute_trim_history(kwargs)
+                return await self._execute_trim_history(user_id, session_id, kwargs)
             else:
-                return await self._execute_consolidate_history(kwargs)
+                return await self._execute_consolidate_history(user_id, session_id, kwargs)
         except Exception:
             logger.exception(
-                "{} 执行失败: user_id={}", tool_name, self._user_id,
+                "{} 执行失败: user_id={}", tool_name, user_id,
             )
             return f"错误: {tool_name} 执行失败，请检查日志"
 
@@ -142,10 +142,14 @@ class ToolHistoryPlugin(ToolPlugin):
     # 工具实现
     # ------------------------------------------------------------------
 
-    async def _execute_trim_history(self, kwargs: dict[str, Any]) -> str:
+    async def _execute_trim_history(
+        self, user_id: str, session_id: str, kwargs: dict[str, Any],
+    ) -> str:
         """执行 trim_history 工具。
 
         Args:
+            user_id: 用户标识。
+            session_id: 会话标识。
             kwargs: 工具参数字典，含 n（保留条数）。
 
         Returns:
@@ -156,7 +160,7 @@ class ToolHistoryPlugin(ToolPlugin):
             return "错误: n 必须为 ≥2 的整数"
 
         session_manager = self.kernel.session_manager
-        session = session_manager.get_or_create(self._user_id, self._session_id)
+        session = session_manager.get_or_create(user_id, session_id)
         before = len(session.messages)
         if before <= n:
             return f"历史共 {before} 条消息，未超过保留数 {n}，无需裁剪"
@@ -166,14 +170,18 @@ class ToolHistoryPlugin(ToolPlugin):
         after = len(session.messages)
         logger.info(
             "trim_history: 用户 {} (session={}) 历史裁剪 {} → {} 条",
-            self._user_id, self._session_id, before, after,
+            user_id, session_id, before, after,
         )
         return f"历史裁剪完成：{before} → {after} 条消息"
 
-    async def _execute_consolidate_history(self, kwargs: dict[str, Any]) -> str:
+    async def _execute_consolidate_history(
+        self, user_id: str, session_id: str, kwargs: dict[str, Any],
+    ) -> str:
         """执行 consolidate_history 工具。
 
         Args:
+            user_id: 用户标识。
+            session_id: 会话标识。
             kwargs: 工具参数字典，含 summary（摘要文本）、keep_last_n（保留条数，默认 8）。
 
         Returns:
@@ -193,8 +201,8 @@ class ToolHistoryPlugin(ToolPlugin):
         session_manager = self.kernel.session_manager
         try:
             result = session_manager.consolidate(
-                user_id=self._user_id,
-                session_id=self._session_id,
+                user_id=user_id,
+                session_id=session_id,
                 summary=summary.strip(),
                 keep_last_n=keep_last_n,
             )
