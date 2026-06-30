@@ -32,12 +32,10 @@ from nanobee.utils.runtime import repeated_external_lookup_error
 
 from nanobee.agent.fault_classifier import FaultClassifier
 from nanobee.agent.specs import AgentRunSpec
+from nanobee.utils.constants import _HINT
 
 # 工具执行返回：三元组 (结果, 事件字典, 致命错误)
 ToolResult = tuple[Any, dict[str, str], BaseException | None]
-
-# LLM 友好的错误提示
-_HINT = "\n\n[Analyze the error above and try a different approach.]"
 
 
 class ToolPipeline:
@@ -307,11 +305,6 @@ class ToolPipeline:
             await self._emit_file_edit_error(fe_tracker, str(exc))
             return self._classify_exception(exc, spec, tool_call, workspace_violation_counts)
 
-        # 检查工具返回的错误字符串
-        if isinstance(result, str) and result.startswith("Error"):
-            await self._emit_file_edit_error(fe_tracker, result)
-            return self._classify_error_result(result, spec, tool_call, workspace_violation_counts)
-
         # 成功路径
         await self._emit_file_edit_end(fe_tracker, params)
         return result, self._success_event(tool_call.name, result), None
@@ -328,15 +321,17 @@ class ToolPipeline:
         workspace_violation_counts: dict[str, int],
     ) -> ToolResult:
         """分类执行时异常，委托 FaultClassifier。"""
+        detail = str(exc).replace("\n", " ").strip()[:120]
         event = {
             "name": tool_call.name,
             "status": "error",
-            "detail": str(exc),
+            "detail": detail,
         }
         payload = f"Error: {type(exc).__name__}: {exc}"
+        soft = payload + _HINT
         handled = self._fault_classifier.classify(
             raw_text=str(exc),
-            soft_payload=payload,
+            soft_payload=soft,
             tool_call=tool_call,
             workspace_violation_counts=workspace_violation_counts,
             exception=exc,
@@ -345,34 +340,8 @@ class ToolPipeline:
         if handled is not None:
             return handled
         if spec.fail_on_tool_error:
-            return payload, event, exc
-        return payload, event, None
-
-    def _classify_error_result(
-        self,
-        result: str,
-        spec: AgentRunSpec,
-        tool_call: ToolCallRequest,
-        workspace_violation_counts: dict[str, int],
-    ) -> ToolResult:
-        """分类工具返回的 Error 字符串，委托 FaultClassifier。"""
-        event = {
-            "name": tool_call.name,
-            "status": "error",
-            "detail": result.replace("\n", " ").strip()[:120],
-        }
-        handled = self._fault_classifier.classify(
-            raw_text=result,
-            soft_payload=result + _HINT,
-            tool_call=tool_call,
-            workspace_violation_counts=workspace_violation_counts,
-            exec_capable_tools=spec.exec_capable_tools,
-        )
-        if handled is not None:
-            return handled
-        if spec.fail_on_tool_error:
-            return result + _HINT, event, RuntimeError(result)
-        return result + _HINT, event, None
+            return soft, event, exc
+        return soft, event, None
 
     # =========================================================================
     # 工具预备
