@@ -5,14 +5,10 @@
 
 from __future__ import annotations
 
-import typing
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from copy import deepcopy
 from typing import Any, TypeVar
-
-if typing.TYPE_CHECKING:
-    from pydantic import BaseModel
 
 _ToolT = TypeVar("_ToolT", bound="Tool")
 
@@ -83,12 +79,21 @@ class Schema(ABC):
                 errors.append(f"{label} must be at most {schema['maxLength']} chars")
         if t == "object":
             props = schema.get("properties", {})
+            additional = schema.get("additionalProperties", True)
             for k in schema.get("required", []):
                 if k not in val:
                     errors.append(f"missing required {Schema.subpath(path, k)}")
             for k, v in val.items():
                 if k in props:
                     errors.extend(Schema.validate_json_schema_value(v, props[k], Schema.subpath(path, k)))
+                elif additional is False:
+                    errors.append(
+                        f"unknown property {Schema.subpath(path, k)} (additionalProperties not allowed)"
+                    )
+                elif isinstance(additional, dict):
+                    errors.extend(
+                        Schema.validate_json_schema_value(v, additional, Schema.subpath(path, k))
+                    )
         if t == "array":
             if "minItems" in schema and len(val) < schema["minItems"]:
                 errors.append(f"{label} must have at least {schema['minItems']} items")
@@ -125,14 +130,8 @@ class Schema(ABC):
 class Tool(ABC):
     """Agent 能力抽象基类：文件读写、命令执行等。"""
 
-    _TYPE_MAP = _JSON_TYPE_MAP
     _BOOL_TRUE = frozenset(("true", "1", "yes"))
     _BOOL_FALSE = frozenset(("false", "0", "no"))
-
-    @staticmethod
-    def _resolve_type(t: Any) -> str | None:
-        """从 JSON Schema 联合类型（如 ['string','null']）中提取首个非空类型。"""
-        return Schema.resolve_json_schema_type(t)
 
     @property
     @abstractmethod
@@ -167,26 +166,6 @@ class Tool(ABC):
         """工具是否应独占执行（即使并发已启用）。"""
         return False
 
-    # --- 插件元数据 ---
-
-    config_key: str = ""
-    _plugin_discoverable: bool = True
-    _scopes: set[str] = {"core"}
-
-    @classmethod
-    def config_cls(cls) -> type[BaseModel] | None:
-        return None
-
-    @classmethod
-    def enabled(cls) -> bool:
-        """工具是否启用。Nanobee 简化版，移除 ToolContext 依赖。"""
-        return True
-
-    @classmethod
-    def create(cls) -> Tool:
-        """工厂方法创建工具实例。Nanobee 简化版，移除 ToolContext 依赖。"""
-        return cls()
-
     @abstractmethod
     async def execute(self, **kwargs: Any) -> Any:
         """执行工具，返回字符串或内容块列表。"""
@@ -196,7 +175,19 @@ class Tool(ABC):
         if not isinstance(obj, dict):
             return obj
         props = schema.get("properties", {})
-        return {k: self._cast_value(v, props[k]) if k in props else v for k, v in obj.items()}
+        additional = schema.get("additionalProperties", True)
+        result: dict[str, Any] = {}
+        for k, v in obj.items():
+            if k in props:
+                result[k] = self._cast_value(v, props[k])
+            elif additional is False:
+                # 剔除未知属性
+                continue
+            elif isinstance(additional, dict):
+                result[k] = self._cast_value(v, additional)
+            else:
+                result[k] = v
+        return result
 
     def cast_params(self, params: dict[str, Any]) -> dict[str, Any]:
         """在校验前进行安全的 Schema 驱动类型转换。"""
@@ -206,14 +197,14 @@ class Tool(ABC):
         return self._cast_object(params, schema)
 
     def _cast_value(self, val: Any, schema: dict[str, Any]) -> Any:
-        t = self._resolve_type(schema.get("type"))
+        t = Schema.resolve_json_schema_type(schema.get("type"))
 
         if t == "boolean" and isinstance(val, bool):
             return val
         if t == "integer" and isinstance(val, int) and not isinstance(val, bool):
             return val
-        if t in self._TYPE_MAP and t not in ("boolean", "integer", "array", "object"):
-            expected = self._TYPE_MAP[t]
+        if t in _JSON_TYPE_MAP and t not in ("boolean", "integer", "array", "object"):
+            expected = _JSON_TYPE_MAP[t]
             if isinstance(val, expected):
                 return val
 
@@ -259,7 +250,7 @@ class Tool(ABC):
         不应暴露给 LLM。
         """
         params = self.parameters
-        # 深拷贝并剥离 x- 前缀属性，避免污染缓存的 parameters
+        # 剥离 x- 前缀属性，避免暴露给 LLM
         properties = params.get("properties", {})
         if properties:
             cleaned_props = {}

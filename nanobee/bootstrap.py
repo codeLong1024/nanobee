@@ -1,13 +1,11 @@
 """Nanobee Bootstrap — 组合根。
 
 将配置加载、组件创建、AgentLoop 装配集中于此，
-消除 kernel.py 对 agent/ 和 providers/ 的直接导入依赖。
+将 agent/ 和 providers/ 的导入与装配逻辑从 kernel.py 剥离到组合根。
 
 CLI (run/gateway) 通过 bootstrap() 一行启动，
 不再直接调用 kernel.boot_with_provider()。
 """
-
-from __future__ import annotations
 
 from pathlib import Path
 from typing import Any

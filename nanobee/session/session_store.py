@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import tempfile
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -85,8 +85,6 @@ class SessionStore:
         Returns:
             本次归档记录的序号（从 0 开始）。
         """
-        from datetime import datetime
-
         path = self._consolidation_path(user_id, session_id)
         path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -318,10 +316,7 @@ class SessionStore:
             return None
 
         # 如果修复后首行不是元数据，插入全新元数据行
-        try:
-            first = json.loads(valid_lines[0])
-        except json.JSONDecodeError:
-            first = {}
+        first = json.loads(valid_lines[0])
 
         if not isinstance(first, dict) or first.get("_type") != "metadata":
             logger.warning("修复 session 后首行非元数据，插入默认元数据")
