@@ -3,7 +3,6 @@ SessionManager — Session 生命周期管理。
 
 缓存层：内存缓存避免重复磁盘 I/O。
 业务层：CRUD、fork（复制会话）、list（高性能枚举）。
-迁移层：自动将旧版 .history/default.jsonl 迁移到 sessions/。
 """
 
 from __future__ import annotations
@@ -26,7 +25,6 @@ class SessionManager:
     - fork 复制（用于"从此处新开会话"）
     - 高性能列表（仅读元数据行）
     - 优雅退出时 flush 所有缓存
-    - 旧版历史文件迁移
 
     Attributes:
         store: SessionStore 实例（文件 I/O 层）。
@@ -303,7 +301,6 @@ class SessionManager:
         if count > 0:
             logger.info("flush {} session(s) 到磁盘", count)
         return count
-
 
 
 __all__ = [

@@ -7,7 +7,6 @@ Session 在 UserContext 之下，不改变沙箱隔离边界、插件系统、�
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -24,7 +23,7 @@ class Session:
         created_at: 会话创建时间。
         updated_at: 最后更新时间。
         metadata: 会话级元数据（标题、goal_state 等）。
-        last_consolidated: 已归档到的消息索引（为未来 Consolidator 预留）。
+        last_consolidated: 已归档的消息累计条数。
     """
 
     session_id: str

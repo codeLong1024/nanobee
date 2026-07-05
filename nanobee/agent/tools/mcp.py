@@ -218,8 +218,6 @@ def _normalize_schema_for_openai(schema: Any) -> dict[str, Any]:
 class _MCPWrapperBase(Tool):
     """公共基类，为绑定到同一 MCP 服务器会话的 Wrapper 提供重连支持。"""
 
-    _plugin_discoverable = False
-
     def _set_mcp_connection(self, session: Any, server_name: str) -> None:
         self._session = session
         self._server_name = server_name
@@ -331,8 +329,6 @@ class _MCPWrapperBase(Tool):
 class MCPToolWrapper(_MCPWrapperBase):
     """Wraps a single MCP server tool as a nanobee Tool."""
 
-    _plugin_discoverable = False
-
     def __init__(self, session, server_name: str, tool_def, tool_timeout: int = 30):
         self._set_mcp_connection(session, server_name)
         self._original_name = tool_def.name
@@ -374,8 +370,6 @@ class MCPToolWrapper(_MCPWrapperBase):
 
 class MCPResourceWrapper(_MCPWrapperBase):
     """Wraps an MCP resource URI as a read-only nanobee Tool."""
-
-    _plugin_discoverable = False
 
     def __init__(self, session, server_name: str, resource_def, resource_timeout: int = 30):
         self._set_mcp_connection(session, server_name)
@@ -428,8 +422,6 @@ class MCPResourceWrapper(_MCPWrapperBase):
 
 class MCPPromptWrapper(_MCPWrapperBase):
     """Wraps an MCP prompt as a read-only nanobee Tool."""
-
-    _plugin_discoverable = False
 
     def __init__(self, session, server_name: str, prompt_def, prompt_timeout: int = 30):
         self._set_mcp_connection(session, server_name)
