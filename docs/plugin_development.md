@@ -666,76 +666,13 @@ def get_tools(self) -> list[dict]:
 
 > `x-` 前缀的属性是框架内部扩展，`to_schema()` 会在发送给 LLM 前自动剥离，不会暴露给模型。
 
-#### 模式一：自带沙箱隔离（推荐给文件/Shell 工具）
+#### 沙箱路径校验
 
-框架在 `NanobeePlugin` 基类上提供了 `resolve_path()` 公开方法，封装了沙箱边界校验。
-实例级插件**无需**导入 `nanobee.kernel` 内部模块，结合 `x-constraint` 声明即可获得完整的双层防护：
+需要沙箱隔离的工具（如 `read_file`、`write_file`、`edit_file`），在 JSON Schema 参数上声明
+`x-constraint` 标记即可，框架自动执行原子约束，插件无需额外处理路径校验逻辑。
+参考 `tool_fs` 内置插件的实现。
 
-```python
-from pathlib import Path
-from nanobee.plugins.tool import ToolPlugin
-
-
-class ToolFsPlugin(ToolPlugin):
-    name = "tool_fs"
-    plugin_type = "tool"
-
-    def get_tools(self) -> list[dict]:
-        """工具定义，路径参数标注 x-constraint。"""
-        return [
-            {
-                "type": "function",
-                "function": {
-                    "name": "read_file",
-                    "description": "读取文件内容",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "path": {
-                                "type": "string",
-                                "description": "文件路径",
-                                "x-constraint": "sandbox",
-                            },
-                        },
-                        "required": ["path"],
-                    },
-                },
-            },
-        ]
-
-    def _resolve_file_path(self, path_str: str) -> Path:
-        """安全解析文件路径。
-
-        通过基类 resolve_path() 获得沙箱保护：
-        - 有沙箱时走沙箱边界校验，越界抛 SandboxViolationError
-        - 无沙箱时回退到 Path.resolve()
-        """
-        return self.resolve_path(path_str)
-
-    async def execute_tool(self, tool_name: str, **kwargs) -> str:
-        if tool_name == "read_file":
-            path = kwargs["path"]  # 框架已通过 x-constraint 校验
-            safe_path = self._resolve_file_path(path)
-            content = safe_path.read_text("utf-8")
-            return content
-        raise ValueError(f"未知工具: {tool_name}")
-```
-
-**`resolve_path()` 签名：**
-
-```python
-def resolve_path(self, path_str: str, *, for_write: bool = False) -> Path:
-```
-
-- `path_str`：文件路径（相对基于 context_root 解析，绝对直接使用）
-- `for_write`：是否为写操作（写操作有更严格的路径校验）
-- 有沙箱时调用 `sandbox.resolve_with_fallback()` 或 `resolve_safe_writable()`
-- 无沙箱时回退到 `Path.resolve()`
-
-#### 模式二：仅校验绝对路径（推荐给数据搬运工具）
-
-不需要沙箱隔离的工具（如数据导入/导出），直接校验绝对路径即可，
-不引入沙箱依赖。参考 `tool_dingtalk` 的实现：
+不需要沙箱隔离的数据搬运类工具（如数据导入/导出），直接校验绝对路径即可：
 
 ```python
 from pathlib import Path
@@ -770,16 +707,6 @@ class MyDataTool(ToolPlugin):
             return f"已导入 {len(csv_files)} 个文件"
         raise ValueError(f"未知工具: {tool_name}")
 ```
-
-**两种模式对比：**
-
-| | 模式一 `self.resolve_path()` | 模式二 绝对路径校验 |
-|---|---|---|
-| 适用场景 | 需沙箱隔离的文件/Shell 工具 | 数据搬运/导入导出工具 |
-| 沙箱依赖 | 有沙箱自动生效 | 不依赖沙箱 |
-| 相对路径 | 基于 context_root 解析 | 不接受（报错引导） |
-| 路径校验 | 沙箱边界 + 存在性自查 | 仅查存在性 |
-| 导入方式 | 基类公开 API | 纯标准库 |
 
 ---
 
@@ -1028,7 +955,7 @@ python -m pytest tests/test_tool_fs.py -v
 1. **最小权限**：插件只覆盖需要的 Hook，不实现空方法
 2. **错误隔离**：工具失败返回错误字符串而非抛异常（LLM 可读可恢复）
 3. **异步优先**：所有 IO 操作使用 `async/await`，禁止同步阻塞
-4. **按需沙箱**：需沙箱隔离的工具用 `self.resolve_path()`，数据搬运类工具直接校验绝对路径即可，不引入不必要的依赖
+4. **按需沙箱**：需沙箱隔离的工具用 `x-constraint` 声明，数据搬运类工具直接校验绝对路径，不引入不必要的依赖
 5. **日志代替 print**：使用 `logger = get_logger(__name__)`，配置在 `plugin.py` 中
 6. **配置敏感信息**：API Key 等敏感信息通过 `nanobee.yaml` 配置读取，不硬编码
 7. **临时文件**：使用 `self.tmp` 目录（框架自动清理），不使用系统临时目录
