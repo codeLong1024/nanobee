@@ -10,7 +10,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import inspect
 from collections.abc import Awaitable, Callable
@@ -39,37 +38,11 @@ class KernelBooted:
     pass
 
 
-@dataclass(frozen=True)
-class TurnCompleted:
-    """Agent 一轮对话完成事件。"""
-    channel: str
-    chat_id: str
-    content: str
-    latency_ms: int | None = None
-
-
-@dataclass(frozen=True)
-class StreamDelta:
-    """流式输出增量事件。"""
-    channel: str
-    delta: str
-
-
-@dataclass(frozen=True)
-class TurnSaved:
-    """对话轮次持久化完成事件。"""
-    channel: str
-    chat_id: str
-
-
 # 运行时事件联合类型
-RuntimeEvent = SoulViolation | KernelBooted | TurnCompleted | StreamDelta | TurnSaved
+RuntimeEvent = SoulViolation | KernelBooted
 RuntimeEventType = (
     type[SoulViolation]
     | type[KernelBooted]
-    | type[TurnCompleted]
-    | type[StreamDelta]
-    | type[TurnSaved]
 )
 
 RuntimeEventHandler = Callable[[RuntimeEvent], Awaitable[None] | None]
@@ -130,15 +103,6 @@ class RuntimeEventBus:
                     handler, type(event).__name__,
                 )
 
-    def publish_nowait(self, event: RuntimeEvent) -> None:
-        """非阻塞发布：在事件循环中创建 task 发布。"""
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            logger.debug("无运行中的事件循环，丢弃事件: {}", type(event).__name__)
-            return
-        loop.create_task(self.publish(event))
-
     @property
     def handler_count(self) -> int:
         """返回当前注册的处理器数量。"""
@@ -150,7 +114,4 @@ __all__ = [
     "RuntimeEvent",
     "SoulViolation",
     "KernelBooted",
-    "TurnCompleted",
-    "StreamDelta",
-    "TurnSaved",
 ]
