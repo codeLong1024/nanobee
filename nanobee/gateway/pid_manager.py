@@ -108,24 +108,6 @@ class PidManager:
             logger.exception("Failed to remove PID file for instance {}", name)
             raise
 
-    def list_all(self) -> dict[str, int]:
-        """列出所有实例的 PID 映射。
-
-        Returns:
-            字典，键为实例名，值为进程 ID。
-        """
-        result: dict[str, int] = {}
-        try:
-            for entry in self._pid_dir.iterdir():
-                if entry.is_file() and entry.suffix == ".pid":
-                    name = entry.stem
-                    pid = self.read(name)
-                    if pid is not None:
-                        result[name] = pid
-        except FileNotFoundError:
-            pass
-        return result
-
     # ------------------------------------------------------------------
     # 内部方法
     # ------------------------------------------------------------------

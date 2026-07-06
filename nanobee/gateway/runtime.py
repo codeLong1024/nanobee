@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import asyncio
 import sys
-import time
 from pathlib import Path
 
 from loguru import logger
@@ -151,7 +150,7 @@ class GatewayRuntime:
         Returns:
             状态字典列表，每项含 name、port、pid、running、pid_path 字段。
         """
-        instances = self._discovery.discover(self._resolve_data_dir())
+        instances = self._discovery.discover(self._data_dir)
         status_list: list[dict] = []
 
         for inst in instances:
@@ -194,7 +193,9 @@ class GatewayRuntime:
         content = self._log_reader.tail(inst.log_path, lines=lines)
 
         if follow:
-            # stream 初始化偏移量到文件末尾（跳过已有内容）
+            # 副作用：调用 stream 将其内部偏移量初始化到文件末尾，
+            # 丢弃返回值（此调用只为推进偏移，不读取已有内容）。
+            # 后续 follow_logs 轮询时才会真正产出新增内容。
             self._log_reader.stream(inst.log_path)
             logger.info("Following logs for instance {} (Ctrl+C to stop)", name)
 
@@ -231,17 +232,13 @@ class GatewayRuntime:
 
     def _resolve_instances(self, name: str | None):
         """解析要操作的实例列表。"""
-        all_instances = self._discovery.discover(self._resolve_data_dir())
+        all_instances = self._discovery.discover(self._data_dir)
         if name:
             filtered = [i for i in all_instances if i.name == name]
             if not filtered:
                 logger.warning("Instance '{}' not found", name)
             return filtered
         return all_instances
-
-    def _resolve_data_dir(self) -> Path:
-        """解析 data_dir 路径。"""
-        return self._data_dir
 
     async def _start_one(self, inst) -> bool:
         """启动单个实例。"""
@@ -251,7 +248,7 @@ class GatewayRuntime:
             return True
 
         try:
-            venv_path = self._resolve_venv_path()
+            venv_path = self._venv_path
 
             process = self._process_manager.start(
                 config_path=inst.config_path,
@@ -320,7 +317,3 @@ class GatewayRuntime:
         except PermissionError:
             logger.exception("Failed to stop instance {} (pid={})", inst.name, pid)
             return False
-
-    def _resolve_venv_path(self) -> Path:
-        """返回 venv 根目录（由 __init__ 确保非 None）。"""
-        return self._venv_path

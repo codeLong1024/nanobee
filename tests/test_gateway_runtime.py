@@ -106,31 +106,6 @@ class TestPidManager:
         pm = PidManager(pid_dir=tmp_dir)
         pm.remove("nonexistent")  # 不应异常
 
-    def test_list_all_pids(self, tmp_dir):
-        """list_all 应返回所有实例的 PID 映射。"""
-        pm = PidManager(pid_dir=tmp_dir)
-        pm.write("a", 1)
-        pm.write("b", 2)
-        pm.write("c", 3)
-
-        all_pids = pm.list_all()
-        assert all_pids == {"a": 1, "b": 2, "c": 3}
-
-    def test_list_all_empty_dir(self, tmp_dir):
-        """空目录下 list_all 应返回空字典。"""
-        pm = PidManager(pid_dir=tmp_dir)
-        assert pm.list_all() == {}
-
-    def test_list_all_ignores_non_pid_files(self, tmp_dir):
-        """list_all 应忽略非 .pid 后缀的文件。"""
-        (tmp_dir / "readme.txt").write_text("hello")
-        (tmp_dir / "instance1.pid").write_text("12345")
-
-        pm = PidManager(pid_dir=tmp_dir)
-        all_pids = pm.list_all()
-        assert "readme" not in all_pids
-        assert all_pids == {"instance1": 12345}
-
     def test_auto_create_pid_dir(self, tmp_dir):
         """如果 pid_dir 不存在应自动创建。"""
         nested = tmp_dir / "deep" / "nested" / "pid"
@@ -600,9 +575,7 @@ class TestGatewayRuntime:
         runtime._pid_manager.read.return_value = None
         runtime._health_checker.poll.return_value = (True, 0.5)
 
-        # Mock venv 路径
-        with mock.patch.object(runtime, "_resolve_venv_path", return_value=Path("/venv")):
-            results = await runtime.start("test")
+        results = await runtime.start("test")
 
         assert "test" in results
         assert results["test"] is True
@@ -668,8 +641,7 @@ class TestGatewayRuntime:
         runtime._process_manager.is_running.return_value = True
         runtime._health_checker.poll.return_value = (True, 0.3)
 
-        with mock.patch.object(runtime, "_resolve_venv_path", return_value=Path("/venv")):
-            results = await runtime.restart("test")
+        results = await runtime.restart("test")
 
         assert results["test"] is True
         runtime._process_manager.stop.assert_called_once_with(12345, 20.0)
