@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import mimetypes
+import os
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urljoin, urlparse
@@ -24,7 +25,6 @@ def validate_url_target(url: str) -> tuple[bool, str]:
     """简易 URL 安全检查：仅允许 HTTP/HTTPS，拒绝私有 IP。"""
     if not url.startswith(("http://", "https://")):
         return False, "not an HTTP URL"
-    from urllib.parse import urlparse
     parsed = urlparse(url)
     host = parsed.hostname or ""
     if host in ("localhost", "127.0.0.1", "::1", "0.0.0.0"):
@@ -36,11 +36,6 @@ def validate_url_target(url: str) -> tuple[bool, str]:
                          "192.168.")):
         return False, "private address blocked"
     return True, ""
-
-
-def validate_resolved_url(url: str) -> tuple[bool, str]:
-    """对已解析的 URL 做安全检查（与 validate_url_target 相同检查）。"""
-    return validate_url_target(url)
 
 
 async def fetch_remote_media_bytes(
@@ -77,55 +72,47 @@ async def fetch_remote_media_bytes(
         stream = getattr(http, "stream", None)
         if stream is not None:
             current_url = media_ref
-            for _ in range(max_redirects + 1):
+            for redirect_step in range(max_redirects + 1):
                 async with stream("GET", current_url, follow_redirects=False) as resp:
-                    final_ok, _ = validate_resolved_url(str(resp.url))
+                    final_ok, _ = validate_url_target(str(resp.url))
                     if not final_ok:
                         _warn(logger, "remote media redirect blocked ref={} final={}", media_ref, resp.url)
                         return None, None
                     if 300 <= resp.status_code < 400:
-                        next_url = _next_remote_media_url(
+                        current_url = _follow_redirect(
                             str(resp.url), resp.headers.get("location"),
-                            logger=logger,
-                            allow_redirects=allow_remote_media_redirects,
-                            allowed_hosts=remote_media_redirect_allowed_hosts,
+                            media_ref, logger, allow_remote_media_redirects,
+                            remote_media_redirect_allowed_hosts,
                         )
-                        if not next_url:
+                        if not current_url:
                             return None, None
-                        current_url = next_url
                         continue
                     if resp.status_code >= 400:
                         _warn(logger, "media download failed status={} ref={}", resp.status_code, current_url)
                         return None, None
-                    chunks: list[bytes] = []
-                    total = 0
-                    async for chunk in resp.aiter_bytes():
-                        total += len(chunk)
-                        if total > max_bytes:
-                            _warn(logger, "media download too large ref={} bytes>{}", current_url, max_bytes)
-                            return None, None
-                        chunks.append(chunk)
-                    return b"".join(chunks), (resp.headers.get("content-type") or "")
+                    try:
+                        return await _stream_response(resp, logger, current_url, max_bytes)
+                    except _StreamOverflow:
+                        return None, None
             _warn(logger, "media download exceeded redirect limit ref={}", media_ref)
             return None, None
 
-        # Fallback for compatibility
+        # Fallback: non-streaming HTTP client
         current_url = media_ref
-        for _ in range(max_redirects + 1):
+        for redirect_step in range(max_redirects + 1):
             resp = await http.get(current_url, follow_redirects=False)
-            final_ok, _ = validate_resolved_url(str(getattr(resp, "url", current_url)))
+            resolved_url = str(getattr(resp, "url", current_url))
+            final_ok, _ = validate_url_target(resolved_url)
             if not final_ok:
                 return None, None
             if 300 <= resp.status_code < 400:
-                next_url = _next_remote_media_url(
-                    str(getattr(resp, "url", current_url)), resp.headers.get("location"),
-                    logger=logger,
-                    allow_redirects=allow_remote_media_redirects,
-                    allowed_hosts=remote_media_redirect_allowed_hosts,
+                current_url = _follow_redirect(
+                    resolved_url, resp.headers.get("location"),
+                    media_ref, logger, allow_remote_media_redirects,
+                    remote_media_redirect_allowed_hosts,
                 )
-                if not next_url:
+                if not current_url:
                     return None, None
-                current_url = next_url
                 continue
             if resp.status_code >= 400:
                 return None, None
@@ -237,6 +224,48 @@ def _next_remote_media_url(
     if not _validate_remote_media_url(next_url, logger):
         return None
     return next_url
+
+
+# ==================== Redirect helper ====================
+
+
+def _follow_redirect(
+    current_url: str,
+    location: str | None,
+    original_ref: str,
+    logger: Any = None,
+    allow_redirects: bool = False,
+    allowed_hosts: set[str] | None = None,
+) -> str | None:
+    """解析重定向，返回下一跳 URL 或 None（表示中止下载）。"""
+    return _next_remote_media_url(
+        current_url, location,
+        logger=logger,
+        allow_redirects=allow_redirects,
+        allowed_hosts=allowed_hosts,
+    )
+
+
+async def _stream_response(
+    resp: httpx.Response,
+    logger: Any,
+    current_url: str,
+    max_bytes: int,
+) -> tuple[bytes, str]:
+    """流式读取响应体并做大小检查，返回 (bytes, content_type)。"""
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in resp.aiter_bytes():
+        total += len(chunk)
+        if total > max_bytes:
+            _warn(logger, "media download too large ref={} bytes>{}", current_url, max_bytes)
+            raise _StreamOverflow()
+        chunks.append(chunk)
+    return b"".join(chunks), (resp.headers.get("content-type") or "")
+
+
+class _StreamOverflow(Exception):
+    """流式读取超过 max_bytes 的内部信号。"""
 
 
 # ==================== Logger helpers ====================

@@ -1,6 +1,6 @@
 """Cron 定时任务服务 — 持久化调度执行引擎。
 
-从 nanobot/cron/service.py 移植，做了以下简化：
+简化：
 1. 移除 multiprocess action.jsonl + filelock 机制（单进程内用直接写文件）
 2. loguru → standard logging
 """
@@ -32,7 +32,6 @@ from nanobee.builtin.tool_cron.types import (
 from nanobee.utils.logger import logger
 
 
-
 def _now_ms() -> int:
     return int(time.time() * 1000)
 
@@ -59,7 +58,7 @@ def _compute_next_run(schedule: CronSchedule, now_ms: int) -> int | None:
             cron = croniter(schedule.expr, base_dt)
             next_dt = cron.get_next(datetime)
             return int(next_dt.timestamp() * 1000)
-        except Exception:
+        except (ValueError, KeyError, ImportError, TypeError):
             return None
 
     return None
@@ -75,7 +74,7 @@ def _validate_schedule_for_add(schedule: CronSchedule) -> None:
             from zoneinfo import ZoneInfo
 
             ZoneInfo(schedule.tz)
-        except Exception:
+        except (KeyError, ValueError):
             raise ValueError(f"unknown timezone '{schedule.tz}'") from None
 
 
@@ -107,6 +106,11 @@ class CronService:
         self._running = False
         self._timer_active = False
         self.max_sleep_ms = max_sleep_ms
+
+    @property
+    def is_running(self) -> bool:
+        """是否正在运行。"""
+        return self._running
 
     def _load_jobs(self) -> tuple[list[CronJob], int] | None:
         """从磁盘加载任务列表。
@@ -146,6 +150,8 @@ class CronService:
                             ),
                             session_key=j["payload"].get("sessionKey")
                             or j["payload"].get("session_key"),
+                            user_id=j["payload"].get("userId")
+                            or j["payload"].get("user_id"),
                         ),
                         state=CronJobState(
                             next_run_at_ms=j.get("state", {}).get("nextRunAtMs"),
@@ -166,14 +172,14 @@ class CronService:
                         updated_at_ms=j.get("updatedAtMs", 0),
                         delete_after_run=j.get("deleteAfterRun", False),
                     ))
-            except Exception:
+            except (json.JSONDecodeError, KeyError, TypeError, OSError):
                 backup = self.store_path.with_suffix(
                     self.store_path.suffix + f".corrupt-{int(time.time())}"
                 )
                 with suppress(OSError):
                     self.store_path.rename(backup)
                 logger.exception(
-                    "Cron store 损坏: %s, 已备份至 %s", self.store_path, backup
+                    "Cron store 损坏: {}, 已备份至 {}", self.store_path, backup
                 )
                 return None
         return jobs, version
@@ -222,6 +228,7 @@ class CronService:
                         "to": j.payload.to,
                         "channelMeta": j.payload.channel_meta,
                         "sessionKey": j.payload.session_key,
+                        "userId": j.payload.user_id,
                     },
                     "state": {
                         "nextRunAtMs": j.state.next_run_at_ms,
@@ -414,7 +421,7 @@ class CronService:
         name: str,
         schedule: CronSchedule,
         message: str,
-        deliver: bool = False,
+        deliver: bool = True,
         channel: str | None = None,
         to: str | None = None,
         delete_after_run: bool = False,
@@ -427,7 +434,7 @@ class CronService:
         now = _now_ms()
 
         job = CronJob(
-            id=str(uuid.uuid4())[:8],
+            id=str(uuid.uuid4())[:12],
             name=name,
             enabled=True,
             schedule=schedule,

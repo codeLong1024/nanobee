@@ -359,17 +359,26 @@ class DingTalkChannelPlugin(ChannelPlugin):
 
         # Branch E: 非流式
         if not use_streaming:
-            await self._deliver_non_streaming(chat_id, content_reply, outbound_media, resp_metadata)
+            await self._deliver_text_response(
+                chat_id, content_reply, outbound_media, resp_metadata,
+                branch_label="non-streaming",
+            )
             return
 
         # Branch D: 流式但无 card_id
         if not card_id:
-            await self._deliver_markdown_fallback(chat_id, content_reply, outbound_media, resp_metadata)
+            await self._deliver_text_response(
+                chat_id, content_reply, outbound_media, resp_metadata,
+                branch_label="markdown-fallback",
+            )
             return
 
         # Branch C: 流式 + card 未被流式处理
         if not self.sender.is_card_handled_by_streaming(card_id):
-            await self._deliver_unhandled_card(chat_id, content_reply, outbound_media, resp_metadata)
+            await self._deliver_text_response(
+                chat_id, content_reply, outbound_media, resp_metadata,
+                branch_label="unhandled-card",
+            )
             return
 
         # Branch A/B: 流式 + card 已被流式处理，按 stop_reason 分流
@@ -379,50 +388,27 @@ class DingTalkChannelPlugin(ChannelPlugin):
         else:
             await self._deliver_normal_completion(card_id, chat_id, outbound_media)
 
-    async def _deliver_non_streaming(
+    async def _deliver_text_response(
         self, chat_id: str, content_reply: str, outbound_media: list[str],
-        resp_metadata: dict[str, str],
+        resp_metadata: dict[str, str], branch_label: str,
     ) -> None:
-        """Branch E: 非流式模式，直接发送 content + media。"""
-        if content_reply or outbound_media:
-            self.logger.debug(
-                "[OUTBOUND] chat_id={}, outbound_media={}, content_len={}",
-                chat_id, outbound_media, len(content_reply))
-            await self.sender.send(SimpleNamespace(
-                channel=self.name, chat_id=chat_id,
-                content=content_reply,
-                metadata=resp_metadata, media=outbound_media,
-            ))
+        """统一投递文本+媒体响应到 sender（Branch C/D/E 共享）。
 
-    async def _deliver_markdown_fallback(
-        self, chat_id: str, content_reply: str, outbound_media: list[str],
-        resp_metadata: dict[str, str],
-    ) -> None:
-        """Branch D: 流式但未创建 AI Card，回退到 markdown 发送。"""
+        Args:
+            branch_label: 日志中标识分支的标签，如 ``"non-streaming"`` /
+                ``"markdown-fallback"`` / ``"unhandled-card"``。
+        """
+        if not content_reply and not outbound_media:
+            return
         self.logger.debug(
-            "[STREAM] No card was created, sending via markdown fallback "
-            "(chat={}, content_len={})", chat_id, len(content_reply))
-        if content_reply or outbound_media:
-            await self.sender.send(SimpleNamespace(
-                channel=self.name, chat_id=chat_id,
-                content=content_reply,
-                metadata=resp_metadata, media=outbound_media,
-            ))
-
-    async def _deliver_unhandled_card(
-        self, chat_id: str, content_reply: str, outbound_media: list[str],
-        resp_metadata: dict[str, str],
-    ) -> None:
-        """Branch C: 流式 + card 存在但未被流式送达，交由 sender 兜底发送。"""
-        self.logger.debug(
-            "[STREAM] Non-streamed termination with card={}, routing to sender "
-            "(chat={})", resp_metadata.get("_card_id", ""), chat_id)
-        if content_reply or outbound_media:
-            await self.sender.send(SimpleNamespace(
-                channel=self.name, chat_id=chat_id,
-                content=content_reply,
-                metadata=resp_metadata, media=outbound_media,
-            ))
+            "[{}] chat_id={}, content_len={}, media={}",
+            branch_label, chat_id, len(content_reply), outbound_media,
+        )
+        await self.sender.send(SimpleNamespace(
+            channel=self.name, chat_id=chat_id,
+            content=content_reply,
+            metadata=resp_metadata, media=outbound_media,
+        ))
 
     async def _deliver_normal_completion(
         self, card_id: str, chat_id: str, outbound_media: list[str],

@@ -1,6 +1,4 @@
 """Tool Web 插件 - Web 工具（web_search, web_fetch）
-
-基于 nanobot/agent/tools/web.py 适配 nanobee 插件架构。
 """
 
 from __future__ import annotations

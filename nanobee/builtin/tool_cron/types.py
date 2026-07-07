@@ -1,6 +1,4 @@
 """Cron 类型定义 — 定时任务数据类。
-
-从 nanobot/cron/types.py 移植。
 """
 
 from __future__ import annotations
@@ -30,7 +28,7 @@ class CronPayload:
 
     kind: Literal["system_event", "agent_turn"] = "agent_turn"
     message: str = ""
-    deliver: bool = False
+    deliver: bool = True
     channel: str | None = None
     to: str | None = None
     channel_meta: dict[str, Any] = field(default_factory=dict)
@@ -72,19 +70,6 @@ class CronJob:
     created_at_ms: int = 0
     updated_at_ms: int = 0
     delete_after_run: bool = False
-
-    @classmethod
-    def from_dict(cls, kwargs: dict) -> CronJob:
-        """从字典反序列化（兼容 JSON 持久化格式）。"""
-        state_kwargs = dict(kwargs.get("state", {}))
-        state_kwargs["run_history"] = [
-            r if isinstance(r, CronRunRecord) else CronRunRecord(**r)
-            for r in state_kwargs.get("run_history", [])
-        ]
-        kwargs["schedule"] = CronSchedule(**kwargs.get("schedule", {"kind": "every"}))
-        kwargs["payload"] = CronPayload(**kwargs.get("payload", {}))
-        kwargs["state"] = CronJobState(**state_kwargs)
-        return cls(**kwargs)
 
 
 @dataclass

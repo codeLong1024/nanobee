@@ -1,7 +1,6 @@
 """DingTalk message handling for nanobee — using ChatbotHandler (SDK).
 
 Preserves AI Card creation, emotion feedback.
-Message routing is adapted from nanobot's MessageBus → nanobee kernel.
 """
 
 from __future__ import annotations
@@ -178,6 +177,26 @@ class NanobeeDingTalkHandler(ChatbotHandler):
 
         return content, file_paths
 
+    async def _handle_media_download(
+        self,
+        download_code: str,
+        filename: str,
+        sender_id: str,
+        content: str,
+        default_label: str | None = None,
+    ) -> tuple[str, list[str]]:
+        """统一的媒体下载处理：下载 DingTalk 文件并在成功时附加到 file_paths。"""
+        if not download_code:
+            return content, []
+        fp = await self.channel.sender.download_dingtalk_file(
+            download_code, filename, sender_id,
+        )
+        if fp:
+            if default_label is not None:
+                content = content or default_label
+            return content, [fp]
+        return content, []
+
     async def _handle_picture(
         self,
         chatbot_msg: ChatbotMessage,
@@ -186,16 +205,10 @@ class NanobeeDingTalkHandler(ChatbotHandler):
         content: str,
     ) -> tuple[str, list[str]]:
         """Handle picture message type."""
-        file_paths: list[str] = []
-        download_code = chatbot_msg.image_content.download_code
-        if download_code:
-            fp = await self.channel.sender.download_dingtalk_file(
-                download_code, "image.jpg", sender_id,
-            )
-            if fp:
-                file_paths.append(fp)
-                content = content or "[Image]"
-        return content, file_paths
+        return await self._handle_media_download(
+            chatbot_msg.image_content.download_code,
+            "image.jpg", sender_id, content, "[Image]",
+        )
 
     async def _handle_audio(
         self,
@@ -205,7 +218,6 @@ class NanobeeDingTalkHandler(ChatbotHandler):
         content: str,
     ) -> tuple[str, list[str]]:
         """Handle audio message type."""
-        file_paths: list[str] = []
         recognition = (
             message.data.get("content", {}).get("recognition", "")
             or chatbot_msg.extensions.get("content", {}).get("recognition", "")
@@ -213,13 +225,10 @@ class NanobeeDingTalkHandler(ChatbotHandler):
         if recognition:
             content = recognition.strip()
         download_code = message.data.get("downloadCode", "")
-        if download_code:
-            fp = await self.channel.sender.download_dingtalk_file(
-                download_code, f"voice_{int(_time.time())}.amr", sender_id,
-            )
-            if fp:
-                file_paths.append(fp)
-        return content, file_paths
+        return await self._handle_media_download(
+            download_code,
+            f"voice_{int(_time.time())}.amr", sender_id, content,
+        )
 
     async def _handle_file(
         self,
@@ -229,7 +238,6 @@ class NanobeeDingTalkHandler(ChatbotHandler):
         content: str,
     ) -> tuple[str, list[str]]:
         """Handle file message type."""
-        file_paths: list[str] = []
         download_code = (
             message.data.get("content", {}).get("downloadCode")
             or message.data.get("downloadCode")
@@ -239,14 +247,9 @@ class NanobeeDingTalkHandler(ChatbotHandler):
             or message.data.get("fileName")
             or "file"
         )
-        if download_code:
-            fp = await self.channel.sender.download_dingtalk_file(
-                download_code, fname, sender_id,
-            )
-            if fp:
-                file_paths.append(fp)
-                content = content or "[File]"
-        return content, file_paths
+        return await self._handle_media_download(
+            download_code, fname, sender_id, content, "[File]",
+        )
 
     async def _handle_video(
         self,
@@ -256,16 +259,12 @@ class NanobeeDingTalkHandler(ChatbotHandler):
         content: str,
     ) -> tuple[str, list[str]]:
         """Handle video message type."""
-        file_paths: list[str] = []
         content = content or "[Video]"
         download_code = message.data.get("downloadCode", "")
-        if download_code:
-            fp = await self.channel.sender.download_dingtalk_file(
-                download_code, f"video_{int(_time.time())}.mp4", sender_id,
-            )
-            if fp:
-                file_paths.append(fp)
-        return content, file_paths
+        return await self._handle_media_download(
+            download_code,
+            f"video_{int(_time.time())}.mp4", sender_id, content,
+        )
 
     async def _handle_rich_text(
         self,

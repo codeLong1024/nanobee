@@ -4,10 +4,6 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
 
-# Constants for media handling
-DINGTALK_MAX_REMOTE_MEDIA_BYTES = 20 * 1024 * 1024
-DINGTALK_MAX_REMOTE_MEDIA_REDIRECTS = 3
-
 
 class DingTalkConfig(BaseModel):
     """DingTalk channel configuration using Stream mode.

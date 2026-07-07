@@ -8,7 +8,6 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import suppress
 from typing import Any
 
 from nanobee.exceptions import SandboxViolationError
@@ -360,10 +359,12 @@ class ToolPipeline:
         prepare_call = getattr(spec.tools, "prepare_call", None)
         if not callable(prepare_call):
             return None, tool_call.arguments, None
-        with suppress(Exception):
+        try:
             prepared = prepare_call(tool_call.name, tool_call.arguments)
             if isinstance(prepared, tuple) and len(prepared) == 3:
                 return prepared
+        except Exception:
+            logger.debug("prepare_call 失败，使用原始参数")
         return None, tool_call.arguments, None
 
     def _handle_prep_error(

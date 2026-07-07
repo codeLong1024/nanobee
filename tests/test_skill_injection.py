@@ -188,3 +188,21 @@ class TestInjectionDefense:
 
         assert "[builtin]" in prompt
         assert "内置工具" in prompt
+
+    @pytest.mark.asyncio
+    async def test_builtin_skills_injected(self, tmp_path: Path):
+        """内置技能也会被注入（双源发现下用户和内置同时出现）。"""
+        _make_skill_md(tmp_path / "builtin", "_memory", "内置记忆", "内置记忆策略")
+        _make_skill_md(tmp_path / "builtin", "tool-helper", "工具助手", "工具使用指南")
+
+        loader = SkillsLoader(
+            user_skills_dir=tmp_path / "skills",
+            builtin_skills_dir=tmp_path / "builtin",
+        )
+        stage = SkillStage(loader)
+        context = {"system_prompt": "## Soul\n"}
+        result = await stage.process(context)
+
+        prompt = result["system_prompt"]
+        assert "[builtin]" in prompt
+        assert "内置记忆" in prompt or "工具助手" in prompt

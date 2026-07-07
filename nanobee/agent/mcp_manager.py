@@ -74,7 +74,7 @@ class MCPManager:
         except asyncio.CancelledError:
             logger.warning("MCP 连接被取消（下次消息时重试）")
             self._stacks.clear()
-        except BaseException as e:
+        except Exception as e:
             logger.warning("MCP 服务器连接失败（下次消息时重试）: {error}", error=e)
             self._stacks.clear()
         finally:

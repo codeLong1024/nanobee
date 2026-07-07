@@ -19,6 +19,8 @@ from typing import Optional
 
 import httpx
 
+from .helpers import get_logger
+
 # Chunked upload configuration (ported from chunk-upload.ts)
 CHUNK_MIN = 100 * 1024  # 100 KB
 CHUNK_MAX = 8 * 1024 * 1024  # 8 MB
@@ -56,7 +58,7 @@ async def upload_media(
         file_size = len(data)
 
     if file_size > CHUNK_THRESHOLD:
-        _log = logger or _get_logger()
+        _log = logger or get_logger(__name__)
         _log.info(
             "File size {} > threshold {}, using chunked upload for {}",
             file_size, CHUNK_THRESHOLD, filename,
@@ -73,7 +75,7 @@ async def upload_media(
         text = resp.text
         result = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
         if resp.status_code >= 400:
-            _log = logger or _get_logger()
+            _log = logger or get_logger(__name__)
             _log.error(
                 "media upload failed status={} type={} body={}",
                 resp.status_code, media_type, text[:500],
@@ -81,7 +83,7 @@ async def upload_media(
             return None
         errcode = result.get("errcode", 0)
         if errcode != 0:
-            _log = logger or _get_logger()
+            _log = logger or get_logger(__name__)
             _log.error(
                 "media upload api error type={} errcode={} body={}",
                 media_type, errcode, text[:500],
@@ -90,12 +92,12 @@ async def upload_media(
         sub = result.get("result") or {}
         media_id = result.get("media_id") or result.get("mediaId") or sub.get("media_id") or sub.get("mediaId")
         if not media_id:
-            _log = logger or _get_logger()
+            _log = logger or get_logger(__name__)
             _log.error("media upload missing media_id body={}", text[:500])
             return None
         return str(media_id)
     except httpx.TransportError:
-        _log = logger or _get_logger()
+        _log = logger or get_logger(__name__)
         _log.exception("media upload network error type={}", media_type)
         raise
 
@@ -133,7 +135,7 @@ async def chunk_upload(
     Returns:
         ``media_id`` string, or ``None`` on failure.
     """
-    _log = logger or _get_logger()
+    _log = logger or get_logger(__name__)
 
     # Step 1: Enable upload transaction
     transaction_id = await enable_upload_transaction(http, token, data, filename, file_size, agent_id, _log)
@@ -185,7 +187,7 @@ async def enable_upload_transaction(
     Returns:
         ``uploadTransactionId`` string, or ``None`` on failure.
     """
-    _log = logger or _get_logger()
+    _log = logger or get_logger(__name__)
     if not agent_id:
         _log.warning("agentId is empty — DingTalk chunked upload API may reject this request")
     md5 = hashlib.md5(data).hexdigest()
@@ -323,11 +325,6 @@ async def submit_upload_transaction(
     except httpx.TransportError:
         logger.exception("submitUploadTransaction network error")
         raise
-
-
-def _get_logger() -> logging.Logger:
-    """Get module-level logger."""
-    return logging.getLogger(__name__)
 
 
 __all__ = [

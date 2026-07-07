@@ -108,3 +108,22 @@ def test_repr():
     rep = repr(collector)
     assert "allowed=2/3" in rep
     assert "whitelist=2" in rep
+
+
+def test_blacklist_tool_excluded_from_definitions_and_allowed():
+    """黑名单工具从定义层剔除，且 is_allowed 返回 False。"""
+    collector = ToolCollector(
+        ["tool-fs", "tool-web", "tool-admin"],
+        blacklist=["tool-admin"],
+    )
+    definitions = [
+        {"type": "function", "function": {"name": "tool-fs"}},
+        {"type": "function", "function": {"name": "tool-web"}},
+        {"type": "function", "function": {"name": "tool-admin"}},
+    ]
+    filtered = collector.filter_definitions(definitions)
+    names = [d["function"]["name"] for d in filtered]
+    assert "tool-admin" not in names
+    assert len(names) == 2
+    assert collector.is_allowed("tool-admin") is False
+    assert collector.is_allowed("tool-fs") is True

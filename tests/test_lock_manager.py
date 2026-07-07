@@ -118,3 +118,38 @@ async def test_clear():
         pass
     lock_mgr.clear()
     assert lock_mgr.active_users == 0
+
+
+@pytest.mark.asyncio
+async def test_per_user_concurrency_with_ordering():
+    """多用户并发：同用户按序执行（start/end 顺序可验证），不同用户可交错。"""
+    lock_mgr = LockManager()
+    order: list[str] = []
+
+    async def send(user: str, msg_id: str) -> None:
+        async with lock_mgr.acquire(user):
+            order.append(f"{user}_{msg_id}_start")
+            await asyncio.sleep(0.02)
+            order.append(f"{user}_{msg_id}_end")
+
+    await asyncio.gather(
+        send("user-alice", "1"),
+        send("user-bob", "1"),
+        send("user-alice", "2"),
+        send("user-bob", "2"),
+    )
+
+    # 同一用户严格串行
+    alice_events = [e for e in order if e.startswith("user-alice")]
+    assert alice_events == [
+        "user-alice_1_start", "user-alice_1_end",
+        "user-alice_2_start", "user-alice_2_end",
+    ]
+    bob_events = [e for e in order if e.startswith("user-bob")]
+    assert bob_events == [
+        "user-bob_1_start", "user-bob_1_end",
+        "user-bob_2_start", "user-bob_2_end",
+    ]
+    # 不同用户可交错
+    assert "user-bob_1_start" in order
+    assert "user-bob_1_end" in order
