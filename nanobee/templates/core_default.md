@@ -1,4 +1,4 @@
-# core.md — Nanobee 数字员工的唯一管控文件
+<!-- Nanobee 数字员工默认管控文件 -->
 
 ## Soul（人格）
 
