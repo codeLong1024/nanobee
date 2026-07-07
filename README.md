@@ -235,6 +235,11 @@ logging:
 | `tool_dingtalk` | Tool | ✅ 完整 | 钉钉工具（文档操作、多维表操作、数据管道 + MCP 客户端） |
 | `audit_logger` | Audit | ✅ 完整 | 参考：on_message_completed 审计日志 |
 
+### 测试覆盖
+
+项目共有 **841 个测试用例**，覆盖核心模块：插件系统、Hook 机制、沙箱安全、消息路由、技能注入、故障分类等。
+测试文件按模块组织（如 `test_xxx.py` 对应 `nanobee/xxx.py`），无分期命名的历史遗留文件。
+
 ## 插件开发
 
 插件继承 `NanobeePlugin`，覆盖需要的 Hook 方法，通过 `plugin.toml` 声明元数据。
@@ -255,12 +260,60 @@ AgentRunner 底层另有 4 个 run-level Hook（`before_run`/`after_run`/`on_err
 # 安装开发依赖
 pip install -e ".[dev]"
 
-# 运行全部测试
+# 运行全部测试（841 用例，零回归）
 python -m pytest tests/ -v --tb=short
 
 # 查看覆盖率
 python -m pytest tests/ --cov=nanobee --cov-report=term-missing
 ```
+
+### 测试文件结构
+
+| 文件 | 覆盖模块 | 用例 |
+|------|---------|------|
+| `test_lock_manager.py` | `kernel/lock_manager.py` — 并发锁、用户隔离 | 5 |
+| `test_router.py` | `kernel/context_router.py` — 规则解析、fallback、优先级 | 6 |
+| `test_sandbox.py` | `kernel/sandbox.py` — 路径安全、白名单、拦截 | 8 |
+| `test_tool_collector.py` | `kernel/tool_collector.py` — 过滤、黑名单、白名单 | 8 |
+| `test_user_context.py` | `kernel/user_context.py` — 会话创建、隔离、插件注入 | 10 |
+| `test_plugin_system.py` | `plugins/base.py` + `hook_mixin.py` — PluginManager、Hook 机制、ContextPipeline 集成 | 22 |
+| `test_plugin_blacklist.py` | `kernel/plugin_manager.py` — 插件禁用黑名单 | 2 |
+| `test_plugin_enabled_override.py` | `kernel/plugin_manager.py` — enabled 配置覆盖 | 3 |
+| `test_cli_plugin.py` | `cli/plugin.py` — CLI 插件命令 | 5 |
+| `test_context_security.py` | `kernel/context_manager.py` — 路径安全、core.md 校验 | 4 |
+| `test_schema_validation.py` | `config/schema.py` — 配置校验 | 5 |
+| `test_channel_manager.py` | `kernel/channel_manager.py` — 通道启停、优雅关闭 | 11 |
+| `test_plugin_dirs.py` | `kernel/plugin_dirs.py` — 插件目录解析 | 10 |
+| `test_skill.py` | `kernel/skill_manager.py` — SkillsLoader 基础 | 4 |
+| `test_skill_injection.py` | `kernel/skill_manager.py` — SkillStage 渐进注入、full_inject | 11 |
+| `test_skill_manager_cache.py` | `kernel/skill_manager.py` — 缓存机制 | 6 |
+| `test_skill_validator.py` | `kernel/skill_manager.py` — SKILL.md 格式校验 | 5 |
+| `test_stream_hook.py` | `agent/hook.py` — StreamBridgeHook | 4 |
+| `test_preset_manager.py` | `agent/preset_manager.py` — 预设管理 | 6 |
+| `test_tool_history.py` | `agent/tools/tool_history.py` — 历史消息管理 | 10 |
+| `test_tool_fs.py` | `builtin/tool_fs/plugin.py` — 文件读写编辑 | 21 |
+| `test_tool_shell_sandbox.py` | `builtin/tool_shell/sandbox.py` — bwrap 沙箱 | 12 |
+| `test_tool_cron_isolation.py` | `builtin/tool_cron/service.py` — 用户隔离 | 6 |
+| `test_channel_dingtalk.py` | `builtin/channel_dingtalk/` — 钉钉通道 | 15 |
+| `test_channel_http.py` | `builtin/channel_http/` — HTTP 通道 | 8 |
+| `test_mcp_manager.py` | `agent/tools/mcp.py` — MCP 管理器 | 10 |
+| `test_hook_scheduling.py` | `plugins/hook_mixin.py` — Hook 调度 | 6 |
+| `test_command_router.py` | `agent/command_router.py` — 命令路由 | 12 |
+| `test_subagent.py` | `agent/subagent.py` — 子代理 | 10 |
+| `test_runtime_context.py` | `utils/helpers.py` — 运行时上下文 | 12 |
+| `test_token_usage_calibration.py` | `utils/helpers.py` — Token 估算 | 14 |
+| `test_gateway_runtime.py` | `gateway/` — Gateway 运行时 | 8 |
+| `test_session.py` | `session/` — 会话管理 | 10 |
+| `test_e2e.py` | 端到端集成测试 | 5 |
+| `test_exceptions.py` | `agent/exceptions.py` — 异常体系 | 8 |
+| `test_security.py` | `security/` — 安全策略 | 10 |
+| `test_process.py` | `kernel/process.py` — 进程管理 | 6 |
+| `test_inject_message.py` | `kernel/kernel.py` — 统一消息注入 | 8 |
+| `test_fault_classifier.py` | `agent/fault_classifier.py` — 故障分类 | 11 |
+| `test_message_tool.py` | `agent/tools/message.py` — MessageTool | 17 |
+| `test_notifications.py` | `utils/notifications.py` — 通知系统 | 15 |
+| `test_result_normalizer.py` | `agent/result_normalizer.py` — 结果标准化 | 10 |
+| `test_audit_logger.py` | `builtin/audit_logger/plugin.py` — 审计日志 | 4 |
 
 ## 项目结构
 
@@ -285,6 +338,23 @@ nanobee/
 ├── bootstrap.py    组合根（配置→组件创建→AgentLoop 装配）
 ├── deploy/         部署参考文件（systemd unit/配置模板/shell wrapper）
 └── exceptions.py   统一异常层次
+```
+
+### 测试目录
+
+```
+tests/
+├── test_lock_manager.py          # 并发锁、用户隔离
+├── test_router.py                # 规则解析、fallback、优先级
+├── test_sandbox.py               # 路径安全、白名单、拦截
+├── test_tool_collector.py        # 过滤、黑名单、白名单
+├── test_user_context.py          # 会话创建、隔离、插件注入
+├── test_plugin_system.py         # PluginManager、Hook 机制、ContextPipeline
+├── test_fault_classifier.py      # 故障分类（SSRF/沙箱/网络）
+├── test_message_tool.py          # MessageTool、消息合并
+├── test_notifications.py         # Notification 消息目录
+├── test_audit_logger.py          # 审计日志
+└── ...                           # 共 44 个测试文件，841 用例
 ```
 
 ## LLM Provider 支持
