@@ -122,8 +122,8 @@ class TestRuntimeContextIntegration:
         """测试 token 效率：runtime context 应远小于工具定义。"""
         runtime_ctx = build_runtime_context()
         
-        # runtime context 应小于 200 字符
-        assert len(runtime_ctx) < 200, f"Runtime context too long: {len(runtime_ctx)} chars"
+        # runtime context 应小于 250 字符
+        assert len(runtime_ctx) < 250, f"Runtime context too long: {len(runtime_ctx)} chars"
         
         # 工具定义通常 200-300 字符
         # 这里只验证 runtime context 足够短

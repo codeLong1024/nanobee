@@ -240,10 +240,10 @@ def build_runtime_context(
 
     只注入每次轮次变化的信息（时间、通道、对话统计）。
     工作目录（context_root）和用户 ID 等持久信息由
-    context_pipeline.py 的 RulesStage.process() 注入到 system prompt 中。
+    context_pipeline.py 的 UserIdentityStage.process() 注入到 system prompt 中。
 
     LLM 完整可见上下文构成：
-    - system prompt: core.md Soul/Rules + RulesStage 用户身份/工作目录 + SkillStage 技能列表
+    - system prompt: core.md 原文 + UserIdentityStage 用户身份 + SkillStage 技能列表 + 插件贡献 + 安全红线
     - 每条 user 消息末尾: 本函数注入的 Runtime Context
 
     Token 估算使用 ``_rough_token_count``（len//4 字符级），
@@ -266,6 +266,12 @@ def build_runtime_context(
         lines += [f"Channel: {channel}", f"Chat ID: {chat_id}"]
     if sender_id:
         lines += [f"Sender ID: {sender_id}"]
+
+    # 轮次估算（每 2 条消息 ≈ 1 轮 user-assistant 交换）
+    if history is not None:
+        turns = len(history) // 2
+        if turns > 0:
+            lines.append(f"Turn: #{turns}")
 
     # 粗略 token 估算：只在有上下文窗口信息时显示
     if ctx_window > 0 and history is not None and system_prompt is not None:

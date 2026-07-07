@@ -18,6 +18,18 @@ if TYPE_CHECKING:
 from nanobee.utils.logger import logger
 
 
+def _xml_escape(text: str) -> str:
+    """转义 XML 特殊字符，防止用户 SKILL.md body 破坏 XML 结构。
+
+    纯机制层操作：框架不知道 body 内容语义，只确保 XML 容器结构完整。
+    标签名/属性名由框架生成（不经过此函数），只有 body 文本来自用户输入。
+    """
+    text = text.replace("&", "&amp;")
+    text = text.replace("<", "&lt;")
+    text = text.replace(">", "&gt;")
+    return text
+
+
 def _map_plugin_stage(plugin: Any) -> str:
     """将插件映射到提示词段标题。
 
@@ -45,14 +57,6 @@ class PromptBuildContext:
     user_context: Any = None
     context_id: str = ""
     messages: list[dict[str, Any]] = field(default_factory=list)
-
-    def get_system_prompt(self) -> str:
-        """获取当前 system prompt（兼容旧 dict 访问）。"""
-        return self.system_prompt
-
-    def set_system_prompt(self, value: str) -> None:
-        """设置 system prompt。"""
-        self.system_prompt = value
 
     def append_system_prompt(self, text: str) -> None:
         """追加内容到 system prompt 末尾。"""
@@ -118,12 +122,17 @@ class PipelineStage:
         return context
 
 
-class SoulStage(PipelineStage):
-    """注入 Soul 段（人格定义）"""
+class CoreStage(PipelineStage):
+    """加载 core.md 原文作为 system prompt 基底。
+
+    不解析、不拆分、不篡改。
+    用户的 ## Soul / ## Rules 标题完整保留。
+    CoreMDParser 仅由 SoulGuard 用于哈希校验，不参与 prompt 构建。
+    """
 
     def __init__(self, core_md_path: str):
-        super().__init__(priority=10)  # 最高优先级，最先注入
-        self.core_md_path = core_md_path
+        super().__init__(priority=10)
+        self._core_md_path = core_md_path
 
     async def process(
         self,
@@ -131,22 +140,37 @@ class SoulStage(PipelineStage):
     ) -> PromptBuildContext | dict[str, Any]:
         from_dict = isinstance(context, dict)
         ctx = PromptBuildContext._from_compat(context)  # type: ignore[arg-type]
-        parser = CoreMDParser(self.core_md_path)
-        soul_content = parser.soul
-        if soul_content:
-            logger.debug("SoulStage 注入 Soul 段（{} 字符）", len(soul_content))
-            ctx.prepend_system_prompt(soul_content)
+
+        path = Path(self._core_md_path)
+        if not path.exists():
+            CoreMDParser.create_default(path)
+
+        content = path.read_text(encoding="utf-8").strip()
+
+        # 剥离文档级 H1 标题行（如 "# core.md — Nanobee 数字员工的唯一管控文件"）
+        # 避免它成为整个 system prompt 的最高级标题
+        lines = content.split("\n")
+        if lines and lines[0].startswith("# "):
+            content = "\n".join(lines[1:]).strip()
+
+        if content:
+            logger.debug("CoreStage 注入 core.md 原文（{} 字符）", len(content))
+            ctx.prepend_system_prompt(content)
         else:
-            logger.warning("SoulStage: core.md 中未找到 ## Soul 段，人格未注入")
+            logger.warning("CoreStage: core.md 为空，未注入")
+
         return ctx.to_dict() if from_dict else ctx
 
 
-class RulesStage(PipelineStage):
-    """注入 Rules 段（行为规则 + 用户身份）"""
+class UserIdentityStage(PipelineStage):
+    """注入 ## 用户身份（独立段，不再嵌在行为规则段内）。
 
-    def __init__(self, core_md_path: str):
-        super().__init__(priority=20)
-        self.core_md_path = core_md_path
+    从 UserContext 读取 user_id / context_root / 目录树等运行时信息。
+    无 UserContext 时静默跳过。
+    """
+
+    def __init__(self):
+        super().__init__(priority=25)
 
     async def process(
         self,
@@ -154,46 +178,37 @@ class RulesStage(PipelineStage):
     ) -> PromptBuildContext | dict[str, Any]:
         from_dict = isinstance(context, dict)
         ctx = PromptBuildContext._from_compat(context)  # type: ignore[arg-type]
-        parser = CoreMDParser(self.core_md_path)
-        rules_content = parser.rules
 
-        # 注入用户身份 + 目录信息 —— 让 LLM 知道自己的 user_id 和两类目录的区别
-        # 注：此为持久信息（注入 system prompt，每条会话一次）。
-        # 轮次变化信息（时间/通道/会话统计）由 helpers.build_runtime_context() 注入到每条 user 消息末尾。
         user_ctx = ctx.user_context
-        if user_ctx is not None:
-            user_id = getattr(user_ctx, "user_id", None)
-            context_root = getattr(user_ctx, "context_root", None)
-            work_dir = getattr(user_ctx, "work_dir", None)
-            skills_dir = getattr(user_ctx, "skills_dir", None)
-            memory_dir = getattr(user_ctx, "memory_dir", None)
-            extra_lines: list[str] = []
-            if user_id:
-                extra_lines.append(f"你的用户 ID：`{user_id}`")
-            if context_root:
-                root_str = f"根目录：`{context_root}`"
-                sub_lines: list[str] = []
-                if work_dir:
-                    sub_lines.append(f"  workspace/ — Shell 执行目录")
-                if skills_dir:
-                    sub_lines.append(f"  skills/    — 用户技能（可写，另有实例及内置技能目录只读）")
-                if memory_dir:
-                    sub_lines.append(f"  memory/    — 记忆文件")
-                if sub_lines:
-                    root_str += "\n其下有：\n" + "\n".join(sub_lines)
-                extra_lines.append(root_str)
-            if extra_lines:
-                workspace_section = "\n## 用户身份\n\n" + "\n".join(extra_lines)
-                if rules_content:
-                    rules_content += workspace_section
-                else:
-                    rules_content = workspace_section
+        if user_ctx is None:
+            return ctx.to_dict() if from_dict else ctx
 
-        if rules_content:
-            logger.debug("RulesStage 注入行为规则段（{} 字符）", len(rules_content))
-            ctx.append_system_prompt("## 行为规则\n\n" + rules_content)
-        else:
-            logger.warning("RulesStage: core.md 中未找到 ## Rules 段，规则未注入")
+        extra_lines: list[str] = []
+        user_id = getattr(user_ctx, "user_id", None)
+        context_root = getattr(user_ctx, "context_root", None)
+        work_dir = getattr(user_ctx, "work_dir", None)
+        skills_dir = getattr(user_ctx, "skills_dir", None)
+        memory_dir = getattr(user_ctx, "memory_dir", None)
+
+        if user_id:
+            extra_lines.append(f"你的用户 ID：`{user_id}`")
+        if context_root:
+            root_str = f"根目录：`{context_root}`"
+            sub_lines: list[str] = []
+            if work_dir:
+                sub_lines.append("  workspace/ — Shell 执行目录")
+            if skills_dir:
+                sub_lines.append("  skills/    — 用户技能（可写，另有实例及内置技能目录只读）")
+            if memory_dir:
+                sub_lines.append("  memory/    — 记忆文件")
+            if sub_lines:
+                root_str += "\n其下有：\n" + "\n".join(sub_lines)
+            extra_lines.append(root_str)
+
+        if extra_lines:
+            logger.debug("UserIdentityStage 注入用户身份段（{} 字符）", len(extra_lines))
+            ctx.append_system_prompt("## 用户身份\n\n" + "\n".join(extra_lines))
+
         return ctx.to_dict() if from_dict else ctx
 
 
@@ -205,12 +220,6 @@ class SkillStage(PipelineStage):
     使用 kernel.skill_manager 统一实例，避免路径分裂。
 
     三层技能架构（同名优先级从高到低）：
-    1. per-context 技能（users/<user_id>/skills/）— 用户自主管理
-    2. 实例级技能（<data_dir>/skills/）— 管理员配属，实例内共享
-    3. 内置技能（nanobee/skills/）— 框架打包
-
-    Phase 2 增强：加 [SKILL BEGIN/END] 边界标记，
-    共享技能 body 每行使用 > 引用包裹。
     """
 
     def __init__(self, source: SkillsLoader) -> None:
@@ -265,37 +274,27 @@ class SkillStage(PipelineStage):
                 continue  # 同名去重：user > instance > builtin
             seen_names.add(skill.meta.name)
 
-            # 映射 source 到标签
-            source_tags = {
-                "builtin": "[builtin]",
-                "instance": "[instance]",
-                "user": "[user]",
-            }
-            source_tag = source_tags.get(skill.source, f"[{skill.source}]")
-
             if skill.meta.full_inject:
-                # 全量注入：元数据 + 完整 body（由 frontmatter 声明触发）
+                # 全量注入：XML 容器包裹，body 转义防结构破裂
                 sections.append(
-                    f"---\n"
-                    f"[SKILL: {skill.meta.name} {source_tag}]\n\n"
-                    f"### {skill.meta.name} {source_tag}\n"
-                    f"**描述**: {skill.meta.description}\n\n"
-                    f"{skill.body}\n"
+                    f'<skill name="{skill.meta.name}" source="{skill.source}">\n'
+                    f"\n"
+                    f"**描述**: {skill.meta.description}\n"
+                    f"\n"
+                    f"{_xml_escape(skill.body)}\n"
+                    f"</skill>"
                 )
             else:
-                # 渐进式注入：只注入元数据，LLM 按需读取
-                source_prefix = f" (@{skill.meta.author})" if skill.meta.author else ""
-                lines = [
-                    "---",
-                    f"[SKILL: {skill.meta.name} {source_tag}]",
-                    "",
-                    f"### {skill.meta.name}{source_prefix} {source_tag}",
-                    "",
-                    f"**描述**: {skill.meta.description}",
-                    f"**文件**: `{skill.file_path}`",
-                    "",
-                ]
-                sections.append("\n".join(lines))
+                # 渐进式注入：仅元数据卡片（无 body，无标题穿透风险）
+                author_attr = f' author="{skill.meta.author}"' if skill.meta.author else ""
+                sections.append(
+                    f'<skill name="{skill.meta.name}" source="{skill.source}"'
+                    f'{author_attr} file="{skill.file_path}">\n'
+                    f"\n"
+                    f"**描述**: {skill.meta.description}\n"
+                    f"**文件**: `{skill.file_path}`\n"
+                    f"</skill>"
+                )
 
         if not sections:
             return ctx.to_dict() if from_dict else ctx
@@ -327,9 +326,9 @@ class ContextPipeline:
         self._soul_guard = soul_guard
         self._stages: list[PipelineStage] = []
 
-        # 注册默认 Stage
-        self.register(SoulStage(core_md_path))
-        self.register(RulesStage(core_md_path))
+        # 注册默认 Stage（顺序由 priority 决定）
+        self.register(CoreStage(core_md_path))
+        self.register(UserIdentityStage())
         self.register(SkillStage(skill_loader))
 
     def register(self, stage: PipelineStage) -> None:
@@ -366,10 +365,11 @@ class ContextPipeline:
         """使用插件 Hook 构建系统提示词（Phase 2 增强版）。
 
         组装顺序：
-        1. [P0] Soul 段：框架内置（core.md Soul 节）
-        2. [P10-P30] 内置 Stage：Rules → Skill
-        3. 插件段：由插件 stage/plugin_type 决定段标题，按传入顺序排列
-        4. [P90] FinalGuard：不可绕过的优先级规则
+        1. [P10] CoreStage：加载 core.md 原文
+        2. [P25] UserIdentityStage：注入用户身份/目录信息
+        3. [P28] SkillStage：注入技能列表（XML 容器包裹）
+        4. [P30+] 插件段：由插件 stage/plugin_type 决定段标题
+        5. [P90] FinalGuard：安全红线，不可绕过
 
         每个段有内容时才注入，无内容时跳过。
 
