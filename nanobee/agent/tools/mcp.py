@@ -791,7 +791,6 @@ async def _refresh_terminated_server(
         _unregister_server_tools(manager, registry, server_name)
         _close_server(manager, server_name)
 
-        from nanobee.agent.tools.mcp import connect_mcp_servers
         connected = await connect_mcp_servers({server_name: cfg}, registry, default_cwd=default_cwd)
         manager._stacks.update(connected)
         _attach_reconnect_handlers(manager, registry, connected)

@@ -1,11 +1,8 @@
 """Tool Cron 插件 — 定时任务工具（add, list, remove）。
-
-基于 nanobot/agent/tools/cron.py 适配 nanobee 插件架构。
 """
 
 from __future__ import annotations
 
-import asyncio
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -24,12 +21,12 @@ class ToolCronPlugin(ToolPlugin):
 
     提供 cron 工具的三个操作（add / list / remove）。
     通过 CURRENT_REQUEST_CONTEXT ContextVar 按 turn 获取会话信息，
-    替代旧版 set_context() 实例属性写入模式。
+    按 context_id 隔离 CronService 实例，多用户并发互不干扰。
     """
 
     def __init__(self, metadata: Any = None):
         super().__init__(metadata)
-        self._cron: CronService | None = None
+        self._crons: dict[str, CronService] = {}
         self._default_timezone: str = "UTC"
 
     def initialize(self, kernel: Any) -> None:
@@ -38,29 +35,15 @@ class ToolCronPlugin(ToolPlugin):
 
         self._default_timezone = self.get_config("default_timezone", "UTC")
 
-        # 存储路径延迟初始化 — 在 execute_tool 中基于 context_root 确定
-        self._cron_base_dir: Path | None = None
-        self._current_store_path: Path | None = None
-
         logger.info("Cron 插件初始化完成")
 
     def on_enable(self) -> None:
-        """启用时启动 CronService。
-
-        首次启动时扫描 users/*/cron/jobs.json 加载已有任务。
-        """
+        """启用时扫描并启动所有用户已有的 CronService。"""
         super().on_enable()
-        if self._cron is None:
-            self._scan_existing_jobs()
-        if self._cron is not None:
-            try:
-                self._cron.start()
-                self._enabled = True
-            except RuntimeError as e:
-                logger.error("Cron 服务启动失败: {}", e)
+        self._scan_existing_jobs()
 
     def _scan_existing_jobs(self) -> None:
-        """扫描 users 目录下已有的 cron 任务文件。"""
+        """扫描 users 目录下所有用户的 cron 任务文件，为每个用户创建 CronService。"""
         if not self.kernel:
             return
         data_dir = Path(self.kernel.data_dir).expanduser()
@@ -68,27 +51,31 @@ class ToolCronPlugin(ToolPlugin):
         if not users_base.is_dir():
             return
         for user_dir in sorted(users_base.iterdir()):
+            context_id = user_dir.name
             cron_file = user_dir / "cron" / "jobs.json"
             if cron_file.is_file():
-                self._current_store_path = cron_file
-                self._cron = CronService(
+                cron = CronService(
                     store_path=cron_file,
                     on_job=self._on_job_execute,
                     max_sleep_ms=300_000,
                 )
-                logger.info(
-                    "Cron: 从 {} 加载现有任务", cron_file,
-                )
-                return
+                try:
+                    cron.start()
+                except RuntimeError as e:
+                    logger.error("Cron: 恢复用户 {} 的任务失败: {}", context_id, e)
+                    continue
+                self._crons[context_id] = cron
+                logger.info("Cron: 已恢复用户 {} 的任务", context_id)
 
     def on_disable(self) -> None:
-        """禁用时停止 CronService。"""
-        if self._cron is not None:
-            self._cron.stop()
+        """禁用时停止所有 CronService。"""
+        for cron in self._crons.values():
+            cron.stop()
+        self._crons.clear()
         super().on_disable()
 
     def _resolve_store_path(self, context_id: str) -> Path:
-        """根据 context_id 解析 cron 任务存储路径（线程安全，无实例属性依赖）。
+        """根据 context_id 解析 cron 任务存储路径。
 
         cron 数据需要持久化，放在 <context_root>/cron/ 下（与 skills/ 平级）。
         若 context_root 不可用，回退到 <data_dir>/cron/jobs_<context_id>.json。
@@ -102,29 +89,32 @@ class ToolCronPlugin(ToolPlugin):
         if self.context_root is not None:
             store_path = self.context_root / "cron" / "jobs.json"
         else:
-            if self._cron_base_dir is None:
-                data_dir = Path(self._kernel.data_dir) if self._kernel and hasattr(self._kernel, "data_dir") else Path.cwd()
-                self._cron_base_dir = data_dir / "cron"
-                self._cron_base_dir.mkdir(parents=True, exist_ok=True)
-            store_path = self._cron_base_dir / f"jobs_{context_id}.json"
+            data_dir = Path(self._kernel.data_dir) if self._kernel and hasattr(self._kernel, "data_dir") else Path.cwd()
+            base_dir = data_dir / "cron"
+            base_dir.mkdir(parents=True, exist_ok=True)
+            store_path = base_dir / f"jobs_{context_id}.json"
         store_path.parent.mkdir(parents=True, exist_ok=True)
         return store_path
 
-    def _ensure_cron_service(self, store_path: Path) -> None:
-        """确保 CronService 已初始化并指向指定存储路径。
+    def _ensure_cron_service(self, context_id: str, store_path: Path) -> CronService:
+        """确保指定 context_id 对应的 CronService 已初始化。
 
         Args:
+            context_id: 用户上下文 ID
             store_path: cron 任务存储路径
+
+        Returns:
+            对应的 CronService 实例
         """
-        if self._cron is None or getattr(self._cron, "store_path", None) != store_path:
-            if self._cron is not None:
-                self._cron.stop()
-            self._cron = CronService(
+        if context_id not in self._crons:
+            cron = CronService(
                 store_path=store_path,
                 on_job=self._on_job_execute,
                 max_sleep_ms=300_000,
             )
+            self._crons[context_id] = cron
             logger.info("Cron 服务存储路径: {}", store_path)
+        return self._crons[context_id]
 
     def get_tools(self) -> list[dict[str, Any]]:
         """获取工具定义列表。
@@ -210,12 +200,12 @@ class ToolCronPlugin(ToolPlugin):
 
         # 根据 context_id 解析存储路径并确保 CronService 已就绪
         store_path = self._resolve_store_path(rctx.context_id)
-        self._ensure_cron_service(store_path)
-        self._current_store_path = store_path
+        cron = self._ensure_cron_service(rctx.context_id, store_path)
 
         action = kwargs.get("action", "").strip().lower()
         if action == "add":
             return self._add_job(
+                cron=cron,
                 channel=rctx.channel,
                 chat_id=rctx.chat_id,
                 context_metadata={} if rctx.context_id else {},
@@ -224,9 +214,9 @@ class ToolCronPlugin(ToolPlugin):
                 **kwargs,
             )
         elif action == "list":
-            return self._list_jobs()
+            return self._list_jobs(cron)
         elif action == "remove":
-            return self._remove_job(**kwargs)
+            return self._remove_job(cron=cron, **kwargs)
         return f"未知操作: {action}"
 
     @staticmethod
@@ -234,7 +224,7 @@ class ToolCronPlugin(ToolPlugin):
         """校验 IANA 时区，无效时返回错误信息。"""
         try:
             ZoneInfo(tz)
-        except (KeyError, Exception):
+        except KeyError:
             return f"错误：未知时区 '{tz}'"
         return None
 
@@ -246,6 +236,8 @@ class ToolCronPlugin(ToolPlugin):
 
     def _add_job(
         self,
+        *,
+        cron: CronService,
         channel: str = "",
         chat_id: str = "",
         context_metadata: dict[str, Any] | None = None,
@@ -256,20 +248,18 @@ class ToolCronPlugin(ToolPlugin):
         """添加定时任务。
 
         Args:
+            cron: 当前用户的 CronService 实例
             channel: 来源通道名
             chat_id: 会话/聊天 ID
             context_metadata: 通道附加元数据
             session_key: 会话键
             user_id: 用户唯一标识
         """
-        if self._cron is None:
-            return "错误：Cron 服务未初始化"
-
         # 确保服务已启动（懒加载模式：在首次添加任务时启动）
-        if not getattr(self._cron, "_running", False):
+        if not cron.is_running:
             try:
-                self._cron.start()
-                logger.info("Cron 服务已启动（懒加载），存储路径: {}", self._current_store_path)
+                cron.start()
+                logger.info("Cron 服务已启动（懒加载）")
             except RuntimeError as e:
                 logger.error("Cron 服务启动失败: {}", e)
                 return f"错误：Cron 服务启动失败: {e}"
@@ -320,7 +310,7 @@ class ToolCronPlugin(ToolPlugin):
         else:
             return "错误：需要 every_seconds、cron_expr 或 at 之一"
 
-        job = self._cron.add_job(
+        job = cron.add_job(
             name=name,
             schedule=schedule,
             message=message,
@@ -379,12 +369,13 @@ class ToolCronPlugin(ToolPlugin):
             return "Dream 记忆合并（长期记忆）。"
         return "系统内部管理任务。"
 
-    def _list_jobs(self) -> str:
-        """列出所有已调度任务。"""
-        if self._cron is None:
-            return "错误：Cron 服务未初始化"
+    def _list_jobs(self, cron: CronService) -> str:
+        """列出所有已调度任务。
 
-        jobs = self._cron.list_jobs()
+        Args:
+            cron: 当前用户的 CronService 实例
+        """
+        jobs = cron.list_jobs()
         if not jobs:
             return "没有已调度的任务。"
         lines = []
@@ -398,20 +389,21 @@ class ToolCronPlugin(ToolPlugin):
             lines.append("\n".join(parts))
         return "已调度的任务:\n" + "\n".join(lines)
 
-    def _remove_job(self, **kwargs: Any) -> str:
-        """移除定时任务。"""
-        if self._cron is None:
-            return "错误：Cron 服务未初始化"
+    def _remove_job(self, *, cron: CronService, **kwargs: Any) -> str:
+        """移除定时任务。
 
+        Args:
+            cron: 当前用户的 CronService 实例
+        """
         job_id = kwargs.get("job_id", "")
         if not job_id:
             return "错误：remove 操作需要 job_id 参数"
 
-        result = self._cron.remove_job(job_id)
+        result = cron.remove_job(job_id)
         if result == "removed":
             return f"已移除任务 {job_id}"
         if result == "protected":
-            job = self._cron.get_job(job_id)
+            job = cron.get_job(job_id)
             if job and job.name == "dream":
                 return (
                     "无法移除任务 `dream`。\n"
@@ -450,12 +442,11 @@ class ToolCronPlugin(ToolPlugin):
 
                 channel = job.payload.channel or "cli"
                 chat_id = job.payload.to or "direct"
-                # 剥离 chat_id 中的通道前缀（如 "dingtalk:shenqla" → "shenqla"），
-                # 避免 DingTalk API 因 userId 格式不正确而报 staffId.notExisted
+                # 剥离通道前缀（如 "dingtalk:<userid>" → 纯 userid，避免 API 格式错误）
                 if ":" in chat_id:
                     chat_id = chat_id.split(":", 1)[-1]
 
-                if self.kernel.agent_loop.event_bus:
+                if self.kernel.event_bus:
                     await self.kernel.agent_loop.event_bus.publish("agent.outbound", {
                         "channel": channel,
                         "chat_id": chat_id,

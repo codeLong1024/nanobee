@@ -1,7 +1,6 @@
 """
 Tool Shell 插件 - Shell 命令工具（execute_shell, write_stdin）
 
-基于 nanobot/agent/tools/shell.py 适配 nanobee 插件架构。
 沙箱通过 ContextVar 注入（见 context_sandbox_var.py），消除逐层参数透传。
 """
 

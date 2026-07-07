@@ -199,3 +199,39 @@ async def test_plugin_tmp_with_context_var(tmp_path: Path):
         assert result.exists()
     finally:
         reset_tmp(token)
+
+
+# ====== 端到端多用户隔离测试 ======
+
+
+@pytest.mark.asyncio
+async def test_user_context_isolation_e2e(tmp_path: Path):
+    """多个用户通过 ContextManager + SessionManager 隔离，目录不交叉。"""
+    from nanobee.session.session_manager import SessionManager
+
+    cm = ContextManager(_FakeKernel(str(tmp_path)))
+
+    await cm.get_or_create("alice")
+    await cm.get_or_create("bob")
+
+    session_mgr = SessionManager(tmp_path / "users")
+
+    s_alice = session_mgr.get_or_create("alice", "dingtalk:chat-a")
+    s_alice.add_message("user", "我是 Alice")
+    session_mgr.save(s_alice)
+
+    s_bob = session_mgr.get_or_create("bob", "dingtalk:chat-b")
+    s_bob.add_message("user", "我是 Bob")
+    session_mgr.save(s_bob)
+
+    assert len(s_alice.messages) == 1
+    assert len(s_bob.messages) == 1
+    assert s_alice.messages[0]["content"] == "我是 Alice"
+    assert s_bob.messages[0]["content"] == "我是 Bob"
+
+    # 目录隔离验证
+    alice = await cm.get_or_create("alice")
+    bob = await cm.get_or_create("bob")
+    assert alice.base_dir != bob.base_dir
+    assert "alice" in str(alice.base_dir)
+    assert "bob" in str(bob.base_dir)

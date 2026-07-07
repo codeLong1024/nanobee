@@ -19,11 +19,6 @@ def event_bus():
     return EventBus()
 
 
-@pytest.fixture
-def lock_manager():
-    return LockManager(max_concurrent=3)
-
-
 def _make_kernel(agent_loop_mock=None, event_bus=None):
     """构造一个带有 inject_message 的 Kernel mock 对象。"""
     from nanobee.kernel.kernel import NanobeeKernel

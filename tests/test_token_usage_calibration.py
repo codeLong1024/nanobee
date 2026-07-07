@@ -271,5 +271,4 @@ class TestCacheHitDetection:
         assert cache_miss == 200
 
 
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
+

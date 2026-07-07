@@ -3,7 +3,6 @@
 Provides:
 - Extension sets for images, audio, video
 - Compiled regex patterns for media markers and path detection
-- ``guess_upload_type()`` for inferring DingTalk upload type from file extension
 """
 
 from __future__ import annotations
@@ -16,9 +15,6 @@ from .helpers import (
     VIDEO_EXTS,
     ZIP_BEFORE_UPLOAD_EXTS,
 )
-
-# Backward-compatible alias
-IMAGE_EXTENSIONS: set[str] = IMAGE_EXTS
 
 # ============ 可读文本文件扩展名 ============
 TEXT_FILE_EXTENSIONS: set[str] = {
@@ -35,85 +31,46 @@ MEDIA_MSG_TYPES: set[str] = {"image", "voice", "file", "video"}
 # 防止 Markdown 代码块中的路径被吞掉尾部
 _PATH_CHARS: str = r"[^\s`\"'<>]+"
 
+
+def _build_dingtalk_marker_re(tag: str) -> re.Pattern:
+    """构建 DingTalk 标记正则：``[DINGTALK_TAG]...[DINGTALK_TAG]``"""
+    return re.compile(rf"\[DINGTALK_{tag}\](.*?)\[/DINGTALK_{tag}\]", re.DOTALL)
+
+
+def _build_raw_path_re(ext_pattern: str) -> re.Pattern:
+    """构建裸露媒体路径正则，支持 Unix 和 Windows 绝对路径。"""
+    return re.compile(
+        rf"(?<![(\[:/])(/ {_PATH_CHARS}\.(?:{ext_pattern})|[A-Za-z]:[/\\] {_PATH_CHARS}\.(?:{ext_pattern}))(?![)\]])",
+        re.IGNORECASE,
+    )
+
+
 # 匹配 Markdown 中的本地图片: ![alt](path)
 LOCAL_IMAGE_RE: re.Pattern = re.compile(
     r'!\[([^\]]*)\]\(([^)]+)\)'
 )
 
 # 匹配裸露的本地图片路径（绝对路径）
-# 同时支持 Unix (/path/file) 和 Windows (C:\path\file 或 C:/path/file) 路径
-BARE_IMAGE_PATH_RE: re.Pattern = re.compile(
-    r'(?<![(\[:/])'
-    r'('
-    r'/' + _PATH_CHARS + r'\.(?:png|jpg|jpeg|gif|webp|bmp|svg)'
-    r'|'
-    r'[A-Za-z]:[/\\]' + _PATH_CHARS + r'\.(?:png|jpg|jpeg|gif|webp|bmp|svg)'
-    r')'
-    r'(?![)\]])',
-    re.IGNORECASE,
-)
+BARE_IMAGE_PATH_RE: re.Pattern = _build_raw_path_re("png|jpg|jpeg|gif|webp|bmp|svg")
 
-# 视频标记: [DINGTALK_VIDEO]{"path":"..."}[/DINGTALK_VIDEO]
-VIDEO_MARKER_RE: re.Pattern = re.compile(
-    r'\[DINGTALK_VIDEO\](.*?)\[/DINGTALK_VIDEO\]',
-    re.DOTALL,
-)
-
-# 音频标记: [DINGTALK_AUDIO]{"path":"..."}[/DINGTALK_AUDIO]
-AUDIO_MARKER_RE: re.Pattern = re.compile(
-    r'\[DINGTALK_AUDIO\](.*?)\[/DINGTALK_AUDIO\]',
-    re.DOTALL,
-)
-
-# 文件标记: [DINGTALK_FILE]{"path":"...","fileName":"...","fileType":"..."}[/DINGTALK_FILE]
-FILE_MARKER_RE: re.Pattern = re.compile(
-    r'\[DINGTALK_FILE\](.*?)\[/DINGTALK_FILE\]',
-    re.DOTALL,
-)
+# 媒体标记
+VIDEO_MARKER_RE: re.Pattern = _build_dingtalk_marker_re("VIDEO")
+AUDIO_MARKER_RE: re.Pattern = _build_dingtalk_marker_re("AUDIO")
+FILE_MARKER_RE: re.Pattern = _build_dingtalk_marker_re("FILE")
 
 # 裸露的媒体路径（用于 processRawMediaPaths）
-# 同时支持 Unix (/path/file) 和 Windows (C:\path\file 或 C:/path/file) 路径。
-
-RAW_VIDEO_PATH_RE: re.Pattern = re.compile(
-    r'(?<![(\[:/])'
-    r'('
-    r'/' + _PATH_CHARS + r'\.(?:mp4|avi|mov|mkv|webm)'
-    r'|'
-    r'[A-Za-z]:[/\\]' + _PATH_CHARS + r'\.(?:mp4|avi|mov|mkv|webm)'
-    r')'
-    r'(?![)\]])',
-    re.IGNORECASE,
-)
-RAW_AUDIO_PATH_RE: re.Pattern = re.compile(
-    r'(?<![(\[:/])'
-    r'('
-    r'/' + _PATH_CHARS + r'\.(?:mp3|wav|flac|ogg|m4a|aac|amr)'
-    r'|'
-    r'[A-Za-z]:[/\\]' + _PATH_CHARS + r'\.(?:mp3|wav|flac|ogg|m4a|aac|amr)'
-    r')'
-    r'(?![)\]])',
-    re.IGNORECASE,
-)
-RAW_FILE_PATH_RE: re.Pattern = re.compile(
-    r'(?<![(\[:/])'
-    r'('
-    r'/' + _PATH_CHARS + r'\.(?:pdf|docx?|xlsx?|pptx?|zip|rar|txt|md|csv|json|xml|yaml|yml|toml|ini|cfg|log)'
-    r'|'
-    r'[A-Za-z]:[/\\]' + _PATH_CHARS + r'\.(?:pdf|docx?|xlsx?|pptx?|zip|rar|txt|md|csv|json|xml|yaml|yml|toml|ini|cfg|log)'
-    r')'
-    r'(?![)\]])',
-    re.IGNORECASE,
+RAW_VIDEO_PATH_RE: re.Pattern = _build_raw_path_re("mp4|avi|mov|mkv|webm")
+RAW_AUDIO_PATH_RE: re.Pattern = _build_raw_path_re("mp3|wav|flac|ogg|m4a|aac|amr")
+RAW_FILE_PATH_RE: re.Pattern = _build_raw_path_re(
+    "pdf|docx?|xlsx?|pptx?|zip|rar|txt|md|csv|json|xml|yaml|yml|toml|ini|cfg|log"
 )
 
-
-from .helpers import guess_upload_type  # noqa: F811 — re-export from helpers
 
 
 __all__ = [
     "IMAGE_EXTS",
     "AUDIO_EXTS",
     "VIDEO_EXTS",
-    "IMAGE_EXTENSIONS",
     "ZIP_BEFORE_UPLOAD_EXTS",
     "TEXT_FILE_EXTENSIONS",
     "MEDIA_MSG_TYPES",
@@ -125,5 +82,4 @@ __all__ = [
     "RAW_VIDEO_PATH_RE",
     "RAW_AUDIO_PATH_RE",
     "RAW_FILE_PATH_RE",
-    "guess_upload_type",
 ]

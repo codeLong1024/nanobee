@@ -94,7 +94,7 @@ async def process_video_markers(
                         media_type="image", filename="thumbnail.jpg",
                         content_type="image/jpeg",
                     )
-                duration = await _extract_video_duration(video_path)
+                duration = await _extract_media_duration(video_path)
             except (FileNotFoundError, ImportError):
                 _log.debug("ffmpeg/ffprobe not available, skipping thumbnail/duration for {}", video_path)
             except Exception:
@@ -148,16 +148,16 @@ async def _extract_video_thumbnail(video_path: str | Path) -> Optional[Path]:
     return None
 
 
-async def _extract_video_duration(video_path: str | Path) -> float:
-    """Extract video duration in seconds using ffprobe.
+async def _extract_media_duration(media_path: str | Path) -> float:
+    """使用 ffprobe 提取媒体时长（秒），失败返回 0。
 
-    Requires ``ffprobe`` binary in ``PATH``.  Returns ``0`` on failure.
+    被视频和音频标记处理器共用。
     """
     cmd = [
         "ffprobe", "-v", "quiet",
         "-print_format", "json",
         "-show_format",
-        str(video_path),
+        str(media_path),
     ]
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -242,12 +242,12 @@ async def process_audio_markers(
                 _log.warning("audio marker: upload failed for {}", audio_path)
                 continue
 
-            duration_ms = await _extract_audio_duration(audio_path)
+            duration_sec = await _extract_media_duration(audio_path)
 
             await _send_audio_message(
                 sender, token, chat_id,
                 media_id=media_id,
-                duration=duration_ms,
+                duration=int(duration_sec * 1000),
             )
 
         except (json.JSONDecodeError, KeyError) as e:
@@ -255,31 +255,6 @@ async def process_audio_markers(
             continue
 
     return C.AUDIO_MARKER_RE.sub("", text)
-
-
-async def _extract_audio_duration(audio_path: str | Path) -> int:
-    """Extract audio duration in **milliseconds** using ffprobe.
-
-    Requires ``ffprobe`` binary in ``PATH``.  Returns ``0`` on failure.
-    """
-    cmd = [
-        "ffprobe", "-v", "quiet",
-        "-print_format", "json",
-        "-show_format",
-        str(audio_path),
-    ]
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        stdout, _ = await proc.communicate()
-        info = json.loads(stdout)
-        duration_sec = float(info.get("format", {}).get("duration", 0))
-        return int(duration_sec * 1000)
-    except (FileNotFoundError, json.JSONDecodeError, ValueError, KeyError):
-        return 0
 
 
 async def _send_audio_message(

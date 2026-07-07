@@ -206,9 +206,9 @@ class AgentLoop:
 
         # 上下文级互斥锁：按用户粒度隔离并发
         # 同一 user_id 串行，不同 user_id 并行
-        _max = int(os.environ.get("NANOBEE_MAX_CONCURRENT_REQUESTS", "3"))
+        _max_concurrent = int(os.environ.get("NANOBEE_MAX_CONCURRENT_REQUESTS", "3"))
         from nanobee.kernel.lock_manager import LockManager
-        self._lock_manager = LockManager(max_concurrent=_max)
+        self._lock_manager = LockManager(max_concurrent=_max_concurrent)
 
         # 待处理消息队列（context_id -> asyncio.Queue），AgentLoop 直接持有
         # Kernel.handle_message 和 inject_message 均使用此字典进行中轮注入

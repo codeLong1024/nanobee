@@ -130,5 +130,4 @@ class TestRuntimeContextIntegration:
         assert "Current Time:" in runtime_ctx
 
 
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
+

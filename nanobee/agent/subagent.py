@@ -134,7 +134,7 @@ class SubagentManager:
         self.max_concurrent_subagents = (
             max_concurrent_subagents
             if max_concurrent_subagents is not None
-            else 4  # nanobee 默认最大并发子代理
+            else defaults.max_concurrent_subagents
         )
         self.runner = AgentRunner(provider)
         self._tools_registry = tools_registry if tools_registry is not None else ToolRegistry()
