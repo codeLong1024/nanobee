@@ -712,7 +712,7 @@ class MyDataTool(ToolPlugin):
 
 ## 开发 Memory 插件
 
-框架遵循**框架无知论**——不决定什么值得记、什么时候触发。记忆插件仅作为存储底座，框架在 COMPACT 状态时调用 `store()`，在 BUILD 状态调用 `retrieve()`。
+框架遵循**框架无知论**——不决定什么值得记、什么时候触发。记忆插件仅作为存储底座，框架在 BUILD 状态调用 `retrieve()`。`store()` 由 LLM 通过工具自主触发。
 
 ```python
 from nanobee.plugins.memory import MemoryPlugin
@@ -729,7 +729,7 @@ class MyMemoryPlugin(MemoryPlugin):
     ) -> None:
         """存储/提取记忆。
 
-        在 Agent Loop COMPACT 状态触发。messages 是整个历史消息列表，
+        由 LLM 通过工具自主调用。messages 是整个历史消息列表，
         插件可自行决定哪些内容值得存储。
         """
         # 提取重要的对话内容

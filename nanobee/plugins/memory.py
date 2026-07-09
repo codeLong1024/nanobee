@@ -14,8 +14,8 @@ from nanobee.utils.logger import logger
 class MemoryPlugin(NanobeePlugin):
     """记忆管理底座接口——框架只调用两个方法。
 
-    框架在 COMPACT 状态调用 store() 从消息历史中提取记忆，
-    在 BUILD 状态调用 retrieve() 检索相关记忆注入 System Prompt。
+    框架在 BUILD 状态调用 retrieve() 检索相关记忆注入 System Prompt。
+    store() 由 LLM 通过记忆相关工具自主调用（框架不持有存储时机策略）。
 
     业务策略（什么时候存、存什么、怎么查）由插件的具体实现决定。
     """
@@ -24,7 +24,7 @@ class MemoryPlugin(NanobeePlugin):
 
     @abstractmethod
     async def store(self, messages: list[dict[str, Any]], user_context: Any) -> None:
-        """存储/提取记忆（由 COMPACT 状态触发）。
+        """存储/提取记忆（由 LLM 通过工具自主触发，框架不主动调用）。
 
         Args:
             messages: 当前完整的历史消息列表（含本轮）

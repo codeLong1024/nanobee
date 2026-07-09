@@ -1,6 +1,6 @@
 """Agent Loop - 核心消息调度引擎。
 
-核心保留：TurnState 状态机（RESTORE→COMPACT→COMMAND→BUILD→RUN→SAVE→RESPOND→DONE）、
+核心保留：TurnState 状态机（RESTORE→BUILD→RUN→SAVE→RESPOND→DONE）、
 _process_message 驱动循环、上下文治理、工具执行编排。
 改造点：Session→ContextManager、ContextBuilder→ContextPipeline、
 命令路由移除、进度Hook→EventBus、工具注册走 PluginManager。
@@ -52,7 +52,6 @@ if TYPE_CHECKING:
 class TurnState(Enum):
     """状态机状态枚举。"""
     RESTORE = auto()
-    COMPACT = auto()
     BUILD = auto()
     RUN = auto()
     SAVE = auto()
@@ -131,8 +130,7 @@ class AgentLoop:
 
     # 事件驱动的状态转换表
     _TRANSITIONS: dict[tuple[TurnState, str], TurnState] = {
-        (TurnState.RESTORE, "ok"): TurnState.COMPACT,
-        (TurnState.COMPACT, "ok"): TurnState.BUILD,
+        (TurnState.RESTORE, "ok"): TurnState.BUILD,
         (TurnState.BUILD, "ok"): TurnState.RUN,
         (TurnState.RUN, "ok"): TurnState.SAVE,
         (TurnState.SAVE, "ok"): TurnState.RESPOND,
@@ -1039,36 +1037,24 @@ class AgentLoop:
 
         return "ok"
 
-    async def _state_compact(self, ctx: TurnContext) -> str:
-        """压缩/合并上下文 —— 裁剪过长的会话历史。
-
-        当会话历史超过阈值时，裁剪至最大保留条数，
-        防止历史无限增长导致 JSONL 文件膨胀。
-        """
-        session = self.session_manager.get_or_create(ctx.context_id, ctx.session_id)
-        trim_threshold = int(self._max_messages * 1.5)
-        msg_count = len(session.messages)
-        if msg_count > trim_threshold:
-            session.trim_to_last_n(self._max_messages)
-            self.session_manager.save(session)
-            logger.info(
-                "COMPACT: 裁剪会话历史 %d → %d 条（用户 %s，会话 %s）",
-                msg_count, self._max_messages, ctx.context_id, ctx.session_id,
-            )
-
-        return "ok"
-
     async def _state_build(self, ctx: TurnContext) -> str:
         """构建初始消息列表。"""
         # 从 SessionManager 加载历史
         session = self.session_manager.get_or_create(ctx.context_id, ctx.session_id)
-        ctx.history = session.messages
 
-        # 安全阀：按条数上限暴力截断，防止历史无限增长。
-        # LLM 通过 _memory skill + trim_history 工具自主管理记忆，
-        # 框架不介入"保留哪些、裁多少"的策略决策。
-        if len(ctx.history) > self._max_messages:
-            ctx.history = ctx.history[-self._max_messages:]
+        # 安全阀：当会话历史超限时，硬截断 session 本体并回写。
+        # 这是框架唯一的历史截断保障（机制），不涉及保留策略。
+        # LLM 通过 _memory skill + trim_history/consolidate_history 工具自主管理记忆。
+        msg_count = len(session.messages)
+        if msg_count > self._max_messages:
+            session.messages = session.messages[-self._max_messages:]
+            logger.warning(
+                "BUILD 安全阀：裁剪会话历史 %d → %d 条（用户 %s，会话 %s）",
+                msg_count, len(session.messages), ctx.context_id, ctx.session_id,
+            )
+
+        # ctx.history 必须在截断之后赋值，确保与 session.messages 指向同一 list
+        ctx.history = session.messages
 
         # 注入待处理的子代理结果到历史开头
         pending_results = self._pending_subagent_results.pop(ctx.context_id, [])

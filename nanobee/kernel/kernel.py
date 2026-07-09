@@ -518,6 +518,9 @@ class NanobeeKernel:
         # 取消并等待通道后台任务（3s 超时兜底）
         await self.channel_manager.shutdown()
 
+        # 将缓存中的 session 全部刷入磁盘
+        self.session_manager.flush_all()
+
         # 卸载所有插件
         self.plugin_manager.unload_all()
 
