@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from nanobee.exceptions import SoulViolationError
+from nanobee.events.runtime_events import SoulViolationEvent
 
 from nanobee.utils.logger import logger
 
@@ -144,7 +145,6 @@ class SoulGuard:
                 "content_preview": content[:100],
             })
             # 类型化运行时事件
-            from nanobee.events.runtime_events import SoulViolation as SoulViolationEvent
             await self.kernel.runtime_events.publish(SoulViolationEvent(
                 path=str(path),
                 content_preview=content[:100],

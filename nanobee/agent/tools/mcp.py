@@ -111,7 +111,10 @@ async def _probe_http_url(url: str, timeout: float = 3.0) -> bool:
             asyncio.open_connection(host, port), timeout=timeout,
         )
         writer.close()
-        await writer.wait_closed()
+        # 关闭可能抛出或挂起（尤其是对端已异常断连的 socket），
+        # 用 suppress 包裹并加短超时，避免探测本身破坏事件循环。
+        with suppress(OSError, asyncio.TimeoutError):
+            await asyncio.wait_for(writer.wait_closed(), timeout=0.2)
         return True
     except (OSError, asyncio.TimeoutError):
         return False
@@ -323,7 +326,10 @@ class _MCPWrapperBase(Tool):
             else:
                 return extract_fn(result)
 
-        return f"(MCP {capability_kind} call failed)"  # Unreachable
+        # 不可达：循环体内仅通过 return 退出，此处作为防御性兜底显式抛出
+        raise RuntimeError(
+            f"MCP {capability_kind} '{self._name}' retry loop exited unexpectedly"
+        )
 
 
 class MCPToolWrapper(_MCPWrapperBase):
@@ -609,8 +615,6 @@ async def connect_mcp_servers(
             allow_all_tools = "*" in enabled_tools
             registered_count = 0
             matched_enabled_tools: set[str] = set()
-            available_raw_names = [tool_def.name for tool_def in tools.tools]
-            available_wrapped_names = [_sanitize_name(f"mcp_{name}_{tool_def.name}") for tool_def in tools.tools]
             for tool_def in tools.tools:
                 wrapped_name = _sanitize_name(f"mcp_{name}_{tool_def.name}")
                 if (
@@ -628,23 +632,27 @@ async def connect_mcp_servers(
                 registry.register(wrapper)
                 logger.debug("MCP: registered tool '{}' from server '{}'", wrapper.name, name)
                 registered_count += 1
-                if enabled_tools:
-                    if tool_def.name in enabled_tools:
-                        matched_enabled_tools.add(tool_def.name)
-                    if wrapped_name in enabled_tools:
-                        matched_enabled_tools.add(wrapped_name)
+                if tool_def.name in enabled_tools:
+                    matched_enabled_tools.add(tool_def.name)
+                if wrapped_name in enabled_tools:
+                    matched_enabled_tools.add(wrapped_name)
 
-            if enabled_tools and not allow_all_tools:
-                unmatched_enabled_tools = sorted(enabled_tools - matched_enabled_tools)
-                if unmatched_enabled_tools:
-                    logger.warning(
-                        "MCP server '{}': enabledTools entries not found: {}. Available raw names: {}. "
-                        "Available wrapped names: {}",
-                        name,
-                        ", ".join(unmatched_enabled_tools),
-                        ", ".join(available_raw_names) or "(none)",
-                        ", ".join(available_wrapped_names) or "(none)",
-                    )
+                if enabled_tools and not allow_all_tools:
+                    unmatched_enabled_tools = sorted(enabled_tools - matched_enabled_tools)
+                    if unmatched_enabled_tools:
+                        # 仅在确有未匹配项时才构建可用名列表，避免常态下的无用开销
+                        available_raw_names = [tool_def.name for tool_def in tools.tools]
+                        available_wrapped_names = [
+                            _sanitize_name(f"mcp_{name}_{tool_def.name}") for tool_def in tools.tools
+                        ]
+                        logger.warning(
+                            "MCP server '{}': enabledTools entries not found: {}. Available raw names: {}. "
+                            "Available wrapped names: {}",
+                            name,
+                            ", ".join(unmatched_enabled_tools),
+                            ", ".join(available_raw_names) or "(none)",
+                            ", ".join(available_wrapped_names) or "(none)",
+                        )
 
             try:
                 resources_result = await session.list_resources()

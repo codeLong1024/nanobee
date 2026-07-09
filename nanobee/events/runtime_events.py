@@ -26,7 +26,7 @@ from nanobee.utils.logger import logger
 
 
 @dataclass(frozen=True)
-class SoulViolation:
+class SoulViolationEvent:
     """灵魂文件写入拦截事件。"""
     path: str
     content_preview: str
@@ -39,9 +39,9 @@ class KernelBooted:
 
 
 # 运行时事件联合类型
-RuntimeEvent = SoulViolation | KernelBooted
+RuntimeEvent = SoulViolationEvent | KernelBooted
 RuntimeEventType = (
-    type[SoulViolation]
+    type[SoulViolationEvent]
     | type[KernelBooted]
 )
 
@@ -76,6 +76,8 @@ class RuntimeEventBus:
         Returns:
             取消订阅的函数。
         """
+        if not callable(handler):
+            raise TypeError(f"handler must be callable, got {type(handler).__name__}")
         entry = (event_type, handler)
         self._handlers.append(entry)
 
@@ -112,6 +114,6 @@ class RuntimeEventBus:
 __all__ = [
     "RuntimeEventBus",
     "RuntimeEvent",
-    "SoulViolation",
+    "SoulViolationEvent",
     "KernelBooted",
 ]

@@ -26,7 +26,7 @@
 ```
 用户输入 → ChannelPlugin → CommandRouter(拦截 / 命令) → NanobeeKernel → AgentLoop(状态机)
                                                                              │
-    RESTORE → COMPACT → BUILD(system prompt) → RUN(LLM + 工具迭代) → SAVE → RESPOND
+    RESTORE → BUILD(system prompt) → RUN(LLM + 工具迭代) → SAVE → RESPOND
 ```
 
 - **命令拦截**：`/` 开头的命令（`/stop`/`/new`/`/status`/`/help`）在获取用户锁之前拦截，零 token 消耗，/stop 可打断死锁 turn
