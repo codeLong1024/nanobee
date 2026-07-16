@@ -500,3 +500,73 @@ def test_meta_blocked_identity_yaml(tmp_path: Path):
     from nanobee.exceptions import SandboxViolationError
     with pytest.raises(SandboxViolationError):
         sandbox.resolve_safe("identity.yaml")
+
+
+def test_meta_blocked_only_direct_children(tmp_path: Path):
+    """元数据保护仅拦截上下文根的直接子路径，不误伤嵌套同名目录"""
+    root = tmp_path / "ctx"
+    # 用户数据目录中嵌套的 sessions/ 不应被拦截
+    project_sessions = root / "project" / "sessions"
+    project_sessions.mkdir(parents=True)
+    (project_sessions / "notes.txt").write_text("user data", encoding="utf-8")
+
+    sandbox = ContextSandbox(root)
+
+    # 上下文根的直接子目录 sessions/ → 应拦截
+    from nanobee.exceptions import SandboxViolationError
+    with pytest.raises(SandboxViolationError):
+        sandbox.resolve_safe("sessions/test.jsonl")
+
+    # 用户项目中的 project/sessions/ → 不应拦截
+    resolved = sandbox.resolve_safe("project/sessions/notes.txt")
+    assert resolved == project_sessions / "notes.txt"
+
+
+def test_meta_blocked_nested_identity_not_blocked(tmp_path: Path):
+    """identity.yaml 仅拦截上下文根的直接子文件，项目子目录中的同名文件不拦截"""
+    root = tmp_path / "ctx"
+    config_dir = root / "config"
+    config_dir.mkdir(parents=True)
+    (config_dir / "identity.yaml").write_text("project config", encoding="utf-8")
+
+    sandbox = ContextSandbox(root)
+
+    # 上下文根的直接子文件 identity.yaml → 应拦截
+    from nanobee.exceptions import SandboxViolationError
+    with pytest.raises(SandboxViolationError):
+        sandbox.resolve_safe("identity.yaml")
+
+    # 项目子目录中的 config/identity.yaml → 不应拦截
+    resolved = sandbox.resolve_safe("config/identity.yaml")
+    assert resolved == config_dir / "identity.yaml"
+
+
+def test_tmp_tool_results_not_blocked(tmp_path: Path):
+    """.tmp/tool-results/ 不在保护列表中，LLM 可正常读取持久化的工具结果"""
+    root = tmp_path / "ctx"
+    tool_results_dir = root / ".tmp" / "tool-results" / "user123"
+    tool_results_dir.mkdir(parents=True)
+    result_file = tool_results_dir / "call_abc123.txt"
+    result_file.write_text("tool output content", encoding="utf-8")
+
+    sandbox = ContextSandbox(root)
+
+    # .tmp/tool-results/ 应可正常访问
+    resolved = sandbox.resolve_safe(".tmp/tool-results/user123/call_abc123.txt")
+    assert resolved == result_file
+
+
+def test_meta_blocked_outside_context_not_blocked(tmp_path: Path):
+    """只读根中的 sessions/ 等目录不受元数据保护影响"""
+    ctx_root = tmp_path / "ctx"
+    ctx_root.mkdir(parents=True)
+    ro_root = tmp_path / "readonly"
+    ro_sessions = ro_root / "sessions"
+    ro_sessions.mkdir(parents=True)
+    (ro_sessions / "data.json").write_text("ro data", encoding="utf-8")
+
+    sandbox = ContextSandbox(ctx_root, read_only_roots=[ro_root])
+
+    # 只读根中的 sessions/ 不是上下文根的直接子路径 → 不应拦截
+    resolved = sandbox.resolve_safe(str(ro_sessions / "data.json"))
+    assert resolved == ro_sessions / "data.json"

@@ -50,8 +50,8 @@ async def test_context_isolation(tmp_path):
     assert loaded_b.messages[0]["content"] == "Hello from B"
 
     # 验证 sessions 目录隔离
-    assert (tmp_path / "users" / "user-a" / "sessions" / "dingtalk__chat-a.jsonl").exists()
-    assert (tmp_path / "users" / "user-b" / "sessions" / "dingtalk__chat-b.jsonl").exists()
+    assert (tmp_path / "users" / "user-a" / "sessions" / "dingtalk_chat-a.jsonl").exists()
+    assert (tmp_path / "users" / "user-b" / "sessions" / "dingtalk_chat-b.jsonl").exists()
 
 
 @pytest.mark.asyncio

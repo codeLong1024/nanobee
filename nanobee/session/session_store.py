@@ -9,13 +9,33 @@ from __future__ import annotations
 
 import json
 import os
-import tempfile
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from nanobee.session.session import Session
 from nanobee.utils.logger import logger
+
+# 文件名安全字符正则：匹配所有文件系统非法字符，统一替换为下划线。
+# 包含 Windows (<>:"/\\|?*) 和 Linux (\0/ 中 / 已覆盖)，与 nanobot 上游保持一致。
+_UNSAFE_CHARS = re.compile(r'[<>:"/\\|?*]')
+
+
+def _safe_key(key: str) -> str:
+    """将会话键转为安全的文件名片段，替换所有文件系统非法字符为下划线。
+
+    不可逆：原始 session_id 由文件内元数据行保存，文件名仅用于定位。
+    与 nanobot ``SessionManager.safe_key`` 完全等价。
+
+    Args:
+        key: 原始会话键（如 ``dingtalk:cidpgQM/ul9VXUVO``）。
+
+    Returns:
+        安全文件名片段（如 ``dingtalk_cidpgQM_ul9VXUVO``）。
+    """
+    # 先处理最常见的 : 分隔符，再统一替换其余非法字符
+    return _UNSAFE_CHARS.sub("_", key.replace(":", "_")).strip()
 
 
 class SessionStore:
@@ -39,12 +59,12 @@ class SessionStore:
 
         Args:
             user_id: 用户 ID。
-            session_id: 会话 ID（含冒号）。
+            session_id: 会话 ID（可能含 ``:``、``/`` 等特殊字符）。
 
         Returns:
             文件的绝对路径。
         """
-        safe = session_id.replace(":", "__")
+        safe = _safe_key(session_id)
         return self.sessions_base_dir / user_id / "sessions" / f"{safe}.jsonl"
 
     def _consolidation_path(self, user_id: str, session_id: str) -> Path:
@@ -54,12 +74,12 @@ class SessionStore:
 
         Args:
             user_id: 用户 ID。
-            session_id: 会话 ID（含冒号）。
+            session_id: 会话 ID（可能含 ``:``、``/`` 等特殊字符）。
 
         Returns:
             归档文件的绝对路径。
         """
-        safe = session_id.replace(":", "__")
+        safe = _safe_key(session_id)
         return self.sessions_base_dir / user_id / "sessions" / f"{safe}.consolidation.jsonl"
 
     # ---- 归档 ----
@@ -194,14 +214,11 @@ class SessionStore:
         path = self._session_path(session.user_id, session.session_id)
         path.parent.mkdir(parents=True, exist_ok=True)
 
-        # 写入临时文件后进行原子替换
-        fd, tmp_path = tempfile.mkstemp(
-            suffix=".jsonl.tmp",
-            prefix=f"{session.session_id.replace(':', '_')}_",
-            dir=path.parent,
-        )
+        # 用 with_suffix 生成临时文件路径，代替 tempfile.mkstemp
+        # （mkstemp 的 prefix 参数不允许含 / 或 \\，通道传入的 session_id 可能有这些字符）
+        tmp_path = path.with_suffix(".jsonl.tmp")
         try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
+            with open(tmp_path, "w", encoding="utf-8") as f:
                 # 首行：元数据
                 f.write(json.dumps(session.to_metadata_dict(), ensure_ascii=False) + "\n")
                 # 后续行：消息
@@ -214,10 +231,7 @@ class SessionStore:
             os.replace(tmp_path, path)
         except Exception:
             # 清理临时文件
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
+            tmp_path.unlink(missing_ok=True)
             raise
 
     # ---- 删除 ----
@@ -267,8 +281,10 @@ class SessionStore:
                     continue
                 meta = json.loads(first_line)
                 if meta.get("_type") == "metadata":
-                    # 追加文件名体现的 session_id（兼容元数据行缺失时的兜底）
-                    meta.setdefault("session_id", fpath.stem.replace("__", ":"))
+                    # 优先使用元数据行中的 session_id
+                    if "session_id" not in meta:
+                        # 兜底：从文件名还原（不可逆，只能还原第一个 :）
+                        meta["session_id"] = fpath.stem.replace("_", ":", 1)
                     meta.pop("_type", None)
                     results.append(meta)
             except (OSError, json.JSONDecodeError):
@@ -338,4 +354,5 @@ class SessionStore:
 
 __all__ = [
     "SessionStore",
+    "_safe_key",
 ]
