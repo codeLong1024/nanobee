@@ -1,19 +1,18 @@
 """
-上下文沙箱 — 强制文件操作在用户上下文根目录内执行
+上下文沙箱 — 强制文件操作在用户上下文根目录内执行。
 
-核心功能委托给 security.workspace_policy 中的纯函数，ContextSandbox
-只做轻量根目录持有 + 参数清洗整合 + 元数据文件写保护。
+核心功能：
+- 路径边界校验（委托 security.workspace_policy 纯函数）
+- 多根白名单：writable_root（用户上下文）+ read_only_roots（内置技能等只读资源）
+- 元数据保护：仅拦截上下文根目录的直接子路径（框架自身管理的元数据），
+  不通过全局名称匹配误伤用户数据中的同名文件/目录。
 
-支持多根白名单（read only roots），LLM 可读不可写，用于读取内置技能等只读资源。
+受保护的路径（相对于上下文根）：
+- identity.yaml / default.jsonl — 用户配置文件
+- .history/ — 会话历史目录
+- sessions/ — 会话 JSONL 文件（SessionManager 托管）
 
-受保护的元数据文件（_META_BLOCKED_FILES）：
-- identity.yaml：用户身份配置，LLM 不可修改
-- default.jsonl：会话历史（已在 .history/ 下保护）
-
-受保护的目录（_META_BLOCKED_DIRS）：
-- .history/：所有会话历史文件
-- .tmp/：插件临时文件
-- sessions/：会话 JSONL 文件（SessionManager 托管，LLM 不可读写删）
+注意：.tmp/ 不在保护列表中，其下 tool-results/ 由框架持久化工具结果供 LLM 读取。
 """
 
 from __future__ import annotations
@@ -24,45 +23,25 @@ from typing import Any
 from nanobee.exceptions import SandboxViolationError
 from nanobee.security.workspace_policy import is_path_allowed, require_path_within
 
-from nanobee.utils.logger import logger
 
-
-# 元数据文件写保护 — LLM 不可读/写/删这些文件
+# 元数据保护：仅拦截上下文根的直接子路径（详见 _check_blocked）
 _META_BLOCKED_FILES: frozenset[str] = frozenset({
     "identity.yaml",
     "default.jsonl",
 })
 
-# 隐藏目录写保护 — 整个目录不可访问
 _META_BLOCKED_DIRS: frozenset[str] = frozenset({
     ".history",
-    ".tmp",
     "sessions",
 })
-
-
+# .tmp 不在保护列表中：其下 tool-results/ 由框架持久化供 LLM 读取
 
 
 class ContextSandbox:
-    """上下文沙箱 — 强制文件操作在 user context 内执行
+    """上下文沙箱 — 强制文件操作在 user context 内执行。
 
-    底层使用 security.workspace_policy 纯函数：
-    - require_path_within: 路径边界校验
-    - is_path_allowed: 多根路径允许判断
-
-    支持读写根 + 只读根白名单：
-    - writable_root：用户上下文根，可读写（== context_root）
-    - read_only_roots：只读根列表，可读不可写（如内置技能目录）
-
-    prefix_map：前缀 → 回退目录映射。
-    "用户目录没找到，回退到内置目录"的 overlay 语义，
-    曾分散在 tool_fs 插件的 _overlay_dirs 中，现统一到沙箱层。
-
-    同时包含元数据文件/目录写保护：
-    - identity.yaml：用户配置，LLM 不可修改
-    - .history/ 下的所有文件：会话历史，LLM 不可修改
-    - .tmp/ 下的所有文件：插件临时文件，LLM 不可修改
-    - sessions/ 下的所有文件：会话 JSONL，LLM 不可修改（SessionManager 托管）
+    路径边界校验 + 多根白名单 + prefix_map overlay + 元数据保护。
+    详见模块文档和 _check_blocked()。
 
     单用户模式下可设为 None（不启用沙箱）。
     """
@@ -335,33 +314,41 @@ class ContextSandbox:
         self._check_blocked(p)
         require_path_within(str(p), self._context_root, message="写入路径断言失败")
 
-    @staticmethod
-    def _check_blocked(path: Path | str) -> None:
-        """检查路径是否指向受保护的元数据文件或隐藏目录
+    def _check_blocked(self, path: Path | str) -> None:
+        """检查路径是否指向上下文根目录下的框架元数据。
+
+        仅保护上下文根的直接子路径，不通过名称全局匹配误伤用户数据。
 
         Args:
             path: 待检查的路径
 
         Raises:
-            SandboxViolationError: 路径指向受保护的元数据文件或隐藏目录
+            SandboxViolationError: 路径指向上下文根下的受保护元数据
         """
-        p = Path(path)
-        # 检查文件名黑名单
-        if p.name in _META_BLOCKED_FILES:
+        p = Path(path).resolve()
+        ctx_root = self._context_root.resolve()
+
+        # 计算相对于上下文根的路径；不在上下文根下则不拦截
+        try:
+            rel = p.relative_to(ctx_root)
+        except ValueError:
+            return
+
+        # 文件级：只拦截上下文根下的直接子文件
+        if len(rel.parts) == 1 and rel.name in _META_BLOCKED_FILES:
             raise SandboxViolationError(
-                path=str(p.resolve()),
-                context_root="",
-                detail=f"元数据文件受保护，禁止访问: {p.name}",
+                path=str(p),
+                context_root=str(ctx_root),
+                detail=f"元数据文件受保护，禁止访问: {rel.name}",
             )
-        # 检查路径中是否包含受保护的隐藏目录
-        resolved_parts = p.resolve().parts
-        for part in resolved_parts:
-            if part in _META_BLOCKED_DIRS:
-                raise SandboxViolationError(
-                    path=str(p.resolve()),
-                    context_root="",
-                    detail=f"隐藏目录受保护，禁止访问: {part}",
-                )
+
+        # 目录级：只拦截上下文根的直接子目录
+        if rel.parts and rel.parts[0] in _META_BLOCKED_DIRS:
+            raise SandboxViolationError(
+                path=str(p),
+                context_root=str(ctx_root),
+                detail=f"框架管理目录受保护，禁止访问: {rel.parts[0]}",
+            )
 
     def __repr__(self) -> str:
         parts = [f"ContextSandbox(writable={self._context_root}"]

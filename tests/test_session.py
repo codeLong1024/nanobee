@@ -13,7 +13,7 @@ from pathlib import Path
 
 from nanobee.session.session import Session
 from nanobee.session.session_manager import SessionManager
-from nanobee.session.session_store import SessionStore
+from nanobee.session.session_store import SessionStore, _safe_key
 
 
 # =============================================================================
@@ -153,10 +153,10 @@ class TestSessionStore:
         s = Session(session_id="s1", user_id="u1")
         store.save(s)
 
-        # 检查没有临时文件
+        # 临时文件 after os.replace 应已被删除
         session_dir = store._session_path("u1", "s1").parent
         tmps = [f for f in os.listdir(session_dir) if f.endswith(".tmp")]
-        assert tmps == []
+        assert tmps == [], f"临时文件残留: {tmps}"
 
     def test_repair_corrupted(self, tmp_path: Path) -> None:
         """损坏的 JSONL（含无效行）能自动修复。"""
@@ -189,6 +189,150 @@ class TestSessionStore:
         assert loaded is not None
         # 修复后应包含至少那条消息
         assert len(loaded.messages) >= 1
+
+    # ---- 路径安全：session_id 含文件系统特殊字符 ----
+
+    def test_slash_in_session_id(self, tmp_path: Path) -> None:
+        """session_id 含 /（钉钉群聊 openConversationId）时能正常读写。"""
+        store = SessionStore(tmp_path / "users")
+        sid = "dingtalk:cidpgQM/ul9VXUVO"
+        s = Session(session_id=sid, user_id="wangkuang")
+        s.add_message("user", "群聊消息")
+        store.save(s)
+
+        loaded = store.load("wangkuang", sid)
+        assert loaded is not None
+        assert loaded.session_id == sid
+        assert loaded.messages[0]["content"] == "群聊消息"
+
+        # 文件名不含 /（/ 被替换为 _）
+        path = store._session_path("wangkuang", sid)
+        assert "/" not in path.name
+        assert path.name == "dingtalk_cidpgQM_ul9VXUVO.jsonl"
+
+    def test_backslash_in_session_id(self, tmp_path: Path) -> None:
+        """session_id 含反斜杠时能正常读写。"""
+        store = SessionStore(tmp_path / "users")
+        sid = "evil\\path"
+        s = Session(session_id=sid, user_id="u1")
+        s.add_message("user", "msg")
+        store.save(s)
+
+        loaded = store.load("u1", sid)
+        assert loaded is not None
+        assert loaded.session_id == sid
+        # 文件名不含 \\
+        path = store._session_path("u1", sid)
+        assert "\\" not in path.name
+
+    def test_windows_unsafe_chars_in_session_id(self, tmp_path: Path) -> None:
+        """session_id 含 Windows 非法字符 <>:\"|?* 时全部替换为 _。"""
+        store = SessionStore(tmp_path / "users")
+        sid = 'test:<A>"B"|C?D*E'
+        s = Session(session_id=sid, user_id="u1")
+        s.add_message("user", "win-unsafe")
+        store.save(s)
+
+        loaded = store.load("u1", sid)
+        assert loaded is not None
+        assert loaded.session_id == sid
+
+        # 文件名不含任何非法字符
+        path = store._session_path("u1", sid)
+        for ch in '<>:"/\\|?*':
+            assert ch not in path.name, f"文件名含非法字符 '{ch}': {path.name}"
+
+    def test_dotdot_in_session_id(self, tmp_path: Path) -> None:
+        """session_id 含 .. 不能产生路径遍历。"""
+        store = SessionStore(tmp_path / "users")
+        sid = "evil..traversal"
+        s = Session(session_id=sid, user_id="u1")
+        s.add_message("user", "msg")
+        store.save(s)
+
+        loaded = store.load("u1", sid)
+        assert loaded is not None
+
+        path = store._session_path("u1", sid)
+        # 确保文件写在 sessions_dir 内，而非被 .. 带偏
+        assert str(store.sessions_base_dir) in str(path.resolve())
+
+    def test_delete_slash_session(self, tmp_path: Path) -> None:
+        """含 / 的 session 能正常删除。"""
+        store = SessionStore(tmp_path / "users")
+        sid = "dingtalk:cidXXX/yyy"
+        s = Session(session_id=sid, user_id="u1")
+        store.save(s)
+        assert store.load("u1", sid) is not None
+        assert store.delete("u1", sid) is True
+        assert store.load("u1", sid) is None
+
+    def test_list_sessions_with_slash(self, tmp_path: Path) -> None:
+        """含 / 的 session 在 list_sessions 中能正确还原 session_id（从元数据）。"""
+        store = SessionStore(tmp_path / "users")
+        sid = "dingtalk:cidAAA/bbb"
+        s = Session(session_id=sid, user_id="u1")
+        s.add_message("user", "msg")
+        store.save(s)
+
+        summaries = store.list_sessions("u1")
+        assert len(summaries) >= 1
+        found = [s for s in summaries if s["session_id"] == sid]
+        assert len(found) == 1, f"未在 list_sessions 中找到 {sid}，结果: {summaries}"
+
+    def test_consolidation_with_slash(self, tmp_path: Path) -> None:
+        """含 / 的 session 能正常写入 consolidation 归档。"""
+        store = SessionStore(tmp_path / "users")
+        sid = "dingtalk:cidZZZ/abc"
+        store.append_consolidation("u1", sid, "summary text", 5)
+
+        path = store._consolidation_path("u1", sid)
+        assert path.exists()
+        assert "/" not in path.name
+
+
+# =============================================================================
+# _safe_key 函数单元测试
+# =============================================================================
+
+
+class TestSafeKey:
+    """_safe_key 路径安全函数单元测试。"""
+
+    def test_colon_and_slash(self) -> None:
+        """冒号 + 斜杠场景（钉钉群聊典型输入）。"""
+        assert _safe_key("dingtalk:cidpgQM/ul9VXUVO") == "dingtalk_cidpgQM_ul9VXUVO"
+
+    def test_backslash(self) -> None:
+        """反斜杠替换为下划线。"""
+        assert _safe_key("test\\path") == "test_path"
+
+    def test_angle_brackets(self) -> None:
+        """尖括号替换为下划线。"""
+        assert _safe_key("<angle>") == "_angle_"
+
+    def test_double_quote(self) -> None:
+        """双引号替换为下划线。"""
+        assert _safe_key('quote"mark') == "quote_mark"
+
+    def test_pipe_question_asterisk(self) -> None:
+        """管道符、问号、星号替换为下划线。"""
+        result = _safe_key("a|b?c*d")
+        assert result == "a_b_c_d"
+        for ch in "|?*":
+            assert ch not in result
+
+    def test_plain_id(self) -> None:
+        """无特殊字符时原样返回。"""
+        assert _safe_key("plain_id") == "plain_id"
+
+    def test_cli_direct(self) -> None:
+        """CLI 通道格式 cya:direct → cya_direct。"""
+        assert _safe_key("cya:direct") == "cya_direct"
+
+    def test_strip_whitespace(self) -> None:
+        """首尾空白被去除。"""
+        assert _safe_key("  spaced  ") == "spaced"
 
 
 # =============================================================================

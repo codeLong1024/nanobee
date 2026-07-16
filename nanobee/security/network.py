@@ -9,7 +9,7 @@ import ipaddress
 import re
 import socket
 from contextlib import suppress
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 _BLOCKED_NETWORKS = [
     ipaddress.ip_network("0.0.0.0/8"),
@@ -53,6 +53,135 @@ def configure_ssrf_whitelist(cidrs: list[str]) -> None:
         with suppress(ValueError):
             nets.append(ipaddress.ip_network(cidr, strict=False))
     _allowed_networks = nets
+
+
+def _normalize_hostname(hostname: str) -> str:
+    """归一化主机名：URL 解码 + IP 格式标准化，防御 SSRF 绕过。
+
+    处理以下绕过技术：
+    1. URL 编码: ``%2e`` -> ``.``, ``%30`` -> ``0``
+    2. 双重/多重编码: ``%252e`` -> ``%2e`` -> ``.``
+    3. 十六进制 IP: ``0x7f000001``, ``0x7f.0x0.0x0.0x1``
+    4. 八进制 IP: ``0177.0.0.1``, ``0o177.0o0.0o0.0o1``
+    5. 十进制整数 IP: ``2130706433``
+    6. 前导零八进制歧义: ``010.0.0.01``（某些解析器按八进制处理）
+
+    Args:
+        hostname: 原始主机名字符串
+
+    Returns:
+        归一化后的主机名（IP 地址转为标准点分十进制或 IPv6 格式）
+    """
+    # 第一步：循环 URL 解码（最多 5 层防止 %252525... 无限嵌套）
+    decoded = hostname
+    for _ in range(5):
+        prev = decoded
+        decoded = unquote(decoded)
+        if decoded == prev:
+            break
+    hostname = decoded
+
+    # 第二步：尝试将各种 IP 格式归一化为标准点分十进制
+    normalized = _try_normalize_ip(hostname)
+    if normalized is not None:
+        return str(normalized)
+
+    return hostname
+
+
+# 匹配非标准 IP 格式的字符串（排除纯十进制点分格式——由 ip_address() 快速路径处理）。
+# 第三分支检测逻辑：点分形式中至少有一段含非十进制标记（0x 前缀 / 前导零八进制 / a-f 字符）。
+_HEX_OCT_INT_IP_RE = re.compile(
+    r"^(?:"
+    # 纯十六进制: 0x7f000001 或 0X7F000001
+    r"0[xX][0-9a-fA-F]+"
+    r"|"
+    # 点分非标格式：每段可包含 0-9/a-f/x/X，且整体含非纯十进制标记。
+    # 排除 "192.168.1.1" 这类标准 IPv4（由快速路径处理），匹配 "0x7f.0.0.0x1"、"0177.0.0.1" 等。
+    r"(?:(?:0[xX]|0[0-7])[0-9a-fA-F]*|[0-9a-fA-F]*[a-fA-FxX])[0-9a-fA-F]*(?:\.[0-9a-fA-FxX]+){3}"
+    r"|"
+    # 纯数字（可能是大整数 IP）: 范围 [1000000, 4294967295]
+    # 下界：避免误匹配短数字 ID（如邮编 100000）；上界：IPv4 最大值 4294967295（10 位）
+    r"\d{7,10}"
+    r")$"
+)
+
+
+def _try_normalize_ip(hostname: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    """尝试将各种非标准 IP 格式归一化为标准格式。
+
+    Returns:
+        标准化的 IP 地址对象，若 hostname 不是 IP 则返回 None
+    """
+    stripped = hostname.strip()
+
+    # 快速路径：已经是标准 IPv4/IPv6 点分格式
+    with suppress(ValueError):
+        return ipaddress.ip_address(stripped)
+
+    # 非标准 IP 格式检测
+    if not _HEX_OCT_INT_IP_RE.match(stripped):
+        return None
+
+    # 尝试逐段归一化（支持混合十六/八/十进制）
+    if "." in stripped:
+        parts = stripped.split(".")
+        if len(parts) != 4:
+            return None
+        try:
+            octets = [_parse_ip_octet(p.strip()) for p in parts]
+            if any(o is None for o in octets):
+                return None
+            # IPv4Address 不接受 tuple，需转为整数（大端序 4 字节）
+            return ipaddress.IPv4Address(int.from_bytes(bytes(octets), "big"))
+        except (ValueError, OverflowError):
+            return None
+
+    # 纯整数或纯十六进制
+    try:
+        # 先试十六进制
+        if stripped.lower().startswith("0x"):
+            value = int(stripped, 16)
+        else:
+            value = int(stripped)
+        # 转换为 32 位无符号整数后构造 IPv4Address
+        return ipaddress.IPv4Address(value & 0xFFFFFFFF)
+    except (ValueError, OverflowError):
+        return None
+
+
+def _parse_ip_octet(part: str) -> int | None:
+    """解析单个 IP 段，支持十进制、八进制、十六进制。
+
+    解析优先级（按前缀匹配）：
+    1. ``0x`` / ``0X`` 前缀 → 十六进制
+    2. 以 ``0`` 开头且所有字符在 ``0-7`` 内 → 八进制
+       （设计决策：与 Python 2 的 ``int("010")`` 行为一致，将 ``010``
+        解释为八进制 8 而非十进制 10。这比某些旧 DNS 解析器更严格，
+        但对 SSRF 防护而言宁可误判也不放过。）
+    3. 其他 → 十进制
+
+    Args:
+        part: 单个 IP 段字符串
+
+    Returns:
+        0-255 范围内的整数，若格式无效或超出范围则返回 None
+    """
+    part_lower = part.lower()
+    try:
+        if part_lower.startswith("0x"):
+            val = int(part_lower, 16)
+        elif part.startswith("0") and len(part) > 1 and all(c in "01234567" for c in part):
+            # 以 0 开头且全是 0-7 → 八进制
+            val = int(part, 8)
+        else:
+            val = int(part, 10)
+        # 有效范围 0-255
+        if 0 <= val <= 255:
+            return val
+        return None
+    except (ValueError, OverflowError):
+        return None
 
 
 def _normalize_addr(
@@ -104,6 +233,9 @@ def validate_url_target(url: str, *, allow_loopback: bool = False) -> tuple[bool
     if not hostname:
         return False, "缺少主机名"
 
+    # 归一化：URL 解码 + 非标准 IP 格式标准化（防御 SSRF 绕过）
+    hostname = _normalize_hostname(hostname)
+
     try:
         infos = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
     except socket.gaierror:
@@ -139,6 +271,9 @@ def validate_resolved_url(url: str) -> tuple[bool, str]:
     hostname = p.hostname
     if not hostname:
         return True, ""
+
+    # 归一化：URL 解码 + 非标准 IP 格式标准化（防御 SSRF 绕过）
+    hostname = _normalize_hostname(hostname)
 
     try:
         addr = ipaddress.ip_address(hostname)
@@ -204,4 +339,5 @@ __all__ = [
     "contains_internal_url",
     "_is_private",
     "_normalize_addr",
+    "_normalize_hostname",
 ]

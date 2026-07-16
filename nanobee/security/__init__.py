@@ -11,6 +11,7 @@ from nanobee.security.network import (
     SSRF_BOUNDARY_NOTE,
     _is_private,
     _normalize_addr,
+    _normalize_hostname,
     configure_ssrf_whitelist,
     contains_internal_url,
     validate_resolved_url,
@@ -33,6 +34,7 @@ __all__ = [
     "contains_internal_url",
     "_is_private",
     "_normalize_addr",
+    "_normalize_hostname",
     # workspace_policy
     "WORKSPACE_BOUNDARY_NOTE",
     "resolve_path",
