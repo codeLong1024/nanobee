@@ -446,3 +446,229 @@ def test_bwrap_actually_isolates(tmp_path: Path):
     output = asyncio.run(_run())
     # 应该无法读取 secret.txt（被 tmpfs 遮掩）
     assert "confidential" not in output
+
+
+# ====== extra_env / --setenv 测试 ======
+
+
+def test_bwrap_extra_env_adds_setenv(tmp_path: Path):
+    """extra_env={"KEY": "val"} → bwrap 参数包含 --setenv KEY val。
+    值作为 bwrap 命令行参数存在于返回字符串中（ps 可见），本机制仅保证
+    密钥不进入 LLM 视角的 command 字段。"""
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    wrapped = wrap_command(
+        "bwrap", "echo hello", str(ws), str(ws),
+        extra_env={"TIANYANCHA_TOKEN": "sk-test123"},
+    )
+    assert "--setenv" in wrapped
+    assert "TIANYANCHA_TOKEN" in wrapped
+    assert "sk-test123" in wrapped
+    # --setenv 必须在 -- 之前（bwrap 语法要求）
+    dash_dash_idx = wrapped.index(" -- ")
+    setenv_idx = wrapped.index("--setenv")
+    assert setenv_idx < dash_dash_idx
+    # LLM 原始 command 不含密钥（密钥仅存在于 -- 之前的 bwrap 参数段）
+    _cmd_after_dd = wrapped.split(" -- ", 1)[1]
+    assert "sk-test123" not in _cmd_after_dd
+
+
+def test_bwrap_extra_env_none_no_setenv(tmp_path: Path):
+    """extra_env=None → 不添加 --setenv"""
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    wrapped = wrap_command(
+        "bwrap", "echo hello", str(ws), str(ws),
+        extra_env=None,
+    )
+    assert "--setenv" not in wrapped
+
+
+def test_bwrap_extra_env_empty_no_setenv(tmp_path: Path):
+    """extra_env={} → 不添加 --setenv"""
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    wrapped = wrap_command(
+        "bwrap", "echo hello", str(ws), str(ws),
+        extra_env={},
+    )
+    assert "--setenv" not in wrapped
+
+
+def test_bwrap_extra_env_multiple_keys(tmp_path: Path):
+    """多条 extra_env → 多条 --setenv"""
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    wrapped = wrap_command(
+        "bwrap", "echo hello", str(ws), str(ws),
+        extra_env={"TOKEN_A": "val_a", "TOKEN_B": "val_b"},
+    )
+    assert wrapped.count("--setenv") == 2
+    assert "TOKEN_A" in wrapped
+    assert "val_a" in wrapped
+    assert "TOKEN_B" in wrapped
+    assert "val_b" in wrapped
+
+
+def test_bwrap_extra_env_preserves_other_args(tmp_path: Path):
+    """extra_env 不影响其他 bwrap 参数"""
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    wrapped = wrap_command(
+        "bwrap", "echo hello", str(ws), str(ws),
+        extra_env={"KEY": "val"},
+    )
+    assert wrapped.startswith("bwrap ")
+    assert "--new-session" in wrapped
+    assert "--die-with-parent" in wrapped
+    assert f"--bind {ws}" in wrapped or f"--bind {ws}/" in wrapped
+    assert "echo hello" in wrapped
+    assert "--chdir" in wrapped
+
+
+def test_wrap_command_passes_extra_env_to_backend(tmp_path: Path):
+    """wrap_command 将 extra_env 正确传递给后端函数"""
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    wrapped = wrap_command(
+        "bwrap", "echo test", str(ws), str(ws),
+        extra_env={"SECRET_KEY": "secret_value"},
+    )
+    # 值作为 bwrap --setenv 参数出现在命令字符串中（ps 可见）
+    assert "SECRET_KEY" in wrapped
+    assert "secret_value" in wrapped
+
+
+# ====== plugin.py secrets 配置测试 ======
+
+
+def test_secrets_config_injected_as_extra_env(plugin: ToolShellPlugin, tmp_path: Path):
+    """plugins.tool_shell.secrets 配置 → extra_env 传入 wrap_command"""
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    ws_inner = ws / "sub"
+    ws_inner.mkdir()
+
+    with patch.object(
+        plugin, "get_config",
+        side_effect=lambda key, default=None: {
+            "sandbox": "bwrap",
+            "env": {},
+            "secrets": {"TIANYANCHA_TOKEN": "sk-mock-token"},
+            "extra_mounts": [],
+        }.get(key, default),
+    ), patch(
+        "nanobee.builtin.tool_shell.plugin.current_process_workspace",
+        return_value=ws,
+    ), patch(
+        "nanobee.builtin.tool_shell.plugin.current_bwrap_ro_bind",
+        return_value=[],
+    ), patch(
+        "nanobee.builtin.tool_shell.plugin.current_bwrap_rw_bind",
+        return_value=[],
+    ):
+        wrapped = plugin._wrap_sandbox("echo hello", str(ws))
+        # secrets 通过 --setenv 注入（值在 bwrap 参数中，ps 可见，但不进入 LLM command）
+        assert "export " not in wrapped
+        assert "--setenv" in wrapped
+        assert "TIANYANCHA_TOKEN" in wrapped
+
+
+def test_env_config_uses_setenv_not_export(plugin: ToolShellPlugin, tmp_path: Path):
+    """env 配置通过 --setenv 注入，不使用 export 前缀（方案 A：env + secrets 统一走 --setenv）"""
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+
+    with patch.object(
+        plugin, "get_config",
+        side_effect=lambda key, default=None: {
+            "sandbox": "bwrap",
+            "env": {"PYTHONPATH": "/custom/path"},
+            "secrets": {},
+            "extra_mounts": [],
+        }.get(key, default),
+    ), patch(
+        "nanobee.builtin.tool_shell.plugin.current_process_workspace",
+        return_value=ws,
+    ), patch(
+        "nanobee.builtin.tool_shell.plugin.current_bwrap_ro_bind",
+        return_value=[],
+    ), patch(
+        "nanobee.builtin.tool_shell.plugin.current_bwrap_rw_bind",
+        return_value=[],
+    ):
+        wrapped = plugin._wrap_sandbox("echo hello", str(ws))
+        # env 值应通过 --setenv 注入
+        assert "--setenv PYTHONPATH" in wrapped
+        assert "/custom/path" in wrapped
+        # 不应通过 export 前缀注入
+        assert "export PYTHONPATH" not in wrapped
+
+
+def test_env_excludes_secrets_keys(plugin: ToolShellPlugin, tmp_path: Path):
+    """env 和 secrets 有同名 key 时，secrets 值优先，全部通过 --setenv 注入"""
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+
+    with patch.object(
+        plugin, "get_config",
+        side_effect=lambda key, default=None: {
+            "sandbox": "bwrap",
+            "env": {"TIANYANCHA_TOKEN": "visible-in-export", "PYTHONPATH": "/x"},
+            "secrets": {"TIANYANCHA_TOKEN": "sk-safe-token"},
+            "extra_mounts": [],
+        }.get(key, default),
+    ), patch(
+        "nanobee.builtin.tool_shell.plugin.current_process_workspace",
+        return_value=ws,
+    ), patch(
+        "nanobee.builtin.tool_shell.plugin.current_bwrap_ro_bind",
+        return_value=[],
+    ), patch(
+        "nanobee.builtin.tool_shell.plugin.current_bwrap_rw_bind",
+        return_value=[],
+    ):
+        wrapped = plugin._wrap_sandbox("echo hello", str(ws))
+        # 不应有任何 export 前缀
+        assert "export " not in wrapped
+        # TIANYANCHA_TOKEN 使用 secrets 值，不用 env 值
+        assert "sk-safe-token" in wrapped
+        assert "visible-in-export" not in wrapped
+        # PYTHONPATH 也通过 --setenv 注入
+        assert "--setenv PYTHONPATH" in wrapped
+        assert "--setenv TIANYANCHA_TOKEN" in wrapped
+
+
+def test_secrets_no_sandbox_not_injected(plugin: ToolShellPlugin):
+    """未配置 sandbox 时，secrets 不会注入（命令不经过 bwrap 包裹）"""
+    with patch.object(
+        plugin, "get_config",
+        side_effect=lambda key, default=None: {
+            "sandbox": "",
+            "secrets": {"TOKEN": "sk-test"},
+        }.get(key, default),
+    ):
+        # 传入的必须是绝对路径，插件直接使用不做重解析
+        result = plugin._wrap_sandbox("echo hello", "/tmp")
+        assert result == "echo hello"
+        assert "TOKEN" not in result
+
+
+def test_env_path_prefix_appends_system_paths(plugin: ToolShellPlugin):
+    """env PATH 作为前缀，框架自动追加最小系统路径确保 execvp 能搜索 sh"""
+    with patch.object(
+        plugin, "get_config",
+        side_effect=lambda key, default=None: {
+            "sandbox": "bwrap",
+            "env": {"PATH": "/custom/bin"},
+            "secrets": {},
+        }.get(key, default),
+    ), patch("nanobee.builtin.tool_shell.plugin.current_process_workspace",
+            return_value=Path("/tmp/ws")):
+        result = plugin._wrap_sandbox("echo hello", "/tmp/ws")
+        # --setenv PATH 的值应包含用户前缀 + 系统路径
+        setenv_idx = result.index("--setenv")
+        after_setenv = result[setenv_idx:]
+        assert "/custom/bin:/usr/local/bin:/usr/bin:/bin" in after_setenv
+        # 不应包含字面量 $PATH
+        assert "$PATH" not in result

@@ -10,6 +10,7 @@ mount namespace 内执行，防止通过子进程绕过工具层的 ContextSandb
 
 from __future__ import annotations
 
+import re
 import shlex
 from pathlib import Path
 from typing import Callable
@@ -43,6 +44,7 @@ def _bwrap(
     cwd: str,
     extra_ro_bind: list[str] | None = None,
     extra_rw_bind: list[str] | None = None,
+    extra_env: dict[str, str] | None = None,
 ) -> str:
     """使用 bubblewrap 包裹命令（需要系统安装 bwrap）。
 
@@ -57,6 +59,11 @@ def _bwrap(
             - 纯路径: ``"/real/path"`` → 绑定到相同路径
             - source:target: ``"/real/path:/sandbox/path"`` → 绑定到容器内非 HOME 路径
         extra_rw_bind: 额外可读写挂载列表（纯路径）
+        extra_env: 额外环境变量字典，通过 bwrap --setenv 注入。
+            安全边界：密钥不会出现在 LLM 可见的 command 字段（LLM 只看到原始
+            命令，看不到框架注入的 bwrap 参数）；但 --setenv 的值作为 bwrap
+            命令行参数，对同主机能执行 ps 的用户可见。如需完全隐藏，应改用
+            subprocess env= 传递（当前架构返回命令字符串，无法实现）。
 
     Returns:
         包裹后的 bwrap 命令字符串
@@ -122,6 +129,13 @@ def _bwrap(
         _ensure_parent_dirs(args, resolved, home)
         args += ["--bind", resolved, resolved]
 
+    # ── 环境变量注入（通过 bwrap --setenv，不出现在命令字符串中） ──
+    # PATH 语义：用户配的是前缀，框架自动追加最小系统路径确保 execvp 能搜索 sh 等命令
+    for k, v in (extra_env or {}).items():
+        if k == "PATH":
+            v = f"{v}:/usr/local/bin:/usr/bin:/bin"
+        args += ["--setenv", str(k), str(v)]
+
     args += [
         "--chdir", sandbox_cwd,
         "--", "sh", "-c", command,
@@ -131,7 +145,7 @@ def _bwrap(
 
 # 后端注册表：名称 → (可调用, 依赖检查函数)
 # 依赖检查函数返回 (available: bool, error_msg: str | None)
-# 后端函数签名: (command, workspace, cwd, extra_ro_bind=None) → str
+# 后端函数签名: (command, workspace, cwd, extra_ro_bind=None, extra_rw_bind=None, extra_env=None) → str
 _BACKENDS: dict[str, tuple[Callable[..., str], Callable[[], tuple[bool, str | None]]]] = {
     "bwrap": (
         _bwrap,
@@ -157,6 +171,7 @@ def wrap_command(
     cwd: str,
     extra_ro_bind: list[str] | None = None,
     extra_rw_bind: list[str] | None = None,
+    extra_env: dict[str, str] | None = None,
 ) -> str:
     """使用命名沙箱后端包裹命令。
 
@@ -167,6 +182,8 @@ def wrap_command(
         cwd: 当前工作目录
         extra_ro_bind: 额外只读挂载路径列表（启用的实例技能目录）
         extra_rw_bind: 额外可读写挂载路径列表（用户 skills_dir）
+        extra_env: 额外环境变量字典，通过 bwrap --setenv 注入。
+            值作为 bwrap 命令行参数对 ps 可见，但不进入 LLM 的 command 字段。
 
     Returns:
         包裹后的命令字符串
@@ -186,8 +203,15 @@ def wrap_command(
     if not available:
         raise RuntimeError(error_msg)
 
-    result = backend_fn(command, workspace, cwd, extra_ro_bind=extra_ro_bind, extra_rw_bind=extra_rw_bind)
-    logger.debug("沙箱包裹命令 (backend={}): {}", sandbox, result[:200])
+    result = backend_fn(
+        command, workspace, cwd,
+        extra_ro_bind=extra_ro_bind,
+        extra_rw_bind=extra_rw_bind,
+        extra_env=extra_env,
+    )
+    # 脱敏 --setenv 值后再记日志，避免密钥明文落入 debug 日志
+    _safe_log = re.sub(r"(--setenv\s+\S+)\s+\S+", r"\1 ***", result)[:200]
+    logger.debug("沙箱包裹命令 (backend={}): {}", sandbox, _safe_log)
     return result
 
 
