@@ -502,6 +502,7 @@ class ToolShellPlugin(ToolPlugin):
             return command
 
         try:
+            original_command = command  # 兜底：沙箱失败时返回原始命令
             process_workspace = current_process_workspace()
             ws = str(process_workspace) if process_workspace else cwd
             extra_ro_bind = list(current_bwrap_ro_bind() or [])
@@ -514,8 +515,6 @@ class ToolShellPlugin(ToolPlugin):
                 for ro_root in sandbox_ctx.read_only_roots:
                     extra_ro_bind.append(str(ro_root))
 
-            original_command = command
-
             # 配置声明的额外只读挂载（source:target 格式，如 venv 或 SDK 目录）
             # 由部署方在 nanobee.yaml plugins.tool_shell.extra_mounts 中指定
             extra_mounts = self.get_config("extra_mounts", [])
@@ -523,21 +522,33 @@ class ToolShellPlugin(ToolPlugin):
                 extra_ro_bind.extend(extra_mounts)
                 logger.info("沙箱额外挂载: {}", extra_mounts)
 
-            # 配置声明的环境变量注入（部署方通过 plugins.tool_shell.env 指定）
-            # 注意：必须用 export 而非 KEY=val cmd 前置，否则 env var 只作用于第一个命令
-            # （如 "PYTHONPATH=/x cd dir && python3 ..." 中 python3 拿不到 PYTHONPATH）
+            # env + secrets 统一通过 bwrap --setenv 注入
+            # 部署方在 nanobee.yaml plugins.tool_shell.env / .secrets 中配置
+            # env: 非敏感环境变量（如 PYTHONPATH），日志记录 key 列表
+            # secrets: 敏感环境变量（如 API Token），日志只记录数量
+            # 安全边界：值不进入 LLM 的 command 字段，但作为 bwrap 参数对 ps 可见
+            # 同名 key 时 secrets 值优先（更安全的配置段胜出）
+            extra_env: dict[str, str] = {}
             env_overrides = self.get_config("env", {})
             if isinstance(env_overrides, dict) and env_overrides:
-                set_env = "; ".join(
-                    f"export {k}={v}" for k, v in env_overrides.items()
-                )
-                command = f"{set_env}; {command}"
-                logger.info("沙箱环境变量注入: {}", env_overrides)
+                extra_env.update(env_overrides)
+                logger.info("沙箱环境变量注入: {}", list(env_overrides.keys()))
+            secrets = self.get_config("secrets", {})
+            if isinstance(secrets, dict) and secrets:
+                _dup = set(extra_env) & set(secrets)
+                if _dup:
+                    logger.warning(
+                        "env 与 secrets 存在同名 key，secrets 值优先: {}",
+                        sorted(_dup),
+                    )
+                extra_env.update(secrets)  # secrets 覆盖 env 同名 key
+                logger.info("沙箱密钥变量注入 ({} 项)", len(secrets))
 
             wrapped = _wrap_sandbox_command(
                 sandbox_backend, command, ws, cwd,
                 extra_ro_bind=extra_ro_bind,
                 extra_rw_bind=extra_rw_bind,
+                extra_env=extra_env or None,
             )
             logger.info("命令已通过沙箱 '{}' 包裹 (ws={})", sandbox_backend, ws)
             return wrapped

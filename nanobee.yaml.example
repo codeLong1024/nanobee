@@ -196,8 +196,17 @@ channels:
 #     # 额外只读挂载（source:target 格式，可选）
 #     # extra_mounts:
 #     #   - "/path/to/venv:/sandbox_venv"
-#     # env:
-#     #   PYTHONPATH: "/sandbox_venv/lib/python3.11/site-packages"
+    #     # 环境变量（通过 bwrap --setenv 注入，不进入 LLM 的 command 字段）：
+    #     # 注意：值作为 bwrap 命令行参数，对同主机能执行 ps 的用户可见。
+    #     # PATH 语义：配的是前缀，框架自动追加 /usr/local/bin:/usr/bin:/bin
+    #     # 请勿使用 $PATH 引用，配置文件不经过 shell 展开。
+    #     # env:
+    #     #   PYTHONPATH: "/sandbox_venv/lib/python3.11/site-packages"
+    #     #   PATH: "/sandbox_venv/bin"
+#     #
+#     # 密钥类环境变量（同 env 机制，日志只记数量不记 key；ps 同样可见）：
+#     # secrets:
+#     #   TIANYANCHA_TOKEN: "your-api-token-here"
 #
 # 仅当实例插件不在默认的 <data_dir>/plugins/ 时，才需要配置 plugin_dirs：
 # plugin_dirs:
