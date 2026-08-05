@@ -13,6 +13,14 @@ Use the `cron` tool to schedule reminders or recurring tasks.
 2. **Task** - message is a task description, agent executes and sends result
 3. **One-time** - runs once at a specific time, then auto-deletes
 
+## Minimum Interval (Safety)
+
+Recurring (`every_seconds`) and `at` schedules have a hard safety floor:
+`every_seconds` must be **at least 30** (30 seconds), and one-time `at`
+times must be **at least 30 seconds in the future**. Frequencies below this
+are rejected by the system. Prefer comfortable intervals like **60+ seconds**
+or longer for recurring tasks.
+
 ## Examples
 
 Fixed reminder:
@@ -22,7 +30,7 @@ cron(action="add", message="Time to take a break!", every_seconds=1200)
 
 Dynamic task (agent executes each time):
 ```
-cron(action="add", message="Check HKUDS/nanobot GitHub stars and report", every_seconds=600)
+cron(action="add", message="Check server disk usage and report", every_seconds=600)
 ```
 
 One-time scheduled task (compute ISO datetime from current time):

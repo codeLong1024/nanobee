@@ -36,6 +36,11 @@ def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
+# 硬编码安全红线：任何调度距下次触发不得低于该间隔（毫秒）。
+# 属安全兜底而非业务参数，刻意不做配置化——被刷屏时无法改配置，必须程序兜底。
+_HARD_MIN_INTERVAL_MS = 30_000  # 30 秒
+
+
 def _compute_next_run(schedule: CronSchedule, now_ms: int) -> int | None:
     """计算下次运行时间（毫秒时间戳）。"""
     if schedule.kind == "at":
@@ -65,7 +70,7 @@ def _compute_next_run(schedule: CronSchedule, now_ms: int) -> int | None:
 
 
 def _validate_schedule_for_add(schedule: CronSchedule) -> None:
-    """校验新增任务调度参数。"""
+    """校验新增任务调度参数，不满足任一安全不变量则抛出 ValueError。"""
     if schedule.tz and schedule.kind != "cron":
         raise ValueError("tz can only be used with cron schedules")
 
@@ -76,6 +81,30 @@ def _validate_schedule_for_add(schedule: CronSchedule) -> None:
             ZoneInfo(schedule.tz)
         except (KeyError, ValueError):
             raise ValueError(f"unknown timezone '{schedule.tz}'") from None
+
+    # —— 安全不变量：距下次触发不得低于硬编码红线 ——
+    now_ms = _now_ms()
+    if schedule.kind == "every":
+        if schedule.every_ms is None or schedule.every_ms <= 0:
+            raise ValueError("every schedule requires a positive every_ms")
+        if schedule.every_ms < _HARD_MIN_INTERVAL_MS:
+            raise ValueError(
+                f"every interval {schedule.every_ms}ms is below the hard minimum "
+                f"{_HARD_MIN_INTERVAL_MS}ms"
+            )
+    elif schedule.kind == "at":
+        if schedule.at_ms is not None and schedule.at_ms - now_ms < _HARD_MIN_INTERVAL_MS:
+            raise ValueError(
+                f"one-time at schedule fires too soon; must be at least "
+                f"{_HARD_MIN_INTERVAL_MS}ms from now"
+            )
+    elif schedule.kind == "cron" and schedule.expr:
+        next_ms = _compute_next_run(schedule, now_ms)
+        if next_ms is not None and next_ms - now_ms < _HARD_MIN_INTERVAL_MS:
+            raise ValueError(
+                f"cron schedule fires too soon; next occurrence must be at least "
+                f"{_HARD_MIN_INTERVAL_MS}ms from now"
+            )
 
 
 class CronService:
@@ -464,6 +493,7 @@ class CronService:
 
     def register_system_job(self, job: CronJob) -> CronJob:
         """注册系统内部任务（重启时幂等）。"""
+        _validate_schedule_for_add(job.schedule)  # 系统任务同样守门
         store = self._load_store()
         now = _now_ms()
         job.state = CronJobState(next_run_at_ms=_compute_next_run(job.schedule, now))
