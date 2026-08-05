@@ -150,8 +150,8 @@ class ToolCronPlugin(ToolPlugin):
                             },
                             "every_seconds": {
                                 "type": "integer",
-                                "description": "Interval in seconds (for recurring tasks). Minimum: 1.",
-                                "minimum": 1,
+                                "description": "Interval in seconds for recurring tasks. Minimum: 30.",
+                                "minimum": 30,
                             },
                             "cron_expr": {
                                 "type": "string",
@@ -310,18 +310,26 @@ class ToolCronPlugin(ToolPlugin):
         else:
             return "错误：需要 every_seconds、cron_expr 或 at 之一"
 
-        job = cron.add_job(
-            name=name,
-            schedule=schedule,
-            message=message,
-            deliver=bool(deliver),
-            channel=channel,
-            to=chat_id,
-            delete_after_run=delete_after,
-            channel_meta=context_metadata or {},
-            session_key=session_key or None,
-            user_id=user_id or None,
-        )
+        try:
+            job = cron.add_job(
+                name=name,
+                schedule=schedule,
+                message=message,
+                deliver=bool(deliver),
+                channel=channel,
+                to=chat_id,
+                delete_after_run=delete_after,
+                channel_meta=context_metadata or {},
+                session_key=session_key or None,
+                user_id=user_id or None,
+            )
+        except ValueError as e:
+            # ValueError 只可能来自安全不变量校验（如间隔低于硬编码红线）
+            return (
+                f"错误：{e}\n"
+                "这是系统的安全下限保护。请将 every_seconds 调大（建议至少 60 秒），"
+                "或把 cron_expr / at 改到更远的未来后重试。"
+            )
         return f"已创建任务 '{job.name}' (id: {job.id})"
 
     def _format_timing(self, schedule: CronSchedule) -> str:
