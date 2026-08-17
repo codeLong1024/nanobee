@@ -440,12 +440,14 @@ class ToolCronPlugin(ToolPlugin):
             # 所有 cron 任务统一交给 LLM 处理（作为 agent 内部指令，可调用 skill），
             # 并把执行结果投递回创建任务的原始会话，让用户收到 LLM 的回复。
             channel, chat_id = self._delivery_target(job) or ("cli", "direct")
-            context_id = job.payload.user_id or chat_id or "cron"
+            # 用户隔离键 = 创建任务的用户（job.payload.user_id，创建时来自 rctx.context_id）。
+            # 缺失时（系统级任务，如 dream）兜底为 "system"，避免所有 cron 共享一个隔离目录。
+            sender_id = job.payload.user_id or "system"
             result = await self.kernel.handle_message(
                 message=job.payload.message,
-                context_id=context_id,
+                context_id=chat_id,
                 channel=channel,
-                sender_id="system",
+                sender_id=sender_id,
             )
             content_text = result.content if result else ""
 

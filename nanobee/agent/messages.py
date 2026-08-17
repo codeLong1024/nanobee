@@ -23,7 +23,10 @@ class InboundMessage:
 
     @property
     def context_id(self) -> str:
-        """获取上下文 ID（用户 ID）。
+        """获取用户上下文隔离键（决定 UserContext 目录归属）。
+
+        注意：此属性与 ``handle_message`` 的 ``context_id`` 参数同名但不同义——
+        参数只落到 ``chat_id`` 槽位，不参与隔离；真正的隔离键是本属性。
 
         优先级:
         1. context_id_override 显式指定

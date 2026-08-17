@@ -209,13 +209,16 @@ class NanobeeKernel:
 
         Args:
             message: 用户消息文本
-            context_id: 上下文 ID（通常为用户 ID）
+            context_id: 会话/聊天标识，仅作为消息的 chat_id 槽位使用
+                （用于 runtime context 展示、session_id 派生与消息路由）。
+                注意：它不直接决定用户隔离键；用户上下文目录由 sender_id
+                （经 InboundMessage.context_id 属性解析）决定。语义上等价于 chat_id。
             channel: 来源通道名（如 channel_dingtalk），默认 "direct"
             media: 媒体附件路径列表（图片、文件等）
             on_stream: 每段文本增量回调，签名 async (delta: str) -> None
             on_stream_end: 流结束回调，签名 async (*, resuming: bool) -> None
             on_progress: 进度回调，签名 async (delta, *, tool_hint, tool_events) -> None
-            sender_id: 发送者 ID，作为 context 目录标识
+            sender_id: 发送者 ID，作为用户上下文（context 目录）隔离标识
             session_id: 会话 ID（格式 channel:chat_id，None 时自动派生）
             metadata: 通道特定的元数据（如 sender_staff_id、sender_name 等）
 
