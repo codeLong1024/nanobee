@@ -204,7 +204,7 @@ class ToolCronPlugin(ToolPlugin):
                 cron=cron,
                 channel=rctx.channel,
                 chat_id=rctx.chat_id,
-                context_metadata={} if rctx.context_id else {},
+                context_metadata={},
                 session_key=rctx.session_id,
                 user_id=rctx.context_id,
                 **kwargs,
