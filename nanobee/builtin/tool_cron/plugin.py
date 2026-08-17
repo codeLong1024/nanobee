@@ -424,8 +424,11 @@ class ToolCronPlugin(ToolPlugin):
     async def _on_job_execute(self, job: CronJob) -> str | None:
         """Cron 任务触发时的回调：通过 Agent Loop 执行任务消息。
 
-        如果 job.payload.deliver 为 True，通过 event_bus 发布出站消息，
-        由通道插件订阅后投递给用户，不经过 LLM 处理，避免递归。
+        两种执行路径：
+        - deliver=True：直接发布出站消息，由通道订阅后投递给用户，
+          不经过 LLM 处理，避免递归（固定文案）。
+        - deliver=False：通过 handle_message 交给 LLM 处理（可调用 skill），
+          并把执行结果投递回创建任务的原始会话，让用户收到 LLM 的回复。
 
         Args:
             job: 触发执行的任务
@@ -447,32 +450,68 @@ class ToolCronPlugin(ToolPlugin):
             if job.payload.deliver:
                 content_text = job.payload.message
                 logger.info("Cron: 任务 {} 交付用户（跳过 LLM）", job.id)
-
-                channel = job.payload.channel or "cli"
-                chat_id = job.payload.to or "direct"
-                # 剥离通道前缀（如 "dingtalk:<userid>" → 纯 userid，避免 API 格式错误）
-                if ":" in chat_id:
-                    chat_id = chat_id.split(":", 1)[-1]
-
-                if self.kernel.event_bus:
-                    await self.kernel.agent_loop.event_bus.publish("agent.outbound", {
-                        "channel": channel,
-                        "chat_id": chat_id,
-                        "content": content_text,
-                        "metadata": job.payload.channel_meta or {},
-                    })
+                await self._deliver(job, content_text)
                 return content_text
 
-            # deliver=False 的任务：交给 LLM 处理（作为 agent 内部指令）
-            context_id = job.payload.user_id or job.payload.to or "cron"
+            # deliver=False 的任务：交给 LLM 处理（作为 agent 内部指令，可调用 skill），
+            # 并把执行结果投递回创建任务的原始会话，让用户收到 LLM 的回复。
+            channel, chat_id = self._delivery_target(job) or ("cli", "direct")
+            context_id = job.payload.user_id or chat_id or "cron"
             result = await self.kernel.handle_message(
                 message=job.payload.message,
                 context_id=context_id,
+                channel=channel,
                 sender_id="system",
             )
             content_text = result.content if result else ""
+
+            await self._deliver(job, content_text)
 
             return content_text
         except Exception:
             logger.exception("Cron: 任务 {} 执行异常", job.id)
             return None
+
+    @staticmethod
+    def _delivery_target(job: CronJob) -> tuple[str, str] | None:
+        """解析任务的投递目标 ``(channel, chat_id)``。
+
+        任务必须带有效投递目标（channel 与 to 均非空）才可投递；
+        否则返回 None，表示不向任何通道投递出站消息。
+
+        Args:
+            job: 触发执行的任务
+
+        Returns:
+            ``(channel, chat_id)`` 元组；无有效投递目标时返回 None
+        """
+        if not job.payload.channel or not job.payload.to:
+            return None
+        chat_id = job.payload.to
+        # 剥离通道前缀（如 "dingtalk:<userid>" → 纯 userid，避免 API 格式错误）
+        if ":" in chat_id:
+            chat_id = chat_id.split(":", 1)[-1]
+        return job.payload.channel, chat_id
+
+    async def _deliver(self, job: CronJob, content: str) -> None:
+        """通过 agent.outbound 事件投递内容到任务的原会话。
+
+        复用 agent.outbound 事件机制，由通道插件订阅后投递给用户。
+        内容为空或无有效投递目标时不投递，避免无效出站消息。
+
+        Args:
+            job: 触发执行的任务
+            content: 要投递的消息内容
+        """
+        if not content or not self.kernel or not self.kernel.event_bus:
+            return
+        target = self._delivery_target(job)
+        if target is None:
+            return
+        channel, chat_id = target
+        await self.kernel.agent_loop.event_bus.publish("agent.outbound", {
+            "channel": channel,
+            "chat_id": chat_id,
+            "content": content,
+            "metadata": job.payload.channel_meta or {},
+        })
