@@ -146,7 +146,7 @@ class ToolCronPlugin(ToolPlugin):
                             },
                             "message": {
                                 "type": "string",
-                                "description": "REQUIRED when action='add'. Instruction for the agent to execute when the job triggers (e.g., 'Send a reminder to WeChat' or 'Check system status and report'). Not used for action='list' or action='remove'.",
+                                "description": "REQUIRED when action='add'. Instruction for the agent to execute when the job triggers (e.g., 'Check system status and report' or 'Send a daily standup summary'). The agent will execute this via LLM and reply to the user. Not used for action='list' or action='remove'.",
                             },
                             "every_seconds": {
                                 "type": "integer",
@@ -164,10 +164,6 @@ class ToolCronPlugin(ToolPlugin):
                             "at": {
                                 "type": "string",
                                 "description": "ISO datetime for one-time execution (e.g. '2026-02-12T10:30:00'). Naive values use the tool's default timezone. To specify a different timezone, include offset (e.g. '2026-02-12T10:30:00+08:00').",
-                            },
-                            "deliver": {
-                                "type": "boolean",
-                                "description": "Whether to deliver the execution result to the user channel (default true).",
                             },
                             "job_id": {
                                 "type": "string",
@@ -279,7 +275,6 @@ class ToolCronPlugin(ToolPlugin):
         cron_expr = kwargs.get("cron_expr")
         tz = kwargs.get("tz")
         at = kwargs.get("at")
-        deliver = kwargs.get("deliver", True)
 
         if tz and not cron_expr:
             return "错误：tz 参数只能与 cron_expr 一起使用"
@@ -315,7 +310,6 @@ class ToolCronPlugin(ToolPlugin):
                 name=name,
                 schedule=schedule,
                 message=message,
-                deliver=bool(deliver),
                 channel=channel,
                 to=chat_id,
                 delete_after_run=delete_after,
@@ -424,11 +418,8 @@ class ToolCronPlugin(ToolPlugin):
     async def _on_job_execute(self, job: CronJob) -> str | None:
         """Cron 任务触发时的回调：通过 Agent Loop 执行任务消息。
 
-        两种执行路径：
-        - deliver=True：直接发布出站消息，由通道订阅后投递给用户，
-          不经过 LLM 处理，避免递归（固定文案）。
-        - deliver=False：通过 handle_message 交给 LLM 处理（可调用 skill），
-          并把执行结果投递回创建任务的原始会话，让用户收到 LLM 的回复。
+        所有 cron 任务统一通过 handle_message 交给 LLM 处理（可调用 skill），
+        并把执行结果投递回创建任务的原始会话，让用户收到 LLM 的回复。
 
         Args:
             job: 触发执行的任务
@@ -446,14 +437,7 @@ class ToolCronPlugin(ToolPlugin):
 
         logger.info("Cron: 触发任务 {}, 消息: {}", job.id, job.payload.message[:100])
         try:
-            # deliver=True 的任务：直接投递给用户，不经过 LLM 处理，避免递归
-            if job.payload.deliver:
-                content_text = job.payload.message
-                logger.info("Cron: 任务 {} 交付用户（跳过 LLM）", job.id)
-                await self._deliver(job, content_text)
-                return content_text
-
-            # deliver=False 的任务：交给 LLM 处理（作为 agent 内部指令，可调用 skill），
+            # 所有 cron 任务统一交给 LLM 处理（作为 agent 内部指令，可调用 skill），
             # 并把执行结果投递回创建任务的原始会话，让用户收到 LLM 的回复。
             channel, chat_id = self._delivery_target(job) or ("cli", "direct")
             context_id = job.payload.user_id or chat_id or "cron"
