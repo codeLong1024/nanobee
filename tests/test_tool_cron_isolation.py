@@ -6,7 +6,7 @@
 
 import json
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -178,3 +178,79 @@ class TestCronStoreFileIsolation:
             data = json.loads(f.read_text(encoding="utf-8"))
             assert "jobs" in data
             assert len(data["jobs"]) == 1
+
+
+class TestJobExecuteIsolation:
+    """Cron 任务执行时的用户隔离键测试。
+
+    验证 _on_job_execute 调用 handle_message 时：
+    - sender_id = job.payload.user_id（创建任务的用户，作为真正的用户隔离键）
+    - context_id = 投递目标 chat_id
+    - user_id 缺失时 sender_id 兜底为 "system"
+    """
+
+    @staticmethod
+    def _make_job(user_id: str | None) -> "CronJob":
+        from nanobee.builtin.tool_cron.types import CronJob, CronPayload, CronSchedule
+
+        return CronJob(
+            id="job_1",
+            name="test_job",
+            schedule=CronSchedule(kind="every", every_ms=60_000),
+            payload=CronPayload(
+                message="执行测试任务",
+                channel="dingtalk",
+                to="user_a",
+                user_id=user_id,
+            ),
+        )
+
+    @staticmethod
+    def _make_plugin(tmp_path: Path) -> "ToolCronPlugin":
+        """构造带可用 kernel/agent_loop/event_bus 的插件实例。"""
+        plugin = ToolCronPlugin(PluginMetadata(name="tool_cron", plugin_type="tool"))
+
+        kernel = MagicMock()
+        kernel.data_dir = str(tmp_path)
+        kernel.agent_loop = MagicMock()
+        kernel.event_bus = AsyncMock()
+        kernel.agent_loop.event_bus = AsyncMock()
+        kernel.handle_message = AsyncMock(
+            return_value=MagicMock(content="任务已执行")
+        )
+
+        plugin.initialize(kernel)
+        plugin._default_timezone = "UTC"
+        return plugin
+
+    @pytest.mark.asyncio
+    async def test_execute_uses_user_id_as_sender(self, tmp_path: Path) -> None:
+        """有 user_id 时，sender_id 应为该用户（用户隔离键）。"""
+        plugin = self._make_plugin(tmp_path)
+        job = self._make_job(user_id="user_bob")
+
+        result = await plugin._on_job_execute(job)
+
+        assert result == "任务已执行"
+        plugin.kernel.handle_message.assert_awaited_once_with(
+            message="执行测试任务",
+            context_id="user_a",
+            channel="dingtalk",
+            sender_id="user_bob",
+        )
+
+    @pytest.mark.asyncio
+    async def test_execute_falls_back_to_system_sender(self, tmp_path: Path) -> None:
+        """user_id 缺失时（系统级任务），sender_id 兜底为 system。"""
+        plugin = self._make_plugin(tmp_path)
+        job = self._make_job(user_id=None)
+
+        result = await plugin._on_job_execute(job)
+
+        assert result == "任务已执行"
+        plugin.kernel.handle_message.assert_awaited_once_with(
+            message="执行测试任务",
+            context_id="user_a",
+            channel="dingtalk",
+            sender_id="system",
+        )
