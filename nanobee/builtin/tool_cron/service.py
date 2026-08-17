@@ -13,7 +13,6 @@ import os
 import time
 import uuid
 from contextlib import suppress
-from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Coroutine, Literal
