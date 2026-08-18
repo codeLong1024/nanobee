@@ -436,7 +436,7 @@ full_inject: false   # true=全量注入 body, false=仅注入元数据
 
 ### 查看已安装技能
 
-使用 `list_skills` 工具查看框架发现的所有技能（含来源标注 `[builtin]` / `[user]`）。
+框架构建 system prompt 时会将所有技能元数据（含来源标注 `[builtin]` / `[user]`）注入到 LLM 上下文的 `## 技能` 段，无需调用工具即可感知可用技能。
 
 ## 设计哲学
 

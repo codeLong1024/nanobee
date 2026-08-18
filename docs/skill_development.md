@@ -252,7 +252,7 @@ nanobee/skills/git-helper/  → 不创建（同名时双方都显示，标注来
 ### 缓存机制
 
 - `SkillsLoader` 维护 2 秒 TTL 的文件系统缓存
-- 用户修改技能文件后，通过 `list_skills` 工具触发 `invalidate_cache()`
+- 用户修改技能文件后，缓存会基于 mtime 自动失效，也可通过 `invalidate_cache()` 手动刷新
 - `_memory` 技能的缓存修改通过内置的 CacheConflictCheck hook 自动刷新
 
 ---
@@ -268,24 +268,20 @@ nanobee/skills/git-helper/  → 不创建（同名时双方都显示，标注来
 
 ## 查看已安装技能
 
-LLM 可通过 `list_skills` 工具查看框架发现的所有技能，框架 LLM 在其 system prompt 构建前也会将技能元数据注入，格式如下：
+框架在构建 system prompt 前，会将所有技能元数据（name + description + 来源 + 文件路径）注入到 LLM 上下文的 `## 技能` 段，格式如下：
 
 ```markdown
-## Skills
+## 技能
 
-### git-log-analyzer
-- **name**: git-log-analyzer
-- **description**: 分析 git 提交历史并生成周报
-- **source**: [user]
-- **author**: @team-lead
-- **path**: skills/git-log-analyzer/SKILL.md
+<skill name="git-log-analyzer" source="user" author="@team-lead" file=".../skills/git-log-analyzer/SKILL.md">
+**描述**: 分析 git 提交历史并生成周报
+**文件**: `.../skills/git-log-analyzer/SKILL.md`
+</skill>
 
-### _memory
-- **name**: _memory
-- **description**: 长期记忆管理策略
-- **source**: [builtin]
-- **full_inject**: true
-- **path**: skills/_memory/SKILL.md
+<skill name="_memory" source="builtin" full_inject="true" file=".../skills/_memory/SKILL.md">
+**描述**: 长期记忆管理策略
+**文件**: `.../skills/_memory/SKILL.md`
+</skill>
 ```
 
 LLM 看到元数据后，自主决定是否通过 `write_file` 读取正文。

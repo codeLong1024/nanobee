@@ -448,6 +448,9 @@ class ToolCronPlugin(ToolPlugin):
                 context_id=chat_id,
                 channel=channel,
                 sender_id=sender_id,
+                # cron 定时触发是无上下文场景，使用 fresh_session 隔离空会话，
+                # 避免拉取该用户历史对话（token 浪费 + 上下文污染），turn 结束后自动回收。
+                fresh_session=True,
             )
             content_text = result.content if result else ""
 
