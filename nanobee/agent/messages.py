@@ -20,6 +20,11 @@ class InboundMessage:
     metadata: dict[str, Any] = field(default_factory=dict)
     context_id_override: str | None = None
     session_id_override: str | None = None
+    # 声明式机制标记：为 True 时本次 turn 不加载该用户历史，
+    # 改用独立隔离空会话（一次性，turn 结束即回收）。典型场景如
+    # cron 定时触发等无上下文的任务；调用方按需自行声明，框架只读
+    # 此标记决定是否加载历史，不关心"为何声明"（框架无知论）。
+    fresh_session: bool = False
 
     @property
     def context_id(self) -> str:

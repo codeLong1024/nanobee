@@ -176,8 +176,7 @@ class SkillsLoader:
         """列出所有用户技能（skills 目录下的技能）。
 
         与 scan_context_skills 的区别：此方法列出用户全局 skills 目录下的技能，
-        用于技能管理（如 /list_skills 工具），而 scan_context_skills 按用户上下文
-        目录加载，用于 Agent 运行时注入。
+        而 scan_context_skills 按用户上下文目录加载，用于 Agent 运行时注入。
         """
         if not self._user_dir:
             return []

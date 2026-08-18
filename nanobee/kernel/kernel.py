@@ -199,6 +199,7 @@ class NanobeeKernel:
         sender_id: str = "user",
         session_id: str | None = None,
         metadata: dict[str, Any] | None = None,
+        fresh_session: bool = False,
     ) -> OutboundMessage | None:
         """处理用户消息。
 
@@ -221,6 +222,8 @@ class NanobeeKernel:
             sender_id: 发送者 ID，作为用户上下文（context 目录）隔离标识
             session_id: 会话 ID（格式 channel:chat_id，None 时自动派生）
             metadata: 通道特定的元数据（如 sender_staff_id、sender_name 等）
+            fresh_session: 声明式机制标记，True 时本次 turn 不加载该用户历史，
+                改用独立隔离空会话（如 cron 定时触发等无上下文场景）
 
         Returns:
             Agent 回复（含可能的媒体附件路径）
@@ -231,7 +234,7 @@ class NanobeeKernel:
             message, context_id, channel=channel, media=media,
             extra_hook=hook, on_progress=on_progress,
             sender_id=sender_id, session_id=session_id,
-            metadata=metadata,
+            metadata=metadata, fresh_session=fresh_session,
         )
 
     async def _handle_message_impl(
@@ -246,6 +249,7 @@ class NanobeeKernel:
         sender_id: str = "user",
         session_id: str | None = None,
         metadata: dict[str, Any] | None = None,
+        fresh_session: bool = False,
     ) -> OutboundMessage | None:
         """处理用户消息的公共实现。
 
@@ -262,6 +266,8 @@ class NanobeeKernel:
             extra_hook: 可选的流式 Hook，桥接到 AgentLoop 的流式系统
             sender_id: 发送者 ID，作为 context 目录标识
             metadata: 通道特定的元数据（如 sender_staff_id、sender_name 等）
+            fresh_session: 声明式机制标记，True 时本次 turn 不加载该用户历史，
+                改用独立隔离空会话（如 cron 定时触发等无上下文场景）
 
         Returns:
             Agent 回复（OutboundMessage，含 .content 和 .media）
@@ -288,6 +294,7 @@ class NanobeeKernel:
             media=media or [],
             session_id_override=session_id,
             metadata=metadata or {},
+            fresh_session=fresh_session,
         )
 
         # ── 命令拦截（锁之前，零 token 消耗） ──

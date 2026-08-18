@@ -46,7 +46,6 @@ if TYPE_CHECKING:
     from nanobee.kernel.context_pipeline import ContextPipeline
     from nanobee.events.event_bus import EventBus
     from nanobee.kernel.plugin_manager import PluginManager
-    from nanobee.kernel.skill_manager import SkillsLoader
 
 
 class TurnState(Enum):
@@ -218,7 +217,6 @@ class AgentLoop:
         # 先注册工具到 self.tools（注册顺序无关，self.tools 是同一个对象引用）
         self._register_message_tool()
         self.register_plugin_tools()
-        self._register_skill_tools()
 
         # 初始化 SubagentManager（在工具注册之后，确保 tools_registry 已填充）
         self._subagent_manager = self._build_subagent_manager()
@@ -439,19 +437,6 @@ class AgentLoop:
         # 为沙箱注入 overlay 回退配置（skills/ → builtin skills）
         # 注：overlay 现已由 ContextSandbox.prefix_map 统一管理，
         # 在 _build_sandbox() 中构造时传入。
-
-    def _register_skill_tools(self) -> None:
-        """注册技能管理工具（不依赖插件系统，直接操作 SKILL.md）。
-
-        这些工具让用户通过对话创建/编辑/删除自己的技能。
-        使用 kernel.skill_manager 统一实例，避免路径分裂。
-        """
-        if self.skill_manager is None:
-            return
-        skill_loader: SkillsLoader = self.skill_manager
-        from nanobee.agent.tools.skill_manager import ListSkillsTool
-        self.tools.register(ListSkillsTool(skill_loader))
-        logger.info("技能管理工具已注册")
 
     def _register_subagent_tools(self) -> None:
         """注册 subagent 相关工具给 LLM。"""
@@ -1039,8 +1024,8 @@ class AgentLoop:
 
     async def _state_build(self, ctx: TurnContext) -> str:
         """构建初始消息列表。"""
-        # 从 SessionManager 加载历史
-        session = self.session_manager.get_or_create(ctx.context_id, ctx.session_id)
+        # 从 SessionManager 加载历史（fresh_session 时走隔离空会话）
+        session = self.session_manager.get_or_create(ctx.context_id, self._resolve_session_id(ctx))
 
         # 安全阀：当会话历史超限时，硬截断 session 本体并回写。
         # 这是框架唯一的历史截断保障（机制），不涉及保留策略。
@@ -1068,12 +1053,33 @@ class AgentLoop:
         # 持久化用户消息到 session
         current_content = ctx.msg.content
         if current_content and current_content.strip():
-            session = self.session_manager.get_or_create(ctx.context_id, ctx.session_id)
+            session = self.session_manager.get_or_create(ctx.context_id, self._resolve_session_id(ctx))
             session.add_message("user", current_content)
             self.session_manager.save(session)
             ctx.user_persisted_early = True
 
         return "ok"
+
+    # 隔离会话命名空间前缀（机制保留名，避免与 channel:chat_id 派生值冲突）
+    _FRESH_SESSION_PREFIX = "__fresh__:"
+
+    def _resolve_session_id(self, ctx: TurnContext) -> str:
+        """解析本次 turn 实际使用的会话 ID。
+
+        声明式无历史机制：当 ``ctx.msg.fresh_session`` 为 True 时，
+        返回独立隔离空会话 ID（不加载该用户历史），否则返回原会话 ID。
+        框架只读标记，不关心调用方为何声明（框架无知论）。
+        turn_id 后缀保证每次触发都是全新空会话，绝不残留上次执行的对话。
+
+        Args:
+            ctx: 当前 turn 上下文
+
+        Returns:
+            实际使用的会话 ID
+        """
+        if ctx.msg.fresh_session:
+            return f"{self._FRESH_SESSION_PREFIX}{ctx.session_id}:{ctx.turn_id}"
+        return ctx.session_id
 
     async def _build_sandbox(self, user_id: str) -> Any | None:
         """根据用户上下文构建沙箱（含只读根白名单 + prefix_map 回退）"""
@@ -1237,19 +1243,27 @@ class AgentLoop:
         ctx.turn_latency_ms = max(0, int((time.time() - ctx.turn_wall_started_at) * 1000))
 
         # 保存 assistant 消息到 session
-        session = self.session_manager.get_or_create(ctx.context_id, ctx.session_id)
-        if ctx.final_content and ctx.final_content != EMPTY_FINAL_RESPONSE_MESSAGE:
-            session.add_message("assistant", ctx.final_content)
-            self.session_manager.save(session)
+        # fresh_session 是一次性隔离会话：turn 结束后必须立即回收，
+        # 防止 cron 长期运行累积 __fresh__:* 孤儿会话（JSONL 文件 + _cache 膨胀）。
+        # 用 try/finally 保证回收：即使 save 或后续事件发布抛异常，fresh 会话也不残留。
+        resolved_session_id = self._resolve_session_id(ctx)
+        session = self.session_manager.get_or_create(ctx.context_id, resolved_session_id)
+        try:
+            if ctx.final_content and ctx.final_content != EMPTY_FINAL_RESPONSE_MESSAGE:
+                session.add_message("assistant", ctx.final_content)
+                self.session_manager.save(session)
 
-        # 发射保存事件
-        if self.event_bus:
-            await self.event_bus.publish("agent.turn_saved", {
-                "context_id": ctx.context_id,
-                "turn_id": ctx.turn_id,
-                "latency_ms": ctx.turn_latency_ms,
-                "tools_used": ctx.tools_used,
-            })
+            # 发射保存事件
+            if self.event_bus:
+                await self.event_bus.publish("agent.turn_saved", {
+                    "context_id": ctx.context_id,
+                    "turn_id": ctx.turn_id,
+                    "latency_ms": ctx.turn_latency_ms,
+                    "tools_used": ctx.tools_used,
+                })
+        finally:
+            if ctx.msg.fresh_session:
+                self.session_manager.delete(ctx.context_id, resolved_session_id)
 
         return "ok"
 

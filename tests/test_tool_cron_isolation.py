@@ -237,6 +237,7 @@ class TestJobExecuteIsolation:
             context_id="user_a",
             channel="dingtalk",
             sender_id="user_bob",
+            fresh_session=True,
         )
 
     @pytest.mark.asyncio
@@ -253,4 +254,5 @@ class TestJobExecuteIsolation:
             context_id="user_a",
             channel="dingtalk",
             sender_id="system",
+            fresh_session=True,
         )

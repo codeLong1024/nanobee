@@ -87,11 +87,20 @@ class TestCronIntervalRedLine:
     """cron 表达式红线测试。"""
 
     def test_cron_two_minutes_accepted(self, service: CronService) -> None:
-        """cron 表达式 '*/2 * * * *'（每两分钟）下次触发距当前 >= 60s，应放行。"""
+        """cron 表达式 '*/2 * * * *'（每两分钟）应放行。
+
+        每次触发距当前的实际间隔取决于墙钟落在哪个 2 分钟边界附近，
+        范围是 (0, 120s]（边界紧邻时可能不足 30s 红线），因此不能断言
+        gap >= 30s（否则在偶数分钟边界附近运行时会间歇性失败）。
+        正确语义：gap 为正且不超过 2 分钟步长，且 add_job 不抛"fires too soon"。
+        """
         schedule = _schedule("cron", expr="*/2 * * * *", tz="UTC")
-        next_ms = _compute_next_run(schedule, _now_ms())
+        now_ms = _now_ms()
+        next_ms = _compute_next_run(schedule, now_ms)
         assert next_ms is not None
-        assert next_ms - _now_ms() >= _HARD_MIN_INTERVAL_MS
+        gap_ms = next_ms - now_ms
+        assert 0 < gap_ms <= 120_000
+        # 合法 2 分钟调度必须被红线上限接受（不抛 "fires too soon"）
         job = service.add_job("x", schedule, "msg")
         assert job.schedule.expr == "*/2 * * * *"
 
