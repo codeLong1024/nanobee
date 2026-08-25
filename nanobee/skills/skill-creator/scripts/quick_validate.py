@@ -6,7 +6,7 @@
 用法:
     python quick_validate.py <skill_directory>
 
-注意: nanobee 技能使用 snake_case 命名。
+注意: nanobee 技能使用 kebab-case 命名（如 skill-creator、git-log-analyzer）。
 """
 
 import re
@@ -33,8 +33,8 @@ PLACEHOLDER_MARKERS = ("[todo", "todo:")
 _DESC_MAX_LENGTH = 1024
 _FORBIDDEN_CHARS = "<>"
 
-# nanobee 的 snake_case 正则：以小写字母开头，只含小写字母、数字、下划线
-SNAKE_CASE_RE = re.compile(r"^[a-z][a-z0-9]*(_[a-z0-9]+)*$")
+# nanobee 的 kebab-case 正则：以小写字母开头，只含小写字母、数字、连字符
+KEBAB_CASE_RE = re.compile(r"^[a-z][a-z0-9]*(-[a-z0-9]+)*$")
 
 
 def _extract_frontmatter(content: str) -> Optional[str]:
@@ -108,11 +108,11 @@ def _load_frontmatter(frontmatter_text: str) -> tuple[Optional[dict], Optional[s
 
 
 def _validate_skill_name(name: str, folder_name: str) -> Optional[str]:
-    """校验技能名称是否为合法的 snake_case。"""
-    if not SNAKE_CASE_RE.match(name):
+    """校验技能名称是否为合法的 kebab-case。"""
+    if not KEBAB_CASE_RE.match(name):
         return (
-            f"名称 '{name}' 应为 snake_case "
-            "（小写字母、数字、下划线，以小写字母开头，不能有连续下划线或末尾下划线）"
+            f"名称 '{name}' 应为 kebab-case "
+            "（小写字母、数字、连字符，以小写字母开头，不能有连续连字符或末尾连字符）"
         )
     if len(name) > MAX_SKILL_NAME_LENGTH:
         return (

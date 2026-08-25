@@ -550,7 +550,7 @@ class TestOverlayFallback:
         builtin_skills = builtin_parent / "skills"
         builtin_skills.mkdir(parents=True)
         (builtin_skills / "memory").mkdir()
-        (builtin_skills / "skill_creator").mkdir()
+        (builtin_skills / "skill-creator").mkdir()
 
         plugin = _create_plugin(tmp_path)
         token = _with_sandbox(tmp_path, prefix_map={"skills/": builtin_skills})
@@ -561,7 +561,7 @@ class TestOverlayFallback:
             reset_sandbox(token)
 
         assert "memory" in result
-        assert "skill_creator" in result
+        assert "skill-creator" in result
 
     def test_list_dir_no_overlay_fallback(self, tmp_path: Path):
         """list_dir 用户和内置都没有 → 报错"""

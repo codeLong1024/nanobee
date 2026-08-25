@@ -1,6 +1,6 @@
 ---
-name: skill_creator
-description: "创建、编辑、打包、校验 Skill 的完整指南。触发: 创建技能/新建skill/写skill/设计技能/编辑技能/修改技能/打包技能/校验技能/验证技能/init_skill/package_skill/quick_validate/技能目录结构/SKILL.md格式/frontmatter/skill creator/命名规范/snake_case/技能初始化"
+name: skill-creator
+description: "创建、编辑、打包、校验 Skill 的完整指南。触发: 创建技能/新建skill/写skill/设计技能/编辑技能/修改技能/打包技能/校验技能/验证技能/init_skill/package_skill/quick_validate/技能目录结构/SKILL.md格式/frontmatter/skill creator/命名规范/kebab-case/技能初始化"
 
 ---
 
@@ -30,7 +30,7 @@ description: "创建、编辑、打包、校验 Skill 的完整指南。触发: 
 
 | 字段 | 必需 | 说明 |
 |------|------|------|
-| `name` | 是 | snake_case，动词导向 |
+| `name` | 是 | kebab-case，动词导向 |
 | `description` | 是 | 说明做什么和何时触发（"何时使用"全放这里，不放正文） |
 | `author` | 否 | 创建者 |
 | `compatibility` | 否 | 兼容性说明 |
@@ -50,14 +50,14 @@ description: "创建、编辑、打包、校验 Skill 的完整指南。触发: 
 
 ### 1. 理解需求
 
-用具体示例理解技能将如何使用。例如 `pdf_editor` 技能需要明确：支持哪些功能、用户会提什么需求、什么关键词触发。结论清晰即可进入下一步。
+用具体示例理解技能将如何使用。例如 `pdf-editor` 技能需要明确：支持哪些功能、用户会提什么需求、什么关键词触发。结论清晰即可进入下一步。
 
 ### 2. 规划资源
 
 将需求示例转化为可复用资源。示例：
-- `pdf_editor` -> 每次旋转 PDF 都要写同样代码 -> `scripts/rotate_pdf.py`
-- `frontend_builder` -> 每次写 HTML/React 都需要同样模板 -> `assets/hello_world/`
-- `big_query` -> 每次查询都需要重新发现表结构 -> `references/schema.md`
+- `pdf-editor` -> 每次旋转 PDF 都要写同样代码 -> `scripts/rotate-pdf.py`
+- `frontend-builder` -> 每次写 HTML/React 都需要同样模板 -> `assets/hello-world/`
+- `big-query` -> 每次查询都需要重新发现表结构 -> `references/schema.md`
 
 ### 3. 初始化
 
@@ -87,12 +87,12 @@ python3 <本SKILL.md所在目录>/scripts/package_skill.py <技能目录> [输�
 
 ## 命名规范
 
-- **snake_case**：仅小写字母、数字、下划线
-- 不能以数字或下划线开头，不能含连续下划线或末尾下划线
+- **kebab-case**：仅小写字母、数字、连字符
+- 不能以数字或连字符开头，不能含连续连字符或末尾连字符
 - 长度不超过 64 字符
 - 目录名必须与 `name` 字段一致
-- 正确：`git_log_analyzer`、`weekly_report`、`pdf_editor`
-- 错误：`GitLogAnalyzer`、`my-skill`、`_private_skill`
+- 正确：`git-log-analyzer`、`weekly-report`、`pdf-editor`
+- 错误：`GitLogAnalyzer`、`my_skill`、`_private_skill`
 
 ## 校验
 
