@@ -413,7 +413,7 @@ full_inject: false   # true=全量注入 body, false=仅注入元数据
 
 | 字段 | 必填 | 说明 |
 |------|------|------|
-| `name` | 是 | 技能名称，仅小写字母、数字、下划线（snake_case） |
+| `name` | 是 | 技能名称，仅小写字母、数字、连字符（kebab-case） |
 | `description` | 是 | 简短描述用途，最多 1024 字符，禁止 `<` `>` |
 | `author` | 否 | 创建者名称，显示在元数据中（如 `@username`） |
 | `full_inject` | 否 | `true` 时全量注入 body 到 system prompt；`false`（默认）仅注入 name/description 元数据 |
@@ -429,9 +429,9 @@ full_inject: false   # true=全量注入 body, false=仅注入元数据
 
 ### 命名规范
 
-- snake_case：仅小写字母、数字、下划线
+- kebab-case：仅小写字母、数字、连字符
 - 不以连字符起止
-- 不要使用下划线等特殊前缀（框架不对名称做特殊处理，命名规范为 snake_case）
+- 不要使用下划线等特殊前缀（框架不对名称做特殊处理，命名规范为 kebab-case）
 - 示例：`git-log-analyzer`、`weekly-report-generator`
 
 ### 查看已安装技能

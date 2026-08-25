@@ -7,11 +7,11 @@
     init_skill.py <skill-name> --path <path> [--resources scripts,references,assets] [--examples]
 
 示例:
-    init_skill.py pdf_editor --path ./my_skills
-    init_skill.py pdf_editor --path ./my_skills --resources scripts,references
-    init_skill.py weekly_report --path ./my_skills --resources scripts --examples
+    init_skill.py pdf-editor --path ./my_skills
+    init_skill.py pdf-editor --path ./my_skills --resources scripts,references
+    init_skill.py weekly-report --path ./my_skills --resources scripts --examples
 
-注意: nanobee 技能使用 snake_case 命名（如 pdf_editor、git_log_analyzer）。
+注意: nanobee 技能使用 kebab-case 命名（如 pdf-editor、git-log-analyzer）。
 """
 
 import argparse
@@ -97,8 +97,8 @@ EXAMPLE_SCRIPT = '''#!/usr/bin/env python3
 如果是实际技能，请替换为具体实现或删除此文件。
 
 实际技能中的脚本示例：
-- pdf_editor/scripts/rotate_pdf.py - 旋转 PDF 页面
-- pdf_editor/scripts/extract_images.py - 提取 PDF 中的图片
+- pdf-editor/scripts/rotate-pdf.py - 旋转 PDF 页面
+- pdf-editor/scripts/extract-images.py - 提取 PDF 中的图片
 """
 
 def main():
@@ -157,20 +157,20 @@ EXAMPLE_ASSET = """# 示例资源文件
 
 
 def normalize_skill_name(raw_name: str) -> str:
-    """规范化技能名为 snake_case。"""
+    """规范化技能名为 kebab-case。"""
     name = raw_name.strip().lower()
-    # 替换连字符/空格为下划线，移除非法字符
-    name = re.sub(r"[^a-z0-9_]+", "_", name)
-    # 去重下划线
-    name = re.sub(r"_+", "_", name)
-    # 去除首尾下划线
-    name = name.strip("_")
+    # 替换空格/下划线为连字符，移除非法字符
+    name = re.sub(r"[^a-z0-9-]+", "-", name)
+    # 去重连字符
+    name = re.sub(r"-+", "-", name)
+    # 去除首尾连字符
+    name = name.strip("-")
     return name
 
 
 def title_case_skill_name(skill_name: str) -> str:
-    """将 snake_case 技能名转换为 Title Case 用于显示。"""
-    return " ".join(word.capitalize() for word in skill_name.split("_"))
+    """将 kebab-case 技能名转换为 Title Case 用于显示。"""
+    return " ".join(word.capitalize() for word in skill_name.split("-"))
 
 
 def parse_resources(raw_resources: str) -> list[str]:
@@ -285,7 +285,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="从模板创建新的技能目录。",
     )
-    parser.add_argument("skill_name", help="技能名称（将规范化为 snake_case）")
+    parser.add_argument("skill_name", help="技能名称（将规范化为 kebab-case）")
     parser.add_argument("--path", required=True, help="技能输出目录")
     parser.add_argument(
         "--resources",
@@ -312,9 +312,9 @@ def main() -> None:
         sys.exit(1)
     if skill_name != raw_skill_name:
         print(f"注意: 技能名称已从 '{raw_skill_name}' 规范化为 '{skill_name}'。")
-    # 检查是否为 snake_case
-    if not re.fullmatch(r"[a-z][a-z0-9]*(_[a-z0-9]+)*", skill_name):
-        print(f"[ERROR] 技能名称 '{skill_name}' 不符合 snake_case 规范（仅小写字母、数字、下划线）。")
+    # 检查是否为 kebab-case
+    if not re.fullmatch(r"[a-z][a-z0-9]*(-[a-z0-9]+)*", skill_name):
+        print(f"[ERROR] 技能名称 '{skill_name}' 不符合 kebab-case 规范（仅小写字母、数字、连字符）。")
         sys.exit(1)
 
     resources = parse_resources(args.resources)

@@ -11,7 +11,7 @@ Skill（技能）是 Nanobee 的**用户知识资产**——以 Markdown 文档�
 - [技能 vs 插件](#技能-vs-插件)
 - [SKILL.md 格式](#skillmd-格式)
 - [注入策略（full_inject 声明）](#注入策略full_inject-声明)
-- [内置技能（memory + skill_creator）](#内置技能memory--skill_creator)
+- [内置技能（memory + skill-creator）](#内置技能memory--skill-creator)
 - [编写技能文档](#编写技能文档)
   - [元数据编写规范](#元数据编写规范)
   - [正文编写规范](#正文编写规范)
@@ -62,7 +62,7 @@ full_inject: false
 
 | 字段 | 必填 | 类型 | 说明 |
 |------|------|------|------|
-| `name` | 是 | string | 技能名称，仅小写字母、数字、下划线（snake_case） |
+| `name` | 是 | string | 技能名称，仅小写字母、数字、连字符（kebab-case） |
 | `description` | 是 | string | 简短描述用途，最多 1024 字符。LLM 通过此字段判断是否需要读取技能 body |
 | `author` | 否 | string | 创建者名称，如 `@username` |
 | `full_inject` | 否 | bool | `true` 时 body 全量注入 system prompt；`false`（默认）仅注入元数据 |
@@ -147,7 +147,7 @@ LLM 看到描述后，自主决定是否通过文件工具读取正文。这有�
 
 ---
 
-## 内置技能（memory + skill_creator）
+## 内置技能（memory + skill-creator）
 
 框架打包两个内置技能，位于 `nanobee/skills/`（只读，不可覆盖）：
 
@@ -157,7 +157,7 @@ LLM 看到描述后，自主决定是否通过文件工具读取正文。这有�
 - **注入方式**：`full_inject: true` —— 全量注入 system prompt
 - **说明**：不依赖任何插件，纯 LLM 驱动。当用户添加同名技能到 `skills/` 时，双方都会显示（用户版 autocomplete）
 
-### `skill_creator` — 技能创建教程
+### `skill-creator` — 技能创建教程
 
 - **作用**：教 LLM 如何编写、创建、管理技能
 - **注入方式**：渐进式注入（仅元数据），LLM 看到描述后按需读取 body
@@ -180,7 +180,7 @@ full_inject: false
 
 **规范**：
 
-- `name` 必须 snake_case
+- `name` 必须 kebab-case
 - `description` 应当让 LLM 一眼判断是否需要用此技能：包含触发场景、做什么、输出什么
 - `description` 禁止包含 `<` `>` 字符
 - `full_inject` 仅用于"LLM 每轮对话必须看到"的场景
@@ -231,7 +231,7 @@ SkillsLoader 从两个来源发现技能（2 秒 TTL 文件系统缓存）：
 来源 1: nanobee/skills/   ← 框架内置，只读
     nanobee/skills/
       ├── memory/SKILL.md
-      └── skill_creator/SKILL.md
+      └── skill-creator/SKILL.md
 
 来源 2: user skills/      ← 用户添加，可写
     <user_context>/skills/
@@ -259,9 +259,9 @@ nanobee/skills/git-helper/  → 不创建（同名时双方都显示，标注来
 
 ## 命名规范
 
-- **snake_case**：仅小写字母、数字、下划线，如 `weekly_report_generator`
+- **kebab-case**：仅小写字母、数字、连字符，如 `weekly-report-generator`
 - **不以连字符起止**
-- **不要使用下划线等特殊前缀**（框架不对名称做特殊处理，命名规范为 snake_case）
+- **不要使用下划线等特殊前缀**（框架不对名称做特殊处理，命名规范为 kebab-case）
 - **建议**：使用描述性名称，如 `git-log-analyzer`、`pr-reviewer`、`docker-compose-helper`
 
 ---
@@ -419,5 +419,5 @@ ContextPipeline.build()
 │
 └── .venv/.../nanobee/skills/  ← 内置技能（只读）
     ├── memory/SKILL.md
-    └── skill_creator/SKILL.md
+    └── skill-creator/SKILL.md
 ```
