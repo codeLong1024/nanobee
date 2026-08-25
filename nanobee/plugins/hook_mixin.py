@@ -61,6 +61,7 @@ class PluginHookMixin:
     async def on_pre_invoke(
         self,
         context: Any,
+        call_id: str,
         tool_name: str,
         args: dict[str, Any],
     ) -> dict[str, Any]:
@@ -71,6 +72,7 @@ class PluginHookMixin:
 
         Args:
             context: 当前用户上下文(UserContext 实例)
+            call_id: 本次工具调用的原生 ID（来自 ToolCallRequest.id，如 call_xxx）
             tool_name: 工具名称
             args: 工具参数字典
 
@@ -82,6 +84,7 @@ class PluginHookMixin:
     async def on_post_invoke(
         self,
         context: Any,
+        call_id: str,
         tool_name: str,
         result: Any,
     ) -> Any:
@@ -91,6 +94,7 @@ class PluginHookMixin:
 
         Args:
             context: 当前用户上下文(UserContext 实例)
+            call_id: 本次工具调用的原生 ID（来自 ToolCallRequest.id，与 on_pre_invoke 一致）
             tool_name: 工具名称
             result: 工具返回结果
 

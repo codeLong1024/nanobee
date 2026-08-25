@@ -258,7 +258,7 @@ class _TestPostInvokePlugin(NanobeePlugin):
             metadata = PluginMetadata(name="test_post_invoke", plugin_type="tool")
         super().__init__(metadata)
 
-    async def on_post_invoke(self, context, tool_name, result):
+    async def on_post_invoke(self, context, call_id, tool_name, result):
         if tool_name == "test_tool":
             return f"插件修改: {result}"
         return result
@@ -317,9 +317,9 @@ class TestPluginHookMixin:
     async def test_mixin_async_defaults(self):
         """混入类的异步默认实现不报错。"""
         plugin = _TestPostInvokePlugin()
-        result = await plugin.on_pre_invoke(None, "test", {"k": "v"})
+        result = await plugin.on_pre_invoke(None, "call_1", "test", {"k": "v"})
         assert result == {"k": "v"}
-        result = await plugin.on_post_invoke(None, "test", "ok")
+        result = await plugin.on_post_invoke(None, "call_1", "test", "ok")
         assert result == "ok"
         await plugin.on_message_completed(None, [])
 
@@ -398,14 +398,14 @@ class TestPluginPostInvoke:
     async def test_post_invoke_modifies_result(self):
         """插件通过 on_post_invoke 修改工具返回结果。"""
         plugin = _TestPostInvokePlugin()
-        result = await plugin.on_post_invoke(MagicMock(), "test_tool", "原始结果")
+        result = await plugin.on_post_invoke(MagicMock(), "call_1", "test_tool", "原始结果")
         assert result == "插件修改: 原始结果"
 
     @pytest.mark.asyncio
     async def test_post_invoke_other_tool_unchanged(self):
         """无关工具的结果不被修改。"""
         plugin = _TestPostInvokePlugin()
-        result = await plugin.on_post_invoke(MagicMock(), "other_tool", "其他结果")
+        result = await plugin.on_post_invoke(MagicMock(), "call_1", "other_tool", "其他结果")
         assert result == "其他结果"
 
 

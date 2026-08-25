@@ -1,12 +1,18 @@
 [plugin]
 name = "audit_logger"
-version = "1.0.0"
-description = "极简参考插件：监听 on_message_completed 输出审计日志"
+version = "2.0.0"
+description = "参考插件：turn/tool 两级 span 结构化审计日志"
 author = "nanobee"
 type = "audit"
 
 [config]
 enabled = true
+
+[hooks.on_pre_invoke]
+priority = 10
+
+[hooks.on_post_invoke]
+priority = 10
 
 [hooks.on_message_completed]
 block_next = false

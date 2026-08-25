@@ -864,9 +864,9 @@ class _PreInvokePlugin(NanobeePlugin):
         super().__init__(metadata)
         self._on_pre_invoke = None
 
-    async def on_pre_invoke(self, context, tool_name, args):
+    async def on_pre_invoke(self, context, call_id, tool_name, args):
         if self._on_pre_invoke:
-            return await self._on_pre_invoke(context, tool_name, args)
+            return await self._on_pre_invoke(context, call_id, tool_name, args)
         return args
 
 
@@ -881,9 +881,9 @@ class _PostInvokePlugin(NanobeePlugin):
         super().__init__(metadata)
         self._on_post_invoke = None
 
-    async def on_post_invoke(self, context, tool_name, result):
+    async def on_post_invoke(self, context, call_id, tool_name, result):
         if self._on_post_invoke:
-            return await self._on_post_invoke(context, tool_name, result)
+            return await self._on_post_invoke(context, call_id, tool_name, result)
         return result
 
 
@@ -899,14 +899,14 @@ class _DualHookPlugin(NanobeePlugin):
         self._on_pre_invoke = None
         self._on_post_invoke = None
 
-    async def on_pre_invoke(self, context, tool_name, args):
+    async def on_pre_invoke(self, context, call_id, tool_name, args):
         if self._on_pre_invoke:
-            return await self._on_pre_invoke(context, tool_name, args)
+            return await self._on_pre_invoke(context, call_id, tool_name, args)
         return args
 
-    async def on_post_invoke(self, context, tool_name, result):
+    async def on_post_invoke(self, context, call_id, tool_name, result):
         if self._on_post_invoke:
-            return await self._on_post_invoke(context, tool_name, result)
+            return await self._on_post_invoke(context, call_id, tool_name, result)
         return result
 
 
@@ -925,14 +925,14 @@ class TestPreInvokePriority:
             name="p_low", plugin_type="tool",
             hooks={"on_pre_invoke": HookConfig(priority=10)},
         )
-        p_low._on_pre_invoke = AsyncMock(side_effect=lambda ctx, name, args: order.append("p_low") or args)
+        p_low._on_pre_invoke = AsyncMock(side_effect=lambda ctx, call_id, name, args: order.append("p_low") or args)
 
         p_high = _PreInvokePlugin(PluginMetadata(name="p_high", plugin_type="tool"))
         p_high._metadata = PluginMetadata(
             name="p_high", plugin_type="tool",
             hooks={"on_pre_invoke": HookConfig(priority=100)},
         )
-        p_high._on_pre_invoke = AsyncMock(side_effect=lambda ctx, name, args: order.append("p_high") or args)
+        p_high._on_pre_invoke = AsyncMock(side_effect=lambda ctx, call_id, name, args: order.append("p_high") or args)
 
         from nanobee.agent.loop import AgentLoop
         loop = object.__new__(AgentLoop)
@@ -943,7 +943,7 @@ class TestPreInvokePriority:
         assert len(pre_fns) == 2
 
         for fn in pre_fns:
-            await fn("test_tool", {"x": 1})
+            await fn("call_1", "test_tool", {"x": 1})
         assert order == ["p_high", "p_low"]
 
     @pytest.mark.asyncio
@@ -953,7 +953,7 @@ class TestPreInvokePriority:
 
         p_default = _PreInvokePlugin(PluginMetadata(name="p_default", plugin_type="tool"))
         p_default._metadata = PluginMetadata(name="p_default", plugin_type="tool")
-        p_default._on_pre_invoke = AsyncMock(side_effect=lambda ctx, name, args: order.append("p_default") or args)
+        p_default._on_pre_invoke = AsyncMock(side_effect=lambda ctx, call_id, name, args: order.append("p_default") or args)
 
         from nanobee.plugins.base import HookConfig
         p_explicit = _PreInvokePlugin(PluginMetadata(name="p_explicit", plugin_type="tool"))
@@ -961,7 +961,7 @@ class TestPreInvokePriority:
             name="p_explicit", plugin_type="tool",
             hooks={"on_pre_invoke": HookConfig(priority=50)},
         )
-        p_explicit._on_pre_invoke = AsyncMock(side_effect=lambda ctx, name, args: order.append("p_explicit") or args)
+        p_explicit._on_pre_invoke = AsyncMock(side_effect=lambda ctx, call_id, name, args: order.append("p_explicit") or args)
 
         from nanobee.agent.loop import AgentLoop
         loop = object.__new__(AgentLoop)
@@ -969,7 +969,7 @@ class TestPreInvokePriority:
         assert hooks is not None
 
         for fn in hooks["pre_invoke"]:
-            await fn("test_tool", {"x": 1})
+            await fn("call_1", "test_tool", {"x": 1})
         assert order == ["p_explicit", "p_default"]
 
     def test_pre_invoke_empty_plugins(self):
@@ -995,14 +995,14 @@ class TestPostInvokePriority:
             name="p_low", plugin_type="tool",
             hooks={"on_post_invoke": HookConfig(priority=5)},
         )
-        p_low._on_post_invoke = AsyncMock(side_effect=lambda ctx, name, result: order.append("p_low") or result)
+        p_low._on_post_invoke = AsyncMock(side_effect=lambda ctx, call_id, name, result: order.append("p_low") or result)
 
         p_high = _PostInvokePlugin(PluginMetadata(name="p_high", plugin_type="tool"))
         p_high._metadata = PluginMetadata(
             name="p_high", plugin_type="tool",
             hooks={"on_post_invoke": HookConfig(priority=90)},
         )
-        p_high._on_post_invoke = AsyncMock(side_effect=lambda ctx, name, result: order.append("p_high") or result)
+        p_high._on_post_invoke = AsyncMock(side_effect=lambda ctx, call_id, name, result: order.append("p_high") or result)
 
         from nanobee.agent.loop import AgentLoop
         loop = object.__new__(AgentLoop)
@@ -1013,7 +1013,7 @@ class TestPostInvokePriority:
         assert len(post_fns) == 2
 
         for fn in post_fns:
-            await fn("test_tool", "result")
+            await fn("call_1", "test_tool", "result")
         assert order == ["p_high", "p_low"]
 
     @pytest.mark.asyncio
@@ -1033,22 +1033,22 @@ class TestPostInvokePriority:
                 "on_post_invoke": HookConfig(priority=10),
             },
         )
-        p1._on_pre_invoke = AsyncMock(side_effect=lambda ctx, name, args: pre_order.append("p1") or args)
-        p1._on_post_invoke = AsyncMock(side_effect=lambda ctx, name, result: post_order.append("p1") or result)
+        p1._on_pre_invoke = AsyncMock(side_effect=lambda ctx, call_id, name, args: pre_order.append("p1") or args)
+        p1._on_post_invoke = AsyncMock(side_effect=lambda ctx, call_id, name, result: post_order.append("p1") or result)
 
         p2 = _PostInvokePlugin(PluginMetadata(name="p2", plugin_type="tool"))
         p2._metadata = PluginMetadata(
             name="p2", plugin_type="tool",
             hooks={"on_post_invoke": HookConfig(priority=50)},
         )
-        p2._on_post_invoke = AsyncMock(side_effect=lambda ctx, name, result: post_order.append("p2") or result)
+        p2._on_post_invoke = AsyncMock(side_effect=lambda ctx, call_id, name, result: post_order.append("p2") or result)
 
         p3 = _PostInvokePlugin(PluginMetadata(name="p3", plugin_type="tool"))
         p3._metadata = PluginMetadata(
             name="p3", plugin_type="tool",
             hooks={"on_post_invoke": HookConfig(priority=90)},
         )
-        p3._on_post_invoke = AsyncMock(side_effect=lambda ctx, name, result: post_order.append("p3") or result)
+        p3._on_post_invoke = AsyncMock(side_effect=lambda ctx, call_id, name, result: post_order.append("p3") or result)
 
         from nanobee.agent.loop import AgentLoop
         loop = object.__new__(AgentLoop)
@@ -1056,9 +1056,9 @@ class TestPostInvokePriority:
         assert hooks is not None
 
         for fn in hooks["pre_invoke"]:
-            await fn("test_tool", {"x": 1})
+            await fn("call_1", "test_tool", {"x": 1})
         for fn in hooks["post_invoke"]:
-            await fn("test_tool", "result")
+            await fn("call_1", "test_tool", "result")
         # pre: p1 priority=100 → 排第一位
         assert pre_order == ["p1"]
         # post: p3(90) → p2(50) → p1(10)

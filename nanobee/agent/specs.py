@@ -21,12 +21,12 @@ class PluginHooks(TypedDict, total=False):
     """插件 Hook 回调字典。
 
     Attributes:
-        pre_invoke: 工具执行前拦截钩子，签名 (tool_name: str, args: dict) → args
-        post_invoke: 工具执行后拦截钩子，签名 (tool_name: str, result: Any) → result
+        pre_invoke: 工具执行前拦截钩子，签名 (call_id: str, tool_name: str, args: dict) → args
+        post_invoke: 工具执行后拦截钩子，签名 (call_id: str, tool_name: str, result: Any) → result
     """
 
-    pre_invoke: list[Callable[[str, dict[str, Any]], dict[str, Any]]]
-    post_invoke: list[Callable[[str, Any], Any]]
+    pre_invoke: list[Callable[[str, str, dict[str, Any]], dict[str, Any]]]
+    post_invoke: list[Callable[[str, str, Any], Any]]
 
 
 @dataclass(slots=True)

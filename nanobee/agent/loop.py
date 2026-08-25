@@ -570,13 +570,13 @@ class AgentLoop:
             pre_priority = pre_cfg.priority if pre_cfg else 10
             pre_invoke_entries.append((
                 pre_priority,
-                lambda name, args, _p=p, _ctx=user_ctx: _p.on_pre_invoke(_ctx, name, args),
+                lambda call_id, name, args, _p=p, _ctx=user_ctx: _p.on_pre_invoke(_ctx, call_id, name, args),
             ))
             post_cfg = p.hook_config.get("on_post_invoke")
             post_priority = post_cfg.priority if post_cfg else 10
             post_invoke_entries.append((
                 post_priority,
-                lambda name, result, _p=p, _ctx=user_ctx: _p.on_post_invoke(_ctx, name, result),
+                lambda call_id, name, result, _p=p, _ctx=user_ctx: _p.on_post_invoke(_ctx, call_id, name, result),
             ))
         # 按 priority 降序排序（高优先级先执行）
         pre_invoke_entries.sort(key=lambda x: -x[0])
