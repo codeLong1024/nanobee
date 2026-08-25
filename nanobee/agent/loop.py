@@ -1029,7 +1029,7 @@ class AgentLoop:
 
         # 安全阀：当会话历史超限时，硬截断 session 本体并回写。
         # 这是框架唯一的历史截断保障（机制），不涉及保留策略。
-        # LLM 通过 _memory skill + trim_history/consolidate_history 工具自主管理记忆。
+        # LLM 通过 memory skill + trim_history/consolidate_history 工具自主管理记忆。
         msg_count = len(session.messages)
         if msg_count > self._max_messages:
             session.messages = session.messages[-self._max_messages:]

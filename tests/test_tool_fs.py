@@ -549,7 +549,7 @@ class TestOverlayFallback:
         builtin_parent = tmp_path / "builtin_skills"
         builtin_skills = builtin_parent / "skills"
         builtin_skills.mkdir(parents=True)
-        (builtin_skills / "_memory").mkdir()
+        (builtin_skills / "memory").mkdir()
         (builtin_skills / "skill_creator").mkdir()
 
         plugin = _create_plugin(tmp_path)
@@ -560,7 +560,7 @@ class TestOverlayFallback:
             from nanobee.kernel.context_sandbox_var import reset_sandbox
             reset_sandbox(token)
 
-        assert "_memory" in result
+        assert "memory" in result
         assert "skill_creator" in result
 
     def test_list_dir_no_overlay_fallback(self, tmp_path: Path):
@@ -584,20 +584,20 @@ class TestOverlayFallback:
         """read_file 回退读取多级嵌套文件"""
         builtin_parent = tmp_path / "builtin_skills"
         builtin_skills = builtin_parent / "skills"
-        nested = builtin_skills / "_memory"
+        nested = builtin_skills / "memory"
         nested.mkdir(parents=True)
         nested_file = nested / "SKILL.md"
-        nested_file.write_text("---\nname: _memory\n---\n\n# Memory Skill", encoding="utf-8")
+        nested_file.write_text("---\nname: memory\n---\n\n# Memory Skill", encoding="utf-8")
 
         plugin = _create_plugin(tmp_path)
         token = _with_sandbox(tmp_path, prefix_map={"skills/": builtin_skills})
         try:
-            result = _run_async(plugin.execute_tool("read_file", path="skills/_memory/SKILL.md"))
+            result = _run_async(plugin.execute_tool("read_file", path="skills/memory/SKILL.md"))
         finally:
             from nanobee.kernel.context_sandbox_var import reset_sandbox
             reset_sandbox(token)
 
-        assert "name: _memory" in result
+        assert "name: memory" in result
         assert "Memory Skill" in result
 
     def test_read_file_desc_mentions_overlay(self):

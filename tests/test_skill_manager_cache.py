@@ -26,7 +26,7 @@ class TestSkillsLoaderCache:
 
     def test_cache_hits_on_second_read(self, tmp_path: Path) -> None:
         """第二次读取应命中缓存。"""
-        _make_skill_md(tmp_path / "skills", "test-skill", "Test", "Body")
+        _make_skill_md(tmp_path / "skills", "test_skill", "Test", "Body")
         loader = SkillsLoader(tmp_path / "skills")
 
         start = time.time()
@@ -42,14 +42,14 @@ class TestSkillsLoaderCache:
 
     def test_cache_updates_after_file_change(self, tmp_path: Path) -> None:
         """文件变更后通过 invalidation 刷新。"""
-        _make_skill_md(tmp_path / "skills", "skill-1", "S1", "Body1")
+        _make_skill_md(tmp_path / "skills", "skill_1", "S1", "Body1")
         loader = SkillsLoader(tmp_path / "skills")
 
         skills1 = loader.list_user_skills()
         assert len(skills1) == 1
 
         # 添加第二个技能
-        _make_skill_md(tmp_path / "skills", "skill-2", "S2", "Body2")
+        _make_skill_md(tmp_path / "skills", "skill_2", "S2", "Body2")
         # 显式清除缓存后刷新
         loader.invalidate_cache()
 
@@ -58,8 +58,8 @@ class TestSkillsLoaderCache:
 
     def test_builtin_and_user_cache_separate(self, tmp_path: Path) -> None:
         """内置技能和用户技能使用独立的缓存。"""
-        _make_skill_md(tmp_path / "builtin", "builtin-1", "B1", "Body1")
-        _make_skill_md(tmp_path / "skills", "user-1", "U1", "Body2")
+        _make_skill_md(tmp_path / "builtin", "builtin_1", "B1", "Body1")
+        _make_skill_md(tmp_path / "skills", "user_1", "U1", "Body2")
 
         loader = SkillsLoader(
             user_skills_dir=tmp_path / "skills",
@@ -74,7 +74,7 @@ class TestSkillsLoaderCache:
         # 内置添加一个新技能
         # 等待 1 秒确保 mtime 变化（避免文件系统精度导致的缓存不失效）
         time.sleep(1.01)
-        _make_skill_md(tmp_path / "builtin", "builtin-2", "B2", "Body3")
+        _make_skill_md(tmp_path / "builtin", "builtin_2", "B2", "Body3")
 
         # 内置缓存应失效，用户缓存应保持不变
         assert len(loader.list_builtin_skills()) == 2
@@ -92,7 +92,7 @@ class TestSkillsLoaderCache:
 
     def test_invalidate_cache(self, tmp_path: Path) -> None:
         """手动清除缓存后重新扫描。"""
-        _make_skill_md(tmp_path / "skills", "test-skill", "Test", "Body")
+        _make_skill_md(tmp_path / "skills", "test_skill", "Test", "Body")
         loader = SkillsLoader(tmp_path / "skills")
 
         assert len(loader.list_user_skills()) == 1
@@ -123,7 +123,7 @@ class TestSkillsLoaderCache:
         for i in range(5):
             _make_skill_md(
                 tmp_path / "skills",
-                f"skill-{i}", f"Skill {i}", f"Body {i} " * 50,
+                f"skill_{i}", f"Skill {i}", f"Body {i} " * 50,
             )
 
         # 预热

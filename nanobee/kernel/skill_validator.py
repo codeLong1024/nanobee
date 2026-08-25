@@ -4,7 +4,7 @@
 
 与 SkillMeta.__init__ 中的 description 约束形成两层防线：
 - SkillMeta 层：基础字段合法性校验（长度、字符）
-- Validator 层：业务语义校验（frontmatter 完整性、name kebab-case）
+- Validator 层：业务语义校验（frontmatter 完整性、name snake_case）
 """
 
 from __future__ import annotations
@@ -27,23 +27,24 @@ ALLOWED_PROPERTIES: frozenset[str] = frozenset({
     "metadata",
 })
 
-# kebab-case 正则：仅小写字母、数字、连字符，不以连字符起止
-_NAME_PATTERN = re.compile(r"^[a-z]([a-z0-9-]*[a-z0-9])?$")
+# snake_case 正则：仅小写字母、数字、下划线，小写字母开头，无连续下划线
+# 与 skill_creator 工具链（init_skill.py / quick_validate.py）保持一致
+_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9]*(_[a-z0-9]+)*$")
 
 
 def validate_skill_name(name: str) -> None:
-    """校验技能名称必须为 kebab-case。
+    """校验技能名称必须为 snake_case。
 
     Args:
         name: 技能名称
 
     Raises:
-        ValueError: 名称不符合 kebab-case 规范。
+        ValueError: 名称不符合 snake_case 规范。
     """
     if not _NAME_PATTERN.match(name):
         raise ValueError(
-            f"技能名称 '{name}' 必须为 kebab-case（仅小写字母、数字、连字符，"
-            f"不以连字符起止）"
+            f"技能名称 '{name}' 必须为 snake_case（仅小写字母、数字、下划线，"
+            f"小写字母开头，无连续下划线）"
         )
 
 
@@ -51,7 +52,7 @@ def validate_skill_meta(meta: Any) -> None:
     """校验 SkillMeta 的业务完整性。
 
     检查项：
-    1. name 必须为非空 kebab-case 字符串
+    1. name 必须为非空 snake_case 字符串
     2. description 必须非空
     3. frontmatter 不应包含白名单外的字段
 

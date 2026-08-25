@@ -384,7 +384,7 @@ Run-level Hook（`before_run`/`after_run`/`on_error`/`on_finally`）包裹整个
 | MemoryPlugin | `nanobee.plugins.memory.MemoryPlugin` | 记忆存储底座接口（`store`/`retrieve`），框架无内置实现，由社区插件实现 |
 | Audit | `NanobeePlugin`（`plugin_type="audit"`） | 纯监听型插件（仅 `on_message_completed`），不贡献提示词或工具 |
 
-> **注意**：记忆管理（`_memory`）当前通过内置 Skill 由 LLM 自主管理 `memory/facts.md`。如果您需要更高级的记忆策略（向量检索、语义聚类等），可实现 `MemoryPlugin` 接口接入 Agent 状态机。
+> **注意**：记忆管理（`memory`）当前通过内置 Skill 由 LLM 自主管理 `memory/facts.md`。如果您需要更高级的记忆策略（向量检索、语义聚类等），可实现 `MemoryPlugin` 接口接入 Agent 状态机。
 
 详见 [README.md#插件开发](README.md#插件开发) 中的完整示例。
 
@@ -413,7 +413,7 @@ full_inject: false   # true=全量注入 body, false=仅注入元数据
 
 | 字段 | 必填 | 说明 |
 |------|------|------|
-| `name` | 是 | 技能名称，仅小写字母、数字、连字符（kebab-case） |
+| `name` | 是 | 技能名称，仅小写字母、数字、下划线（snake_case） |
 | `description` | 是 | 简短描述用途，最多 1024 字符，禁止 `<` `>` |
 | `author` | 否 | 创建者名称，显示在元数据中（如 `@username`） |
 | `full_inject` | 否 | `true` 时全量注入 body 到 system prompt；`false`（默认）仅注入 name/description 元数据 |
@@ -424,14 +424,14 @@ full_inject: false   # true=全量注入 body, false=仅注入元数据
 
 遵循 **框架无知论**——框架不关心技能名称，完全由 `full_inject` 标记决定：
 
-- `full_inject: true` → body 全量注入 system prompt（适用于 LLM 每次对话都需要看到的指令，如记忆策略 `_memory`）
+- `full_inject: true` → body 全量注入 system prompt（适用于 LLM 每次对话都需要看到的指令，如记忆策略 `memory`）
 - `full_inject: false`（默认）→ 仅注入元数据（name + description），LLM 通过 `write_file` 按需读取 `skills/<name>/SKILL.md`
 
 ### 命名规范
 
-- kebab-case：仅小写字母、数字、连字符
+- snake_case：仅小写字母、数字、下划线
 - 不以连字符起止
-- 不要使用 `_memory` 等特殊前缀（框架不对名称做特殊处理）
+- 不要使用下划线等特殊前缀（框架不对名称做特殊处理，命名规范为 snake_case）
 - 示例：`git-log-analyzer`、`weekly-report-generator`
 
 ### 查看已安装技能
@@ -452,7 +452,7 @@ nanobee 的核心设计原则：**框架应尽可能"无知"，把智能交给 L
 | 工具注册 | 技能内容取舍、注入策略 |
 
 **禁止事项**：
-- 禁止框架硬编码技能名称、插件名称或特定业务语义（如 `_memory` 特殊判断）
+- 禁止框架硬编码技能名称、插件名称或特定业务语义（如 `memory` 特殊判断）
 - 禁止框架代替 LLM 做策略决策
 
 **如何判断**：当新增功能时，优先问"能否让 LLM 自主完成？"而不是"框架应该做什么？"

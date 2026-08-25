@@ -17,39 +17,44 @@ from nanobee.kernel.skill_validator import (
 class TestValidateSkillName:
     """validate_skill_name 测试"""
 
-    def test_valid_kebab_case(self):
-        validate_skill_name("my-skill")
-        validate_skill_name("git-log-analyzer")
+    def test_valid_snake_case(self):
+        validate_skill_name("my_skill")
+        validate_skill_name("git_log_analyzer")
         validate_skill_name("a")
         validate_skill_name("a1b2c3")
-        validate_skill_name("node-18-upgrade")
+        validate_skill_name("node_18_upgrade")
+        validate_skill_name("skill_creator")
 
     def test_invalid_uppercase(self):
-        with pytest.raises(ValueError, match="kebab-case"):
-            validate_skill_name("My-Skill")
+        with pytest.raises(ValueError, match="snake_case"):
+            validate_skill_name("My_Skill")
 
-    def test_invalid_trailing_hyphen(self):
-        with pytest.raises(ValueError, match="kebab-case"):
-            validate_skill_name("my-skill-")
+    def test_invalid_trailing_underscore(self):
+        with pytest.raises(ValueError, match="snake_case"):
+            validate_skill_name("my_skill_")
 
-    def test_invalid_leading_hyphen(self):
-        with pytest.raises(ValueError, match="kebab-case"):
-            validate_skill_name("-my-skill")
+    def test_invalid_leading_underscore(self):
+        with pytest.raises(ValueError, match="snake_case"):
+            validate_skill_name("_memory")
+
+    def test_invalid_consecutive_underscores(self):
+        with pytest.raises(ValueError, match="snake_case"):
+            validate_skill_name("my__skill")
 
     def test_invalid_empty(self):
-        with pytest.raises(ValueError, match="kebab-case"):
+        with pytest.raises(ValueError, match="snake_case"):
             validate_skill_name("")
 
-    def test_invalid_special_chars(self):
-        with pytest.raises(ValueError, match="kebab-case"):
-            validate_skill_name("my_skill")
+    def test_invalid_hyphen(self):
+        with pytest.raises(ValueError, match="snake_case"):
+            validate_skill_name("my-skill")
 
 
 class TestValidateSkillMeta:
     """validate_skill_meta 测试"""
 
     def test_valid_meta(self):
-        meta = SimpleNamespace(name="my-skill", description="A useful skill")
+        meta = SimpleNamespace(name="my_skill", description="A useful skill")
         validate_skill_meta(meta)  # should not raise
 
     def test_missing_name(self):
@@ -58,13 +63,13 @@ class TestValidateSkillMeta:
             validate_skill_meta(meta)
 
     def test_missing_description(self):
-        meta = SimpleNamespace(name="my-skill", description="")
+        meta = SimpleNamespace(name="my_skill", description="")
         with pytest.raises(ValueError, match="缺少描述"):
             validate_skill_meta(meta)
 
     def test_invalid_name_format(self):
-        meta = SimpleNamespace(name="Bad-Name", description="desc")
-        with pytest.raises(ValueError, match="kebab-case"):
+        meta = SimpleNamespace(name="Bad_Name", description="desc")
+        with pytest.raises(ValueError, match="snake_case"):
             validate_skill_meta(meta)
 
 
