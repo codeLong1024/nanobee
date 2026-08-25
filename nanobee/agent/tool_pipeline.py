@@ -258,7 +258,7 @@ class ToolPipeline:
             return params, None
         for hook_fn in spec.plugin_hooks.get("pre_invoke", []):
             try:
-                params = await hook_fn(tool_call.name, params)
+                params = await hook_fn(tool_call.id, tool_call.name, params)
             except (PermissionError, SandboxViolationError) as e:
                 return params, str(e)
             except Exception as e:
@@ -408,7 +408,7 @@ class ToolPipeline:
             return result
         for hook_fn in spec.plugin_hooks.get("post_invoke", []):
             try:
-                result = await hook_fn(tool_call.name, result)
+                result = await hook_fn(tool_call.id, tool_call.name, result)
             except Exception as e:
                 logger.exception("on_post_invoke hook 执行出错: {}", e)
         return result
