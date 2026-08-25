@@ -11,7 +11,7 @@ Skill（技能）是 Nanobee 的**用户知识资产**——以 Markdown 文档�
 - [技能 vs 插件](#技能-vs-插件)
 - [SKILL.md 格式](#skillmd-格式)
 - [注入策略（full_inject 声明）](#注入策略full_inject-声明)
-- [内置技能（_memory + skill_creator）](#内置技能_memory--skill_creator)
+- [内置技能（memory + skill_creator）](#内置技能memory--skill_creator)
 - [编写技能文档](#编写技能文档)
   - [元数据编写规范](#元数据编写规范)
   - [正文编写规范](#正文编写规范)
@@ -62,16 +62,16 @@ full_inject: false
 
 | 字段 | 必填 | 类型 | 说明 |
 |------|------|------|------|
-| `name` | 是 | string | 技能名称，仅小写字母、数字、连字符（kebab-case） |
+| `name` | 是 | string | 技能名称，仅小写字母、数字、下划线（snake_case） |
 | `description` | 是 | string | 简短描述用途，最多 1024 字符。LLM 通过此字段判断是否需要读取技能 body |
 | `author` | 否 | string | 创建者名称，如 `@username` |
 | `full_inject` | 否 | bool | `true` 时 body 全量注入 system prompt；`false`（默认）仅注入元数据 |
 | `compatibility` | 否 | string | 兼容性说明，如 `"requires Python >= 3.10"` |
 | `license` | 否 | string | 许可证，如 `"MIT"` |
 
-### 特殊的 `_memory` 技能
+### 内置 `memory` 技能
 
-以 `_memory` 命名的技能会显示在技能列表最前（按字母排序），无其他特殊待遇。
+`memory` 是内置的默认记忆策略模板，通过 `full_inject: true` 声明全量注入。用户可通过创建同名 `skills/memory/SKILL.md` 完全覆盖它。
 
 框架不识别任何硬编码的技能名称。`full_inject` 是唯一的注入策略声明标记。
 
@@ -98,7 +98,7 @@ full_inject: false ──▶  仅注入元数据（name + description）
 
 ```markdown
 ---
-name: _memory
+name: memory
 description: "长期记忆管理策略"
 full_inject: true
 ---
@@ -138,7 +138,7 @@ LLM 看到描述后，自主决定是否通过文件工具读取正文。这有�
 
 | 场景 | 推荐策略 |
 |------|---------|
-| 记忆管理策略（`_memory`） | `full_inject: true` |
+| 记忆管理策略（`memory`） | `full_inject: true` |
 | 安全/行为规则 | `full_inject: true` |
 | 通用知识（编程语言指南） | `full_inject: false` |
 | 模板/代码片段 | `full_inject: false` |
@@ -147,11 +147,11 @@ LLM 看到描述后，自主决定是否通过文件工具读取正文。这有�
 
 ---
 
-## 内置技能（_memory + skill_creator）
+## 内置技能（memory + skill_creator）
 
 框架打包两个内置技能，位于 `nanobee/skills/`（只读，不可覆盖）：
 
-### `_memory` — 兜底记忆策略
+### `memory` — 兜底记忆策略
 
 - **作用**：LLM 自主管理 memory 文件（读取 `memory/facts.md` 和 `memory/scratchpad.md`）
 - **注入方式**：`full_inject: true` —— 全量注入 system prompt
@@ -180,7 +180,7 @@ full_inject: false
 
 **规范**：
 
-- `name` 必须 kebab-case
+- `name` 必须 snake_case
 - `description` 应当让 LLM 一眼判断是否需要用此技能：包含触发场景、做什么、输出什么
 - `description` 禁止包含 `<` `>` 字符
 - `full_inject` 仅用于"LLM 每轮对话必须看到"的场景
@@ -230,7 +230,7 @@ SkillsLoader 从两个来源发现技能（2 秒 TTL 文件系统缓存）：
 ```
 来源 1: nanobee/skills/   ← 框架内置，只读
     nanobee/skills/
-      ├── _memory/SKILL.md
+      ├── memory/SKILL.md
       └── skill_creator/SKILL.md
 
 来源 2: user skills/      ← 用户添加，可写
@@ -253,15 +253,15 @@ nanobee/skills/git-helper/  → 不创建（同名时双方都显示，标注来
 
 - `SkillsLoader` 维护 2 秒 TTL 的文件系统缓存
 - 用户修改技能文件后，缓存会基于 mtime 自动失效，也可通过 `invalidate_cache()` 手动刷新
-- `_memory` 技能的缓存修改通过内置的 CacheConflictCheck hook 自动刷新
+- `memory` 技能的缓存修改通过内置的 CacheConflictCheck hook 自动刷新
 
 ---
 
 ## 命名规范
 
-- **kebab-case**：仅小写字母、数字、连字符，如 `weekly-report-generator`
+- **snake_case**：仅小写字母、数字、下划线，如 `weekly_report_generator`
 - **不以连字符起止**
-- **不要使用 `_memory` 等特殊前缀**（框架不对名称做特殊处理，`_memory` 只是按字母排序靠前）
+- **不要使用下划线等特殊前缀**（框架不对名称做特殊处理，命名规范为 snake_case）
 - **建议**：使用描述性名称，如 `git-log-analyzer`、`pr-reviewer`、`docker-compose-helper`
 
 ---
@@ -278,9 +278,9 @@ nanobee/skills/git-helper/  → 不创建（同名时双方都显示，标注来
 **文件**: `.../skills/git-log-analyzer/SKILL.md`
 </skill>
 
-<skill name="_memory" source="builtin" full_inject="true" file=".../skills/_memory/SKILL.md">
+<skill name="memory" source="builtin" full_inject="true" file=".../skills/memory/SKILL.md">
 **描述**: 长期记忆管理策略
-**文件**: `.../skills/_memory/SKILL.md`
+**文件**: `.../skills/memory/SKILL.md`
 </skill>
 ```
 
@@ -383,7 +383,7 @@ full_inject: true
 | `description: "什么都干"` 太模糊 | `description: "生成每周代码审查报告，包含质量统计和团队表现"` |
 | 技能正文不包含触发条件，LLM 永远不知道何时使用 | 明确"什么情况下使用这个技能" |
 | body 中包含恶意指令 | 渐进式注入天然免疫——仅 inject metadata |
-| 使用 `_memory` 之外的特定前缀命名字段 | 框架无特殊含义，直接写业务名称即可 |
+| 使用特定前缀命名字段 | 框架无特殊含义，直接写业务名称即可 |
 
 ---
 
@@ -418,6 +418,6 @@ ContextPipeline.build()
 │   └── pr-reviewer/SKILL.md
 │
 └── .venv/.../nanobee/skills/  ← 内置技能（只读）
-    ├── _memory/SKILL.md
+    ├── memory/SKILL.md
     └── skill_creator/SKILL.md
 ```

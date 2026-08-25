@@ -36,9 +36,9 @@ class TestSkillMeta:
         assert meta.author == ""
 
     def test_to_dict(self):
-        meta = SkillMeta(name="my-skill", description="A skill", author="bob")
+        meta = SkillMeta(name="my_skill", description="A skill", author="bob")
         d = meta.to_dict()
-        assert d["name"] == "my-skill"
+        assert d["name"] == "my_skill"
         assert d["description"] == "A skill"
         assert d["author"] == "bob"
 
@@ -69,19 +69,19 @@ class TestSkillsLoaderScan:
         assert loader.list_all_skills() == []
 
     def test_scan_user_skills(self, tmp_path: Path):
-        _make_skill_md(tmp_path / "skills", "skill-a", "描述 A", "内容 A")
-        _make_skill_md(tmp_path / "skills", "skill-b", "描述 B", "内容 B")
+        _make_skill_md(tmp_path / "skills", "skill_a", "描述 A", "内容 A")
+        _make_skill_md(tmp_path / "skills", "skill_b", "描述 B", "内容 B")
 
         loader = SkillsLoader(tmp_path / "skills")
         skills = loader.list_user_skills()
         assert len(skills) == 2
         names = {s.meta.name for s in skills}
-        assert names == {"skill-a", "skill-b"}
+        assert names == {"skill_a", "skill_b"}
 
     def test_get_skill_by_name(self, tmp_path: Path):
-        _make_skill_md(tmp_path / "skills", "my-skill", "My Skill", "content")
+        _make_skill_md(tmp_path / "skills", "my_skill", "My Skill", "content")
         loader = SkillsLoader(tmp_path / "skills")
-        skill = loader.get_skill("my-skill")
+        skill = loader.get_skill("my_skill")
         assert skill is not None
         assert skill.meta.description == "My Skill"
 
@@ -91,20 +91,20 @@ class TestSkillsLoaderScan:
 
     def test_flat_structure(self, tmp_path: Path):
         """技能目录扁平化：skills/<name>/SKILL.md"""
-        _make_skill_md(tmp_path / "skills", "alice-skill", "Alice 技能", "内容")
-        _make_skill_md(tmp_path / "skills", "bob-skill", "Bob 技能", "内容")
+        _make_skill_md(tmp_path / "skills", "alice_skill", "Alice 技能", "内容")
+        _make_skill_md(tmp_path / "skills", "bob_skill", "Bob 技能", "内容")
 
         loader = SkillsLoader(tmp_path / "skills")
         skills = loader.list_user_skills()
         assert len(skills) == 2
-        assert {s.meta.name for s in skills} == {"alice-skill", "bob-skill"}
+        assert {s.meta.name for s in skills} == {"alice_skill", "bob_skill"}
 
 
 class TestSkillsLoaderDualSource:
     """双源发现测试（builtin + user）"""
 
     def test_builtin_skills_loaded(self, tmp_path: Path):
-        _make_skill_md(tmp_path / "builtin", "_memory", "内置记忆", "记忆策略")
+        _make_skill_md(tmp_path / "builtin", "memory", "内置记忆", "记忆策略")
         _make_skill_md(tmp_path / "builtin", "skill_creator", "技能创建", "创建指南")
 
         loader = SkillsLoader(
@@ -113,11 +113,11 @@ class TestSkillsLoaderDualSource:
         )
         builtin = loader.list_builtin_skills()
         assert len(builtin) == 2
-        assert {s.meta.name for s in builtin} == {"_memory", "skill_creator"}
+        assert {s.meta.name for s in builtin} == {"memory", "skill_creator"}
 
     def test_list_all_merges_both_sources(self, tmp_path: Path):
-        _make_skill_md(tmp_path / "builtin", "builtin-1", "内置", "内置内容")
-        _make_skill_md(tmp_path / "skills", "user-1", "用户", "用户内容")
+        _make_skill_md(tmp_path / "builtin", "builtin_1", "内置", "内置内容")
+        _make_skill_md(tmp_path / "skills", "user_1", "用户", "用户内容")
 
         loader = SkillsLoader(
             user_skills_dir=tmp_path / "skills",
@@ -129,8 +129,8 @@ class TestSkillsLoaderDualSource:
         assert sources == {"builtin", "user"}
 
     def test_skill_source_tag(self, tmp_path: Path):
-        _make_skill_md(tmp_path / "builtin", "builtin-1", "内置", "内容")
-        _make_skill_md(tmp_path / "skills", "user-1", "用户", "内容")
+        _make_skill_md(tmp_path / "builtin", "builtin_1", "内置", "内容")
+        _make_skill_md(tmp_path / "skills", "user_1", "用户", "内容")
 
         loader = SkillsLoader(
             user_skills_dir=tmp_path / "skills",
@@ -140,14 +140,14 @@ class TestSkillsLoaderDualSource:
             assert s.source in ("builtin", "user")
 
     def test_get_prefers_user_over_builtin(self, tmp_path: Path):
-        _make_skill_md(tmp_path / "builtin", "my-skill", "内置版描述", "内置版")
-        _make_skill_md(tmp_path / "skills", "my-skill", "用户版描述", "用户版")
+        _make_skill_md(tmp_path / "builtin", "my_skill", "内置版描述", "内置版")
+        _make_skill_md(tmp_path / "skills", "my_skill", "用户版描述", "用户版")
 
         loader = SkillsLoader(
             user_skills_dir=tmp_path / "skills",
             builtin_skills_dir=tmp_path / "builtin",
         )
-        skill = loader.get_skill("my-skill")
+        skill = loader.get_skill("my_skill")
         assert skill is not None
         # get_skill 优先返回用户版
         assert skill.source == "user"
@@ -158,7 +158,7 @@ class TestSkillsLoaderCache:
     """SkillsLoader 缓存功能测试"""
 
     def test_cache_hits_on_second_read(self, tmp_path: Path):
-        _make_skill_md(tmp_path / "skills", "test-skill", "Test", "Body")
+        _make_skill_md(tmp_path / "skills", "test_skill", "Test", "Body")
         loader = SkillsLoader(tmp_path / "skills")
 
         skills1 = loader.list_user_skills()
@@ -173,13 +173,13 @@ class TestSkillsLoaderCache:
         assert loader.list_user_skills() == []
 
         # 写入新技能
-        _make_skill_md(tmp_path / "skills", "new-skill", "New", "Body")
+        _make_skill_md(tmp_path / "skills", "new_skill", "New", "Body")
 
         skills = loader.list_user_skills()
         assert len(skills) == 1
 
     def test_invalidate_cache_force(self, tmp_path: Path):
-        _make_skill_md(tmp_path / "skills", "skill-1", "S1", "Body")
+        _make_skill_md(tmp_path / "skills", "skill_1", "S1", "Body")
         loader = SkillsLoader(tmp_path / "skills")
         assert len(loader.list_user_skills()) == 1
 
@@ -193,7 +193,7 @@ class TestSkillsLoaderCache:
         assert loader.list_user_skills() == []  # hit cache
 
     def test_builtin_cache_separate(self, tmp_path: Path):
-        _make_skill_md(tmp_path / "builtin", "builtin-1", "B", "Body")
+        _make_skill_md(tmp_path / "builtin", "builtin_1", "B", "Body")
         loader = SkillsLoader(
             user_skills_dir=tmp_path / "skills",
             builtin_skills_dir=tmp_path / "builtin",
@@ -214,9 +214,9 @@ class TestSkillSerialization:
         assert body == "正文内容"
 
     def test_serialize_roundtrip(self, tmp_path: Path):
-        _make_skill_md(tmp_path / "skills", "my-skill", "描述", "body content")
+        _make_skill_md(tmp_path / "skills", "my_skill", "描述", "body content")
         loader = SkillsLoader(tmp_path / "skills")
-        skill = loader.get_skill("my-skill")
+        skill = loader.get_skill("my_skill")
         assert skill is not None
         assert skill.body == "body content"
         assert skill.meta.description == "描述"

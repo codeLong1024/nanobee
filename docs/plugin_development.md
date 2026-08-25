@@ -753,7 +753,7 @@ class MyMemoryPlugin(MemoryPlugin):
         return "\n".join(results)
 ```
 
-> 框架当前无内置 Memory 插件。`_memory` 技能通过 LLM 自主管理 `memory/facts.md` 文件实现了最小化记忆。如需高级记忆策略（向量检索、语义聚类），请实现 MemoryPlugin。
+> 框架当前无内置 Memory 插件。`memory` 技能通过 LLM 自主管理 `memory/facts.md` 文件实现了最小化记忆。如需高级记忆策略（向量检索、语义聚类），请实现 MemoryPlugin。
 
 ---
 
