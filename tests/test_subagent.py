@@ -474,7 +474,7 @@ class TestSubagentStatus:
         assert status.iteration == 0
         assert status.tool_events == []
         assert status.usage == {}
-        assert status.stop_reason is None
+        assert status.exit_reason is None
         assert status.error is None
 
     def test_phase_transition(self) -> None:

@@ -612,6 +612,21 @@ class DingTalkSender:
         """
         return card_id in self._card_has_streamed or card_id in self._streamed_cards
 
+    def take_stream_buffer(self, card_id: str) -> str:
+        """取回卡片尚未终态化的流式 buffer（半截内容），用于错误完结时拼接。
+
+        错误场景（LLM error / 工具 fatal_error / 程序异常）下，卡片可能已经
+        通过流式 delta 推过部分内容，这些内容存在 ``_streaming_buffers`` 里。
+        错误完结时需保留这些进度，再追加失败提示，而非清空。
+
+        Args:
+            card_id: 卡片实例 ID。
+
+        Returns:
+            已累积的流式内容；无 buffer 或已清空时返回空串。
+        """
+        return self._streaming_buffers.pop(card_id, "") or ""
+
     async def finalize_card_with_notification(
         self, card_id: str, msg_id: str, notification: str,
     ) -> None:

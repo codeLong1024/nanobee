@@ -187,6 +187,11 @@ class CardManager:
 
         Sends the FULL accumulated content each time — DingTalk renders
         it progressively.
+
+        Args:
+            card_instance_id: 卡片实例 ID。
+            content: 推送的完整内容。
+            is_final: 是否为最后一次流式更新（isFinalize）。
         """
         client = await self.client.ensure_async_client()
         headers = await self.client.get_headers_async()
@@ -201,11 +206,19 @@ class CardManager:
             "isError": False,
         }
 
+        logger.debug(
+            "'[CARD-DEBUG] stream_content card={} isFinalize={} content={!r}'",
+            card_instance_id, is_final, content[:200],
+        )
         try:
             resp = await client.put(
                 f"{self.client.api_url}/card/streaming",
                 headers=headers,
                 json=body,
+            )
+            logger.debug(
+                "'[CARD-DEBUG] stream_content resp card={} status={} body={}'",
+                card_instance_id, resp.status_code, (resp.text or "")[:500],
             )
             await self.client.check_response(resp, f"[{card_instance_id}] Stream content")
             resp.raise_for_status()
@@ -245,38 +258,50 @@ class CardManager:
             "cardUpdateOptions": {"updateCardDataByKey": True},
         }
 
-        logger.debug("'[CARD] finish_streaming {} ({} chars)'", card_instance_id, len(final_content))
+        logger.debug(
+            "'[CARD] finish_streaming {} ({} chars) body={}'",
+            card_instance_id, len(final_content), json.dumps(finish_body, ensure_ascii=False)[:500],
+        )
         resp = await client.put(
             f"{self.client.api_url}/card/instances",
             headers=headers,
             json=finish_body,
         )
+        logger.debug(
+            "'[CARD-DEBUG] finish_streaming resp card={} status={} body={}'",
+            card_instance_id, resp.status_code, (resp.text or "")[:500],
+        )
         await self.client.check_response(resp, f"[{card_instance_id}] Finish streaming")
         resp.raise_for_status()
 
     async def fail_card(self, card_instance_id: str, error_message: str) -> None:
-        """Mark card as FAILED."""
-        client = await self.client.ensure_async_client()
-        headers = await self.client.get_headers_async()
+        """以 FINISHED 态完结失败卡片，展示错误文案。
 
-        fail_body: dict[str, Any] = {
-            "outTrackId": card_instance_id,
-            "cardData": {
-                "cardParamMap": {
-                    "flowStatus": AICardStatus.FAILED,
-                    "msgContent": f"处理失败: {error_message}",
-                }
-            },
-        }
+        依据钉钉官方 SDK（dingtalk_stream.card_instance.AIMarkdownCardInstance.ai_fail）
+        的语义：``flowStatus=FAILED`` 的卡片官方仅携带 ``msgTitle``/``logo``，
+        不携带 ``msgContent``，客户端对 FAILED 态的处理是终止并清空内容，导致
+        卡片"一闪而过"。因此要让错误文案可见，卡片必须用 ``flowStatus=FINISHED``
+        （与正常完成一致），仅将 msgContent 替换为错误文案。
 
-        logger.warning("'[CARD] fail_card {}: {}'", card_instance_id, error_message)
+        两步式：
+        1. stream_content 推错误文案（isFinalize=True，停止打字机）
+        2. finish_streaming 置 flowStatus=FINISHED + 错误文案
+
+        Args:
+            card_instance_id: 卡片实例 ID。
+            error_message: 要展示的错误文案（调用方已拼好半截进度 + 失败提示）。
+        """
+        fail_content = f"处理失败: {error_message}"
+
+        logger.warning(
+            "'[CARD] fail_card {}: msg={} final_content={!r}'",
+            card_instance_id, error_message, fail_content,
+        )
         try:
-            resp = await client.put(
-                f"{self.client.api_url}/card/instances",
-                headers=headers,
-                json=fail_body,
-            )
-            resp.raise_for_status()
+            # 第一步：推错误文案到渲染管线（isFinalize=True 停止打字机）
+            await self.stream_content(card_instance_id, fail_content, is_final=True)
+            # 第二步：置 flowStatus=FINISHED（复用正常完成路径，仅内容为错误文案）
+            await self.finish_streaming(card_instance_id, fail_content)
         except Exception:
             logger.exception("'[CARD] fail_card error {}'", card_instance_id)
 

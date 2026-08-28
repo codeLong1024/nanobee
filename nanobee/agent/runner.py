@@ -22,6 +22,7 @@ from nanobee.agent.result_normalizer import ResultNormalizer
 from nanobee.agent.specs import (
     AgentRunResult,
     AgentRunSpec,
+    ExitReason,
     PluginHooks,
     _DEFAULT_ERROR_MESSAGE,
 )
@@ -47,13 +48,11 @@ from nanobee.utils.progress_events import (
 )
 from nanobee.utils.notifications import get_notification_content
 from nanobee.utils.runtime import (
-    EMPTY_FINAL_RESPONSE_MESSAGE,
     build_finalization_retry_message,
     build_length_recovery_message,
     is_blank_text,
 )
 
-_PERSISTED_MODEL_ERROR_PLACEHOLDER = "[Assistant reply unavailable due to model error.]"
 _MAX_EMPTY_RETRIES = 2
 _MAX_LENGTH_RECOVERIES = 3
 _MAX_INJECTIONS_PER_TURN = 3
@@ -72,6 +71,21 @@ class AgentRunner:
         self.provider = provider
         self._tool_pipeline = ToolPipeline()
         self._result_normalizer = ResultNormalizer()
+
+    @staticmethod
+    def _classify_finish(finish_reason: str | None) -> bool:
+        """provider 的 finish_reason → 是否失败。单点维护语义映射。
+
+        finish_reason 字符串只在 runner 边界出现一次，越过边界后变成
+        ``error`` 字段，不再向上泄漏字符串枚举。
+
+        Args:
+            finish_reason: provider 返回的 finish_reason。
+
+        Returns:
+            True 表示该轮是 LLM 错误响应。
+        """
+        return finish_reason == "error"
 
     @staticmethod
     def _merge_message_content(left: Any, right: Any) -> str | list[dict[str, Any]]:
@@ -214,22 +228,34 @@ class AgentRunner:
             result = await self._run_core(spec, hook, messages)
         except asyncio.CancelledError:
             context.messages = deepcopy(messages)
-            context.stop_reason = "cancelled"
+            context.exit_reason = ExitReason.CANCELLED
             context.exception = asyncio.CancelledError
             raise
         except Exception as exc:
+            # 程序异常统一折叠进 error 返回，不 re-raise（CancelledError 已单独处理）。
+            # run() 契约：要么正常返回（含 error 字段），要么 CancelledError。
+            # 调用方（loop/subagent）无需再兜底异常，错误统一由 result.error 承载。
             context.messages = deepcopy(messages)
-            context.stop_reason = "error"
+            context.exit_reason = ExitReason.COMPLETED
             context.error = f"Error: {type(exc).__name__}: {exc}"
             context.exception = exc
             await hook.on_error(context)
-            raise
+            return AgentRunResult(
+                final_content=None,
+                messages=context.messages,
+                tools_used=list(getattr(context, "tools_used", [])),
+                usage={},
+                exit_reason=ExitReason.COMPLETED,
+                error=context.error,
+                tool_events=[],
+                had_injections=False,
+            )
         else:
             context.messages = deepcopy(result.messages)
             context.final_content = result.final_content
             context.tools_used = list(result.tools_used)
             context.usage = dict(result.usage)
-            context.stop_reason = result.stop_reason
+            context.exit_reason = result.exit_reason
             context.error = result.error
             context.tool_events = deepcopy(result.tool_events)
             context.had_injections = result.had_injections
@@ -244,7 +270,7 @@ class AgentRunner:
             except Exception:
                 logger.exception(
                     "AgentHook.on_finally error after %s",
-                    context.stop_reason or "run exception",
+                    context.exit_reason.value if context.exit_reason else "run exception",
                 )
 
     async def _run_core(
@@ -262,7 +288,7 @@ class AgentRunner:
         tools_used: list[str] = []
         usage: dict[str, int] = {"prompt_tokens": 0, "completion_tokens": 0}
         error: str | None = None
-        stop_reason = "completed"
+        exit_reason = ExitReason.COMPLETED
         tool_events: list[dict[str, str]] = []
         external_lookup_counts: dict[str, int] = {}
         # 每轮对同一外部目标的重复尝试节流
@@ -332,6 +358,8 @@ class AgentRunner:
                 iteration, _elapsed_llm_call, response.finish_reason,
             )
 
+            # finish_reason 字符串仅在循环边界映射一次为布尔语义，不向上泄漏。
+            is_error = self._classify_finish(response.finish_reason)
             raw_usage = self._usage_dict(response.usage)
             context.response = response
             context.usage = dict(raw_usage)
@@ -410,12 +438,12 @@ class AgentRunner:
                     completed_tool_results.append(tool_message)
                 if fatal_error is not None:
                     error = f"Error: {type(fatal_error).__name__}: {fatal_error}"
-                    final_content = error
-                    stop_reason = "tool_error"
-                    self._append_final_message(messages, final_content)
+                    # 失败无"回复"，错误语义由 error 字段承载，不伪装成 assistant 回复
+                    final_content = None
+                    exit_reason = ExitReason.COMPLETED
                     context.final_content = final_content
                     context.error = error
-                    context.stop_reason = stop_reason
+                    context.exit_reason = exit_reason
                     await hook.after_iteration(context)
                     should_continue, injection_cycles = await self._try_drain_injections(
                         spec, messages, None, injection_cycles,
@@ -456,7 +484,7 @@ class AgentRunner:
                 )
 
             clean = hook.finalize_content(context, response.content)
-            if response.finish_reason != "error" and is_blank_text(clean):
+            if not is_error and is_blank_text(clean):
                 empty_content_retries += 1
                 if empty_content_retries < _MAX_EMPTY_RETRIES:
                     logger.warning(
@@ -509,7 +537,7 @@ class AgentRunner:
                     continue
 
             assistant_message: dict[str, Any] | None = None
-            if response.finish_reason != "error" and not is_blank_text(clean):
+            if not is_error and not is_blank_text(clean):
                 assistant_message = build_assistant_message(
                     clean,
                     reasoning_content=response.reasoning_content,
@@ -527,21 +555,26 @@ class AgentRunner:
             if should_continue:
                 had_injections = True
 
-            if hook.wants_streaming():
+            # on_stream_end 是"流结束"传输信号，只表达 resuming，不夹带错误语义。
+            # 错误语义唯一由 AgentRunResult.error 承载，经 loop 的系统通知（fail_card）下发。
+            # 错误时流并未真正"结束"而是"中止"，跳过 on_stream_end，卡片停在 INPUTING，
+            # 由 loop 的 fail_card 一步拉到 FAILED + 渲染错误文案，避免空 FINISHED 残留与二次终态化。
+            if is_error:
+                error = clean or spec.error_message or _DEFAULT_ERROR_MESSAGE
+            elif hook.wants_streaming():
                 await hook.on_stream_end(context, resuming=should_continue)
 
             if should_continue:
                 await hook.after_iteration(context)
                 continue
 
-            if response.finish_reason == "error":
-                final_content = clean or spec.error_message or _DEFAULT_ERROR_MESSAGE
-                stop_reason = "error"
-                error = final_content
-                self._append_model_error_placeholder(messages)
+            if is_error:
+                # 失败无"回复"，诊断信息不进对话历史
+                final_content = None
+                exit_reason = ExitReason.COMPLETED
                 context.final_content = final_content
                 context.error = error
-                context.stop_reason = stop_reason
+                context.exit_reason = exit_reason
                 await hook.after_iteration(context)
                 should_continue, injection_cycles = await self._try_drain_injections(
                     spec, messages, None, injection_cycles,
@@ -552,13 +585,13 @@ class AgentRunner:
                     continue
                 break
             if is_blank_text(clean):
-                final_content = EMPTY_FINAL_RESPONSE_MESSAGE
-                stop_reason = "empty_final_response"
-                error = final_content
-                self._append_final_message(messages, final_content)
+                error = "empty final response"
+                # 失败无"回复"，诊断信息不进对话历史
+                final_content = None
+                exit_reason = ExitReason.COMPLETED
                 context.final_content = final_content
                 context.error = error
-                context.stop_reason = stop_reason
+                context.exit_reason = exit_reason
                 await hook.after_iteration(context)
                 should_continue, injection_cycles = await self._try_drain_injections(
                     spec, messages, None, injection_cycles,
@@ -587,11 +620,11 @@ class AgentRunner:
             )
             final_content = clean
             context.final_content = final_content
-            context.stop_reason = stop_reason
+            context.exit_reason = exit_reason
             await hook.after_iteration(context)
             break
         else:
-            stop_reason = "max_iterations"
+            exit_reason = ExitReason.MAX_ITERATIONS
             if spec.max_iterations_message:
                 final_content = spec.max_iterations_message.format(
                     max_iterations=spec.max_iterations,
@@ -615,7 +648,7 @@ class AgentRunner:
             messages=messages,
             tools_used=tools_used,
             usage=usage,
-            stop_reason=stop_reason,
+            exit_reason=exit_reason,
             error=error,
             tool_events=tool_events,
             had_injections=had_injections,
@@ -843,12 +876,6 @@ class AgentRunner:
             messages[-1] = build_assistant_message(content)
             return
         messages.append(build_assistant_message(content))
-
-    @staticmethod
-    def _append_model_error_placeholder(messages: list[dict[str, Any]]) -> None:
-        if messages and messages[-1].get("role") == "assistant" and not messages[-1].get("tool_calls"):
-            return
-        messages.append(build_assistant_message(_PERSISTED_MODEL_ERROR_PLACEHOLDER))
 
     @staticmethod
     def _drop_orphan_tool_results(

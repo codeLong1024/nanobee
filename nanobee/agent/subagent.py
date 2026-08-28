@@ -41,7 +41,7 @@ class SubagentStatus:
     iteration: int = 0
     tool_events: list = field(default_factory=list)   # [{name, status, detail}, ...]
     usage: dict = field(default_factory=dict)          # token usage
-    stop_reason: str | None = None
+    exit_reason: str | None = None
     error: str | None = None
 
 
@@ -381,7 +381,7 @@ class SubagentManager:
                     max_tool_result_chars=self.max_tool_result_chars,
                     hook=_SubagentHook(task_id, status),
                     max_iterations_message=(
-                        "Task completed but no final response was generated."
+                        "任务已完成，但未生成最终回复。"
                     ),
                     error_message=None,
                     fail_on_tool_error=True,
@@ -394,25 +394,24 @@ class SubagentManager:
                 reset_sandbox(sandbox_token)
 
             status.phase = "done"
-            status.stop_reason = result.stop_reason
+            status.exit_reason = result.exit_reason.value if result.exit_reason else None
 
-            if result.stop_reason == "tool_error":
+            # 失败语义统一由 error 字段承载（工具致命错误 / LLM 错误 / 空回复折叠于此）
+            if result.error is not None:
                 status.tool_events = list(result.tool_events)
-                await self._announce_result(
-                    task_id, label, task,
-                    self._format_partial_progress(result),
-                    origin, "error", origin_message_id,
+                message = (
+                    self._format_partial_progress(result)
+                    if result.tool_events
+                    else (result.error or "错误：子代理执行失败。")
                 )
-            elif result.stop_reason == "error":
                 await self._announce_result(
-                    task_id, label, task,
-                    result.error or "Error: subagent execution failed.",
+                    task_id, label, task, message,
                     origin, "error", origin_message_id,
                 )
             else:
                 final_result = (
                     result.final_content
-                    or "Task completed but no final response was generated."
+                    or "任务已完成，但未生成最终回复。"
                 )
                 logger.info("Subagent [{}] completed successfully", task_id)
                 await self._announce_result(
