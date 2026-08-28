@@ -384,6 +384,27 @@ class TestDingTalkSenderSendEmotion:
             assert mock_update.await_count >= 1
 
     @pytest.mark.asyncio
+    async def test_send_streaming_end_no_error_uses_empty_finalize(
+        self, sender, mock_card_manager,
+    ):
+        """无 _error 标记的流式结束仍走默认路径：空 buffer 直接 finish_streaming。"""
+        msg = _make_msg(
+            content="",
+            chat_id="conv-test",
+            metadata={
+                "_stream_end": True,
+                "_card_id": "card-plain-stream",
+                "_resuming": False,
+                "msg_id": "msg-plain-stream",
+            },
+        )
+        await sender.send(msg)
+        # 默认路径：直接 finish_streaming（空 buffer 时也调用，保持既有行为）
+        mock_card_manager.finish_streaming.assert_awaited()
+        args = mock_card_manager.finish_streaming.await_args
+        assert args[0][0] == "card-plain-stream"
+
+    @pytest.mark.asyncio
     async def test_send_non_streaming_card_uses_msg_id(self, sender):
         """Non-streaming path with card_id uses msg_id for 'done' emotion + cleanup."""
         msg = _make_msg(
@@ -886,8 +907,8 @@ class TestOnMessageResponseDelivery:
             content="notification text",
             media=["report.pdf"],
         )
-        # 设置 stop_reason = max_iterations
-        response.metadata = {"stop_reason": "max_iterations"}
+        # 设置 exit_reason = max_iterations
+        response.metadata = {"exit_reason": "max_iterations"}
         dingtalk_plugin._kernel.handle_message.return_value = response
 
         await dingtalk_plugin._on_message(
@@ -907,3 +928,106 @@ class TestOnMessageResponseDelivery:
         call_args = dingtalk_plugin.sender.send.await_args[0][0]
         assert call_args.content == ""
         assert call_args.media == ["report.pdf"]
+
+    # ---- Branch S: 系统通知分流（命令响应 / 错误通知）----
+
+    @pytest.mark.asyncio
+    async def test_branch_s_error_notification_fails_card(
+        self, dingtalk_plugin,
+    ):
+        """error 系统通知 + 有 card → fail_card（卡片 FAILED，非空文案，不残留空卡片）。"""
+        from nanobee.channel.message import OutboundMessage
+
+        dingtalk_plugin.config.streaming = True
+        dingtalk_plugin.sender = _make_sender()
+        dingtalk_plugin.sender.is_card_handled_by_streaming.return_value = True
+        # 纯错误场景无半截流式内容，take_stream_buffer 返回空串
+        dingtalk_plugin.sender.take_stream_buffer = MagicMock(return_value="")
+        dingtalk_plugin.card_manager = MagicMock()
+        dingtalk_plugin.card_manager.fail_card = AsyncMock()
+
+        response = OutboundMessage(
+            channel="channel_dingtalk",
+            chat_id="conv-test",
+            content="抱歉，处理消息时发生内部错误。",
+            metadata={"notification_type": "system", "severity": "error"},
+        )
+        dingtalk_plugin._kernel.handle_message.return_value = response
+
+        await dingtalk_plugin._on_message(
+            content="hi",
+            sender_id="u1",
+            sender_name="Alice",
+            chat_id="conv-test",
+            card_id="card-err-001",
+            msg_id="msg-err-001",
+        )
+
+        dingtalk_plugin.card_manager.fail_card.assert_awaited_once_with(
+            "card-err-001", "抱歉，处理消息时发生内部错误。",
+        )
+        # 不走普通卡片流式终态化
+        dingtalk_plugin.sender.finalize_card_with_notification.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_branch_s_info_notification_no_card_sends_markdown(
+        self, dingtalk_plugin,
+    ):
+        """info 系统通知 + 无 card → markdown 兜底 sender.send。"""
+        from nanobee.channel.message import OutboundMessage
+
+        dingtalk_plugin.config.streaming = True
+        dingtalk_plugin.sender = _make_sender()
+
+        response = OutboundMessage(
+            channel="channel_dingtalk",
+            chat_id="conv-test",
+            content="会话已重置。下一条消息将开始全新对话。",
+            metadata={"notification_type": "system", "severity": "info"},
+        )
+        dingtalk_plugin._kernel.handle_message.return_value = response
+
+        await dingtalk_plugin._on_message(
+            content="/new",
+            sender_id="u1",
+            sender_name="Alice",
+            chat_id="conv-test",
+            card_id=None,
+        )
+
+        dingtalk_plugin.sender.send.assert_awaited_once()
+        call_args = dingtalk_plugin.sender.send.await_args[0][0]
+        assert call_args.content == "会话已重置。下一条消息将开始全新对话。"
+        assert "_card_id" not in call_args.metadata  # 无 card 时不带 _card_id
+
+    @pytest.mark.asyncio
+    async def test_branch_s_info_notification_with_card_streamed_finalizes(
+        self, dingtalk_plugin,
+    ):
+        """info 系统通知 + 有 card 且已被流式处理 → finalize_card_with_notification。"""
+        from nanobee.channel.message import OutboundMessage
+
+        dingtalk_plugin.config.streaming = True
+        dingtalk_plugin.sender = _make_sender()
+        dingtalk_plugin.sender.is_card_handled_by_streaming.return_value = True
+
+        response = OutboundMessage(
+            channel="channel_dingtalk",
+            chat_id="conv-test",
+            content="会话已重置。",
+            metadata={"notification_type": "system", "severity": "info"},
+        )
+        dingtalk_plugin._kernel.handle_message.return_value = response
+
+        await dingtalk_plugin._on_message(
+            content="/new",
+            sender_id="u1",
+            sender_name="Alice",
+            chat_id="conv-test",
+            card_id="card-info-001",
+            msg_id="msg-info-001",
+        )
+
+        dingtalk_plugin.sender.finalize_card_with_notification.assert_awaited_once_with(
+            "card-info-001", "msg-info-001", "会话已重置。",
+        )

@@ -325,12 +325,14 @@ class NanobeeKernel:
                 channel=msg.channel,
                 chat_id=msg.chat_id,
             )
-        except Exception:
+        except Exception as exc:
             logger.exception("处理上下文 {} 的消息出错", key)
+            # 透传真实异常详情（而非笼统的"内部错误"）
             response = build_notification(
                 "turn_internal_error",
                 channel=msg.channel,
                 chat_id=msg.chat_id,
+                detail=f"{type(exc).__name__}: {exc}",
             )
         finally:
             self._active_turns.pop(key, None)

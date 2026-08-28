@@ -70,7 +70,11 @@ _CATALOG: dict[str, Notification] = {
     ),
     "turn_internal_error": Notification(
         kind="turn_internal_error",
-        content="抱歉，处理消息时发生内部错误。",
+        content=(
+            "抱歉，处理消息时发生内部错误，请稍后重试或联系管理员。\n\n"
+            "详细信息：\n{detail}\n\n"
+            "如问题持续，请重试一次；若仍失败，可尝试换一种提问方式。"
+        ),
         severity="error",
     ),
     # ── Agent 循环终止 ──

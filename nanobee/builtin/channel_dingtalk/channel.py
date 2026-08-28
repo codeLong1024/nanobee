@@ -343,7 +343,8 @@ class DingTalkChannelPlugin(ChannelPlugin):
     ) -> None:
         """投递内核响应到钉钉通道。
 
-        5 种场景，用 guard clause 扁平化处理：
+        6 种场景，用 guard clause 扁平化处理：
+        S) 系统通知（命令响应 / 错误通知）→ _deliver_system_notification（不走卡片流式）
         E) 非流式 → sender.send(content + media)
         D) 流式 + 无 card → markdown fallback sender.send
         C) 流式 + card + 未被流式处理 → sender.send(content + media)
@@ -351,6 +352,16 @@ class DingTalkChannelPlugin(ChannelPlugin):
         B) 流式 + card + 已处理 + 正常完成 → 仅 media（内容已在流式中送达）
         """
         if not response or not self.sender:
+            return
+
+        # 系统通知（命令响应 / 错误通知）：不走 LLM 卡片流式路径。
+        # 错误场景在 4.3 提前返回，卡片从 INPUTING 直接被 fail_card 拉到 FAILED，
+        # 不再触发 _stream_end 的空卡片终态化。
+        resp_metadata = getattr(response, "metadata", {}) or {}
+        if resp_metadata.get("notification_type") == "system":
+            await self._deliver_system_notification(
+                response, chat_id, card_id, msg_id, resp_metadata,
+            )
             return
 
         content_reply = str(response.content or "")
@@ -381,12 +392,75 @@ class DingTalkChannelPlugin(ChannelPlugin):
             )
             return
 
-        # Branch A/B: 流式 + card 已被流式处理，按 stop_reason 分流
-        stop_reason = (getattr(response, "metadata", {}) or {}).get("stop_reason")
-        if stop_reason == "max_iterations":
+        # Branch A/B: 流式 + card 已被流式处理，按 exit_reason 分流
+        exit_reason = (getattr(response, "metadata", {}) or {}).get("exit_reason")
+        if exit_reason == "max_iterations":
             await self._deliver_max_iterations(card_id, chat_id, msg_id, content_reply, outbound_media)
         else:
             await self._deliver_normal_completion(card_id, chat_id, outbound_media)
+
+    async def _deliver_system_notification(
+        self, response: Any, chat_id: str, card_id: str | None,
+        msg_id: str | None, meta: dict[str, Any],
+    ) -> None:
+        """投递系统通知（命令响应 / 错误通知），不走 LLM 卡片流式路径。
+
+        - error 场景：卡片 FAILED + 非空文案，不残留空 FINISHED 卡片。
+        - info/warning 场景（如 /new /stop）：卡片若有流式内容则终态化，否则 markdown。
+
+        Args:
+            response: 系统通知 OutboundMessage（含 content / media / metadata）。
+            chat_id: 会话 ID。
+            card_id: 已创建的 AI Card 实例 ID（可能为 None）。
+            msg_id: 消息唯一 ID（用于卡片终态化与情感表情跟踪）。
+            meta: 系统通知 metadata（含 severity 等）。
+        """
+        severity = meta.get("severity", "info")
+        content = str(response.content or "")
+        outbound_media = getattr(response, "media", []) or []
+        resp_metadata = self._build_resp_metadata(card_id, msg_id)
+
+        if card_id and severity == "error":
+            # 错误完结的唯一出口：fail_card（用流式 isError 语义终态化）。
+            # 若卡片已通过流式推过部分内容（工具执行出错等中途失败），
+            # 保留半截进度，追加失败提示；否则仅展示失败文案。
+            # 错误不再经 on_stream_end 流式链路表达，避免双路径二次终态化。
+            if self.card_manager:
+                error_text = content
+                if self.sender is not None:
+                    partial = self.sender.take_stream_buffer(card_id)
+                    if partial.strip():
+                        error_text = f"{partial.strip()}\n\n---\n⚠️ {content}"
+                logger.debug(
+                    "'[CARD-DEBUG] error notification card={} error_text={!r}'",
+                    card_id, error_text[:200],
+                )
+                await self.card_manager.fail_card(card_id, error_text)
+            else:
+                await self._deliver_text_response(
+                    chat_id, content, outbound_media, resp_metadata,
+                    branch_label="system-error-fallback",
+                )
+            return
+
+        if card_id:
+            # info/warning 通知：卡片若有流式内容则终态化，否则 markdown 兜底
+            if self.sender.is_card_handled_by_streaming(card_id):
+                await self.sender.finalize_card_with_notification(
+                    card_id, msg_id or chat_id, content,
+                )
+            else:
+                await self._deliver_text_response(
+                    chat_id, content, outbound_media, resp_metadata,
+                    branch_label="system-notification-markdown",
+                )
+            return
+
+        # 无卡片：直接 markdown
+        await self._deliver_text_response(
+            chat_id, content, outbound_media, resp_metadata,
+            branch_label="system-notification-markdown",
+        )
 
     async def _deliver_text_response(
         self, chat_id: str, content_reply: str, outbound_media: list[str],

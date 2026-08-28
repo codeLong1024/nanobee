@@ -27,6 +27,7 @@ from nanobee.agent.tools.subagent import ListSubagentsTool, SpawnSubagentTool
 from nanobee.exceptions import LoopStateError
 from nanobee.agent.hook import AgentHook, CompositeHook
 from nanobee.agent.runner import _MAX_INJECTIONS_PER_TURN, AgentRunner, AgentRunSpec, PluginHooks
+from nanobee.agent.specs import ExitReason
 from nanobee.agent.tools.registry import ToolRegistry, ToolPluginAdapter
 from nanobee.providers.base import LLMProvider
 from nanobee.providers.factory import ProviderSnapshot
@@ -84,7 +85,8 @@ class TurnContext:
     final_content: str | None = None
     tools_used: list[str] = field(default_factory=list)
     all_messages: list[dict[str, Any]] = field(default_factory=list)
-    stop_reason: str = ""
+    exit_reason: str = ""
+    error: str | None = None
     had_injections: bool = False
 
     user_persisted_early: bool = False
@@ -802,10 +804,10 @@ class AgentLoop:
         on_retry_wait: Callable[[str], Awaitable[None]] | None = None,
         pending_queue: asyncio.Queue | None = None,
         extra_hook: Any = None,
-    ) -> tuple[str | None, list[str], list[dict], str, bool]:
+    ) -> tuple[str | None, list[str], list[dict], str, str | None, bool]:
         """运行 Agent 迭代循环（LLM 调用 + 工具执行）。
 
-        Returns (final_content, tools_used, messages, stop_reason, had_injections).
+        Returns (final_content, tools_used, messages, exit_reason, error, had_injections)。
         """
         async def _drain_pending(*, limit: int = _MAX_INJECTIONS_PER_TURN) -> list[dict[str, Any]]:
             """排空待处理队列中的后续消息。"""
@@ -840,7 +842,7 @@ class AgentLoop:
             max_iterations=self.max_iterations,
             max_tool_result_chars=self.max_tool_result_chars,
             hook=hook,
-            error_message="Sorry, I encountered an error calling the AI model.",
+            error_message="抱歉，调用 AI 模型时发生了错误。",
             concurrent_tools=True,
             workspace=self.workspace,
             context_id=context_id,
@@ -864,10 +866,10 @@ class AgentLoop:
             file_edit_tools=self._file_edit_tools,
         ))
 
-        if result.stop_reason == "max_iterations":
+        if result.exit_reason == ExitReason.MAX_ITERATIONS:
             logger.warning("达到最大迭代次数 ({max_iter})", max_iter=self.max_iterations)
-        elif result.stop_reason == "error":
-            logger.error("LLM 返回错误: {error}", error=(result.final_content or "")[:200])
+        elif result.error is not None:
+            logger.error("LLM 返回错误: {error}", error=result.error[:200])
 
         # 通知插件对话轮次已完成（后台执行，不阻塞主流程）
         # 注：原 event_bus.publish("agent.turn_completed") 已移除（2026-06-27），
@@ -877,7 +879,14 @@ class AgentLoop:
         )
         task.add_done_callback(lambda t: t.exception() if t.exception() else None)
 
-        return result.final_content, result.tools_used, result.messages, result.stop_reason, result.had_injections
+        return (
+            result.final_content,
+            result.tools_used,
+            result.messages,
+            result.exit_reason.value,
+            result.error,
+            result.had_injections,
+        )
 
     async def close_mcp(self) -> None:
         """关闭 MCP 连接（委托给 MCPManager）。"""
@@ -962,13 +971,14 @@ class AgentLoop:
                     state=ctx.state, started_at=t0,
                     duration_ms=duration, event="ok", error=str(exc),
                 ))
-                # 统一错误恢复：填充 ctx 后跳到 RESPOND，绕过 SAVE 不污染历史
-                if ctx.final_content is None or not ctx.final_content.strip():
-                    ctx.final_content = (
-                        f"抱歉，处理请求时发生内部错误。\n"
-                        f"{type(exc).__name__}: {exc}"
-                    )
-                ctx.stop_reason = "error"
+                # 统一错误恢复：填充 error 后跳到 RESPOND，绕过 SAVE 不污染历史。
+                # 错误走系统通知路径（_state_respond 识别 ctx.error），诊断信息不伪装成回复。
+                ctx.error = (
+                    f"抱歉，处理请求时发生内部错误。\n"
+                    f"{type(exc).__name__}: {exc}"
+                )
+                ctx.final_content = None
+                ctx.exit_reason = ExitReason.COMPLETED.value
                 ctx.tools_used = ctx.tools_used or []
                 ctx.all_messages = ctx.all_messages or []
                 ctx.had_injections = False
@@ -1222,11 +1232,12 @@ class AgentLoop:
             reset_bwrap_rw_bind(_bwrap_rw_bind_token)
         _elapsed_runner = (time.perf_counter() - _t_runner) * 1000
         logger.debug("[RUN] runner.run 完成，耗时 {:.0f}ms", _elapsed_runner)
-        final_content, tools_used, all_msgs, stop_reason, had_injections = result
+        final_content, tools_used, all_msgs, exit_reason, error, had_injections = result
         ctx.final_content = final_content
         ctx.tools_used = tools_used
         ctx.all_messages = all_msgs
-        ctx.stop_reason = stop_reason
+        ctx.exit_reason = exit_reason
+        ctx.error = error
         ctx.had_injections = had_injections
         return "ok"
 
@@ -1237,19 +1248,17 @@ class AgentLoop:
         if ctx.msg.metadata.get("_subagent_auto_trigger"):
             return "ok"
 
-        if ctx.final_content is None or not ctx.final_content.strip():
-            ctx.final_content = EMPTY_FINAL_RESPONSE_MESSAGE
-
         ctx.turn_latency_ms = max(0, int((time.time() - ctx.turn_wall_started_at) * 1000))
 
         # 保存 assistant 消息到 session
+        # 错误时 final_content=None（失败语义由 ctx.error 承载），不保存占位符到历史。
         # fresh_session 是一次性隔离会话：turn 结束后必须立即回收，
         # 防止 cron 长期运行累积 __fresh__:* 孤儿会话（JSONL 文件 + _cache 膨胀）。
         # 用 try/finally 保证回收：即使 save 或后续事件发布抛异常，fresh 会话也不残留。
         resolved_session_id = self._resolve_session_id(ctx)
         session = self.session_manager.get_or_create(ctx.context_id, resolved_session_id)
         try:
-            if ctx.final_content and ctx.final_content != EMPTY_FINAL_RESPONSE_MESSAGE:
+            if ctx.final_content:
                 session.add_message("assistant", ctx.final_content)
                 self.session_manager.save(session)
 
@@ -1268,10 +1277,28 @@ class AgentLoop:
         return "ok"
 
     async def _state_respond(self, ctx: TurnContext) -> str:
-        """组装并返回出站消息。"""
+        """组装并返回出站消息。
+
+        失败场景（ctx.error 非空）不走普通回复路径，而是生成系统通知
+        （turn_internal_error），诊断信息只进 metadata 供日志/审计，不混入用户文案。
+        """
+        if ctx.error is not None:
+            from nanobee.utils.notifications import build_notification
+
+            # 透传真实错误详情（而非笼统的"内部错误"）。框架只透传、不编造错误内容。
+            detail = ctx.error or ""
+            ctx.outbound = build_notification(
+                "turn_internal_error",
+                channel=ctx.msg.channel,
+                chat_id=ctx.msg.chat_id,
+                detail=detail,
+            )
+            ctx.outbound.metadata["error_detail"] = ctx.error
+            return "ok"
+
         ctx.outbound = self._assemble_outbound(
             ctx.msg, ctx.final_content, ctx.all_messages,
-            ctx.stop_reason, ctx.had_injections,
+            ctx.exit_reason, ctx.had_injections,
             turn_latency_ms=ctx.turn_latency_ms,
         )
         return "ok"
@@ -1283,7 +1310,7 @@ class AgentLoop:
         msg: InboundMessage,
         final_content: str | None,
         all_msgs: list[dict[str, Any]],
-        stop_reason: str,
+        exit_reason: str,
         had_injections: bool,
         *,
         turn_latency_ms: int | None = None,
@@ -1301,9 +1328,9 @@ class AgentLoop:
         meta = dict(msg.metadata or {})
         if turn_latency_ms is not None:
             meta["latency_ms"] = int(turn_latency_ms)
-        # 写入客观终止原因（如 completed / max_iterations / error），
+        # 写入客观退出原因（completed / max_iterations），
         # 通道据此决策：max_iterations 时卡片内容可能不完整，需追加通知。
-        meta["stop_reason"] = stop_reason
+        meta["exit_reason"] = exit_reason
 
         # 收集 message 工具调用中的 media 路径
         from nanobee.agent.tools.message import collect_message_tool_media

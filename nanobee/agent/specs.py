@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, TypedDict
 
@@ -14,7 +15,21 @@ from nanobee.agent.hook import AgentHook
 from nanobee.agent.tools.registry import ToolRegistry
 from nanobee.utils.logger import logger
 
-_DEFAULT_ERROR_MESSAGE = "Sorry, I encountered an error calling the AI model."
+_DEFAULT_ERROR_MESSAGE = "抱歉，调用 AI 模型时发生了错误。"
+
+
+class ExitReason(str, Enum):
+    """Agent 迭代循环的退出原因（纯控制流，与成功/失败正交）。
+
+    Attributes:
+        COMPLETED: 循环自然走完（成功或失败都算 completed，失败语义由 error 承载）。
+        MAX_ITERATIONS: 触达迭代上限。
+        CANCELLED: 被外部取消（/stop、/new 等）。
+    """
+
+    COMPLETED = "completed"
+    MAX_ITERATIONS = "max_iterations"
+    CANCELLED = "cancelled"
 
 
 class PluginHooks(TypedDict, total=False):
@@ -76,13 +91,20 @@ class AgentRunSpec:
 
 @dataclass(slots=True)
 class AgentRunResult:
-    """Agent 单次执行的最终结果。"""
+    """Agent 单次执行的最终结果。
+
+    Attributes:
+        final_content: 只有"成功回复"，失败时为 None（失败语义由 error 承载）。
+        messages: 真实对话 + 工具协议，不包含错误占位符。
+        exit_reason: 循环退出原因（控制流，与成功/失败正交）。
+        error: 唯一"失败"权威字段，为 None 表示成功。
+    """
 
     final_content: str | None
     messages: list[dict[str, Any]]
     tools_used: list[str] = field(default_factory=list)
     usage: dict[str, int] = field(default_factory=dict)
-    stop_reason: str = "completed"
+    exit_reason: ExitReason = ExitReason.COMPLETED
     error: str | None = None
     tool_events: list[dict[str, str]] = field(default_factory=list)
     had_injections: bool = False
