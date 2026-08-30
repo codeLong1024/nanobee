@@ -182,3 +182,14 @@ class TestNotificationCatalogIntegrity:
             assert notif.severity in ("info", "warning", "error"), (
                 f"{kind} 的 severity 值无效: {notif.severity}"
             )
+
+    def test_all_notifications_format_without_args(self) -> None:
+        """所有通知支持无参 format：漏传占位符参数不得抛 KeyError（缺失段渲染为空串）。"""
+        for kind in list_kinds():
+            content = get_notification_content(kind)
+            assert isinstance(content, str), f"{kind} 无参 format 失败"
+
+    def test_build_notification_tolerates_missing_kwargs(self) -> None:
+        """build_notification 漏传占位符参数不抛 KeyError。"""
+        msg = build_notification("turn_internal_error", channel="cli", chat_id="u1")
+        assert msg.metadata["severity"] == "error"

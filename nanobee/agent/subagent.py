@@ -513,7 +513,9 @@ class SubagentManager:
                 lines.append("")
             lines.append("Failure:")
             lines.append(f"- {failure['name']}: {failure['detail']}")
-        if result.error and not failure:
+        # 兜底追加 runner 归集的失败原因（可能比 failure 事件 detail 更完整），
+        # 与 failure 事件内容相同时不重复展示。
+        if result.error and (failure is None or failure.get("detail") != result.error):
             if lines:
                 lines.append("")
             lines.append("Failure:")

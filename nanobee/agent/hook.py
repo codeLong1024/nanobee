@@ -28,7 +28,6 @@ class AgentHookContext:
     streamed_content: bool = False
     streamed_reasoning: bool = False
     final_content: str | None = None
-    stop_reason: str | None = None
     exit_reason: "ExitReason | None" = None
     error: str | None = None
 
@@ -45,7 +44,6 @@ class AgentRunHookContext:
     final_content: str | None = None
     tools_used: list[str] = field(default_factory=list)
     usage: dict[str, int] = field(default_factory=dict)
-    stop_reason: str | None = None
     exit_reason: "ExitReason | None" = None
     error: str | None = None
     tool_events: list[dict[str, str]] = field(default_factory=list)
@@ -68,9 +66,7 @@ class AgentHook:
     async def on_stream(self, context: AgentHookContext, delta: str) -> None:
         pass
 
-    async def on_stream_end(
-        self, context: AgentHookContext, *, resuming: bool,
-    ) -> None:
+    async def on_stream_end(self, context: AgentHookContext, *, resuming: bool) -> None:
         pass
 
     async def before_execute_tools(self, context: AgentHookContext) -> None:
@@ -149,9 +145,7 @@ class CompositeHook(AgentHook):
     async def on_stream(self, context: AgentHookContext, delta: str) -> None:
         await self._for_each_hook_safe("on_stream", context, delta)
 
-    async def on_stream_end(
-        self, context: AgentHookContext, *, resuming: bool,
-    ) -> None:
+    async def on_stream_end(self, context: AgentHookContext, *, resuming: bool) -> None:
         await self._for_each_hook_safe("on_stream_end", context, resuming=resuming)
 
     async def before_execute_tools(self, context: AgentHookContext) -> None:
@@ -237,9 +231,7 @@ class StreamBridgeHook(AgentHook):
             except Exception:
                 logger.exception("[StreamBridgeHook] on_stream callback failed, delta={}...", delta[:80])
 
-    async def on_stream_end(
-        self, context: Any, *, resuming: bool = False,
-    ) -> None:
+    async def on_stream_end(self, context: Any, *, resuming: bool = False) -> None:
         # 记录最后一次 resuming 值
         self._last_resuming = resuming
         # 透传给通道：resuming=True → 通道更新表情为 🔧 工具调用中

@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from nanobee.agent.specs import ExitReason
 from nanobee.agent.subagent import SubagentManager, SubagentStatus
 from nanobee.agent.tools.subagent import ListSubagentsTool, SpawnSubagentTool
 from nanobee.kernel.context_sandbox_var import (
@@ -212,7 +213,7 @@ class TestSubagentResultInjection:
         # 确保 runner.run 快速返回
         mgr.runner.run = AsyncMock(return_value=MagicMock(
             final_content="done",
-            stop_reason="completed",
+            exit_reason=ExitReason.COMPLETED,
             tool_events=[],
             messages=[],
             tools_used=[],
@@ -248,7 +249,7 @@ class TestSubagentResultInjection:
         )
         mgr.runner.run = AsyncMock(return_value=MagicMock(
             final_content="completed task",
-            stop_reason="completed",
+            exit_reason=ExitReason.COMPLETED,
             tool_events=[],
             messages=[],
             tools_used=[],
@@ -282,8 +283,8 @@ class TestSubagentResultInjection:
             result_injector=_injector,
         )
         mgr.runner.run = AsyncMock(return_value=MagicMock(
-            final_content="error occurred",
-            stop_reason="error",
+            final_content=None,
+            exit_reason=ExitReason.COMPLETED,
             tool_events=[],
             messages=[],
             tools_used=[],
@@ -354,7 +355,7 @@ class TestSubagentEvents:
         )
         mgr.runner.run = AsyncMock(return_value=MagicMock(
             final_content="done",
-            stop_reason="completed",
+            exit_reason=ExitReason.COMPLETED,
             tool_events=[],
             messages=[],
             tools_used=[],
