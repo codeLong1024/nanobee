@@ -15,7 +15,9 @@ from nanobee.agent.hook import AgentHook
 from nanobee.agent.tools.registry import ToolRegistry
 from nanobee.utils.logger import logger
 
-_DEFAULT_ERROR_MESSAGE = "抱歉，调用 AI 模型时发生了错误。"
+# 纯技术诊断串（不带致歉前缀）：用户可见的致歉文案由 turn_internal_error 通知模板统一包装，
+# 避免模板文案 + 此兜底文案叠加造成"双重道歉"。
+_DEFAULT_ERROR_MESSAGE = "LLM 调用失败：模型返回错误且未提供诊断内容。"
 
 
 class ExitReason(str, Enum):

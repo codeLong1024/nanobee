@@ -435,7 +435,14 @@ class DingTalkChannelPlugin(ChannelPlugin):
                     "'[CARD-DEBUG] error notification card={} error_text={!r}'",
                     card_id, error_text[:200],
                 )
-                await self.card_manager.fail_card(card_id, error_text)
+                delivered = await self.card_manager.fail_card(card_id, error_text)
+                if not delivered:
+                    # fail_card 两步均失败：卡片无法渲染，回落 markdown 兜底，
+                    # 避免卡片永久停在 INPUTING 且用户看不到任何错误提示。
+                    await self._deliver_text_response(
+                        chat_id, content, outbound_media, resp_metadata,
+                        branch_label="system-error-fallback",
+                    )
             else:
                 await self._deliver_text_response(
                     chat_id, content, outbound_media, resp_metadata,

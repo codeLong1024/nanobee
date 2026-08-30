@@ -842,7 +842,6 @@ class AgentLoop:
             max_iterations=self.max_iterations,
             max_tool_result_chars=self.max_tool_result_chars,
             hook=hook,
-            error_message="抱歉，调用 AI 模型时发生了错误。",
             concurrent_tools=True,
             workspace=self.workspace,
             context_id=context_id,
@@ -971,12 +970,11 @@ class AgentLoop:
                     state=ctx.state, started_at=t0,
                     duration_ms=duration, event="ok", error=str(exc),
                 ))
-                # 统一错误恢复：填充 error 后跳到 RESPOND，绕过 SAVE 不污染历史。
-                # 错误走系统通知路径（_state_respond 识别 ctx.error），诊断信息不伪装成回复。
-                ctx.error = (
-                    f"抱歉，处理请求时发生内部错误。\n"
-                    f"{type(exc).__name__}: {exc}"
-                )
+                # 兜底错误恢复：runner.run() 已把内部异常折叠进 result.error 正常返回，
+                # 此分支仅覆盖 runner 之外的意外异常。填充 error 后跳到 RESPOND（绕过 SAVE，
+                # 避免异常半途状态写入历史），错误经系统通知路径（fail_card）下发。
+                # error 保持纯技术诊断串：致歉文案由通知模板统一包装，避免"双重道歉"。
+                ctx.error = f"{type(exc).__name__}: {exc}"
                 ctx.final_content = None
                 ctx.exit_reason = ExitReason.COMPLETED.value
                 ctx.tools_used = ctx.tools_used or []
@@ -1280,7 +1278,8 @@ class AgentLoop:
         """组装并返回出站消息。
 
         失败场景（ctx.error 非空）不走普通回复路径，而是生成系统通知
-        （turn_internal_error），诊断信息只进 metadata 供日志/审计，不混入用户文案。
+        （turn_internal_error）：模板提供固定的本地化致歉文案，ctx.error 作为
+        纯技术诊断串填入 {detail} 段，并同步写入 metadata.error_detail 供日志/审计。
         """
         if ctx.error is not None:
             from nanobee.utils.notifications import build_notification
@@ -1294,6 +1293,10 @@ class AgentLoop:
                 detail=detail,
             )
             ctx.outbound.metadata["error_detail"] = ctx.error
+            # 错误轮次同样带耗时（错误路径可能绕过 SAVE，turn_latency_ms 尚未计算）
+            if ctx.turn_latency_ms is None:
+                ctx.turn_latency_ms = max(0, int((time.time() - ctx.turn_wall_started_at) * 1000))
+            ctx.outbound.metadata["latency_ms"] = ctx.turn_latency_ms
             return "ok"
 
         ctx.outbound = self._assemble_outbound(

@@ -274,7 +274,7 @@ class CardManager:
         await self.client.check_response(resp, f"[{card_instance_id}] Finish streaming")
         resp.raise_for_status()
 
-    async def fail_card(self, card_instance_id: str, error_message: str) -> None:
+    async def fail_card(self, card_instance_id: str, error_message: str) -> bool:
         """以 FINISHED 态完结失败卡片，展示错误文案。
 
         依据钉钉官方 SDK（dingtalk_stream.card_instance.AIMarkdownCardInstance.ai_fail）
@@ -290,6 +290,10 @@ class CardManager:
         Args:
             card_instance_id: 卡片实例 ID。
             error_message: 要展示的错误文案（调用方已拼好半截进度 + 失败提示）。
+
+        Returns:
+            两步是否全部成功。False 表示卡片未能终态化（调用方应回落
+            markdown 文本兜底，避免卡片永久停在 INPUTING 且用户零感知）。
         """
         fail_content = f"处理失败: {error_message}"
 
@@ -304,6 +308,8 @@ class CardManager:
             await self.finish_streaming(card_instance_id, fail_content)
         except Exception:
             logger.exception("'[CARD] fail_card error {}'", card_instance_id)
+            return False
+        return True
 
     # ------------------------------------------------------------------
     # Fallback: non-streaming card update (backward compat)

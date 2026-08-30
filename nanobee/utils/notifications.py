@@ -91,6 +91,17 @@ _CATALOG: dict[str, Notification] = {
 }
 
 
+class _SafeDict(dict):
+    """format_map 容错字典：缺失的占位符渲染为空串。
+
+    调用方漏传占位符参数（如 {detail}）时不抛 KeyError，缺失段渲染为空。
+    避免目录条目新增占位符后成为调用方的隐性必填参数。
+    """
+
+    def __missing__(self, key: str) -> str:
+        return ""
+
+
 def get_notification(kind: str) -> Notification:
     """获取通知定义。
 
@@ -119,7 +130,7 @@ def get_notification_content(kind: str, **kwargs: Any) -> str:
         格式化后的纯文本内容。
     """
     notif = _CATALOG[kind]
-    return notif.content.format(**kwargs)
+    return notif.content.format_map(_SafeDict(kwargs))
 
 
 def build_notification(
@@ -146,7 +157,7 @@ def build_notification(
     from nanobee.agent.messages import OutboundMessage
 
     notif = _CATALOG[kind]
-    content = notif.content.format(**kwargs)
+    content = notif.content.format_map(_SafeDict(kwargs))
     return OutboundMessage(
         channel=channel,
         chat_id=chat_id,

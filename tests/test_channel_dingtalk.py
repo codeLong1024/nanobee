@@ -935,7 +935,7 @@ class TestOnMessageResponseDelivery:
     async def test_branch_s_error_notification_fails_card(
         self, dingtalk_plugin,
     ):
-        """error 系统通知 + 有 card → fail_card（卡片 FAILED，非空文案，不残留空卡片）。"""
+        """error 系统通知 + 有 card → fail_card（卡片 FINISHED 终态 + 错误文案，不残留空卡片）。"""
         from nanobee.channel.message import OutboundMessage
 
         dingtalk_plugin.config.streaming = True
