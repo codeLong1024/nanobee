@@ -78,3 +78,12 @@ class CronStore:
 
     version: int = 1
     jobs: list[CronJob] = field(default_factory=list)
+
+
+class CronJobError(Exception):
+    """Cron 任务执行失败。
+
+    由插件层在识别到执行错误（agent 内部错误通知或调用异常）后抛出，
+    CronService._execute_job 捕获后记录 last_status="error" 与 last_error，
+    使 cron list 能如实反映失败状态。
+    """

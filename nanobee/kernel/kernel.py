@@ -334,6 +334,8 @@ class NanobeeKernel:
                 chat_id=msg.chat_id,
                 detail=f"{type(exc).__name__}: {exc}",
             )
+            # 对齐 loop._state_respond 契约：error_detail 写入 metadata，供下游（如 cron 错误透传）取用
+            response.metadata["error_detail"] = f"{type(exc).__name__}: {exc}"
         finally:
             self._active_turns.pop(key, None)
 

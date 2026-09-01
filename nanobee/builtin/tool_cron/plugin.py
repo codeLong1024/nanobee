@@ -5,15 +5,20 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
 from nanobee.builtin.tool_cron.service import CronService
-from nanobee.builtin.tool_cron.types import CronJob, CronSchedule
+from nanobee.builtin.tool_cron.types import CronJob, CronJobError, CronSchedule
 from nanobee.kernel.context_sandbox_var import current_request_context
 from nanobee.plugins import ToolPlugin
 
 from nanobee.utils.logger import logger
+
+# 框架系统通知契约（与 notifications.build_notification 写入的 metadata 对齐；
+# 框架侧契约变更时需同步此处，否则错误会被静默误判为成功）。
+_SYSTEM_NOTIFY_TYPE = "system"
+_SYSTEM_NOTIFY_SEVERITY = "error"
 
 
 class ToolCronPlugin(ToolPlugin):
@@ -421,11 +426,22 @@ class ToolCronPlugin(ToolPlugin):
         所有 cron 任务统一通过 handle_message 交给 LLM 处理（可调用 skill），
         并把执行结果投递回创建任务的原始会话，让用户收到 LLM 的回复。
 
+        错误透传：两类失败均会向用户投递带任务标识（name + id）的错误通知，
+        并抛出 CronJobError 让 service 层记录 last_status="error"：
+        1. agent 层内部错误：handle_message 返回 turn_internal_error 系统通知
+           （metadata 携带 notification_type=system + severity=error）
+        2. 调用异常：handle_message 本身抛出异常
+        空结果（返回 None / 空 content）视为静默成功，不投递不报错。
+
         Args:
             job: 触发执行的任务
 
         Returns:
-            Agent 的回复文本
+            Agent 的回复文本（失败场景抛异常而非返回）
+
+        Raises:
+            CronJobError: agent 层识别到执行失败，或执行成功但结果投递失败
+            Exception: handle_message 的原始异常（投递通知后原样上抛）
         """
         if not self.kernel or not self.kernel.agent_loop:
             logger.warning("Cron: Agent Loop 不可用，无法执行任务 {}", job.id)
@@ -452,14 +468,46 @@ class ToolCronPlugin(ToolPlugin):
                 # 避免拉取该用户历史对话（token 浪费 + 上下文污染），turn 结束后自动回收。
                 fresh_session=True,
             )
-            content_text = result.content if result else ""
-
-            await self._deliver(job, content_text)
-
-            return content_text
-        except Exception:
+        except Exception as exc:
+            # 调用异常：投递带任务标识的错误通知（_deliver 自吞投递失败并留栈，不遮蔽原始异常），
+            # 再原样上抛由 service._execute_job 记录 last_error。
             logger.exception("Cron: 任务 {} 执行异常", job.id)
-            return None
+            await self._deliver(
+                job,
+                self._build_error_notice(job, f"{type(exc).__name__}: {exc}"),
+                severity="error",
+            )
+            raise
+
+        meta = getattr(result, "metadata", {}) or {}
+        if meta.get("notification_type") == _SYSTEM_NOTIFY_TYPE and meta.get("severity") == _SYSTEM_NOTIFY_SEVERITY:
+            # agent 层已把错误折叠为 turn_internal_error 系统通知（不抛异常），
+            # 补上任务标识重新投递，并抛出让 service 记录失败状态（修复 cron list 误报 ok）。
+            detail = str(meta.get("error_detail") or getattr(result, "content", "") or "未知错误")
+            # 投递失败不改变失败判定：_deliver 自吞失败并留栈，CronJobError 必然执行
+            await self._deliver(job, self._build_error_notice(job, detail), severity="error")
+            raise CronJobError(detail)
+
+        content_text = result.content if result else ""
+
+        # 投递失败 = 用户未收到结果，显式记"结果投递失败"（与"执行失败"可区分，cron list 可定位）
+        if not await self._deliver(job, content_text):
+            raise CronJobError(f"任务已执行但结果投递失败（内容长度 {len(content_text)}）")
+
+        return content_text
+
+    @staticmethod
+    def _build_error_notice(job: CronJob, detail: str) -> str:
+        """构造含任务标识的错误通知文案。
+
+        Args:
+            job: 执行失败的任务
+            detail: 错误详情（透传真实异常信息，不编造）
+
+        Returns:
+            含任务名与任务 ID 的错误通知文本
+        """
+        return f"定时任务「{job.name}」({job.id}) 执行失败：\n{detail}"
 
     @staticmethod
     def _delivery_target(job: CronJob) -> tuple[str, str] | None:
@@ -482,25 +530,50 @@ class ToolCronPlugin(ToolPlugin):
             chat_id = chat_id.split(":", 1)[-1]
         return job.payload.channel, chat_id
 
-    async def _deliver(self, job: CronJob, content: str) -> None:
+    async def _deliver(
+        self, job: CronJob, content: str, severity: Literal["info", "error"] = "info"
+    ) -> bool:
         """通过 agent.outbound 事件投递内容到任务的原会话。
 
         复用 agent.outbound 事件机制，由通道插件订阅后投递给用户。
-        内容为空或无有效投递目标时不投递，避免无效出站消息。
+        内容为空或无有效投递目标时不投递，视为跳过（返回 True，不误报失败）。
+        severity="error" 时 metadata 携带系统通知标记（notification_type/severity），
+        通道可据此差异化渲染（复用 subagent_spawned 已验证的投递路径）。
+        投递失败由本方法自行记录堆栈并返回 False，调用方据此区分
+        "执行失败" 与 "执行成功但投递失败"。
 
         Args:
             job: 触发执行的任务
             content: 要投递的消息内容
+            severity: 消息严重程度（info / error），默认 info
+
+        Returns:
+            是否投递成功（跳过视为成功）
         """
-        if not content or not self.kernel or not self.kernel.event_bus:
-            return
+        # 守卫与发布必须使用同一 event_bus 引用，避免"守卫通过但发布目标不可用"的不对称
+        loop = self.kernel.agent_loop if self.kernel else None
+        if not content or loop is None or loop.event_bus is None:
+            return True
         target = self._delivery_target(job)
         if target is None:
-            return
+            return True
         channel, chat_id = target
-        await self.kernel.agent_loop.event_bus.publish("agent.outbound", {
-            "channel": channel,
-            "chat_id": chat_id,
-            "content": content,
-            "metadata": job.payload.channel_meta or {},
-        })
+        metadata = dict(job.payload.channel_meta or {})
+        if severity == "error":
+            metadata.update({
+                "notification_type": _SYSTEM_NOTIFY_TYPE,
+                "notification_kind": "cron_job_error",
+                "severity": _SYSTEM_NOTIFY_SEVERITY,
+            })
+        try:
+            await loop.event_bus.publish("agent.outbound", {
+                "channel": channel,
+                "chat_id": chat_id,
+                "content": content,
+                "metadata": metadata,
+            })
+        except Exception:
+            # 投递失败自行留栈（含 job 标识与目标通道），供调用方与 cron list 定位根因
+            logger.exception("Cron: 任务 {} 结果投递失败（channel={}）", job.id, channel)
+            return False
+        return True

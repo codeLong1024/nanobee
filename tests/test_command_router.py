@@ -548,6 +548,30 @@ class TestKernelIntegration:
         mock_agent.dispatch.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_dispatch_exception_returns_error_detail_in_metadata(self):
+        """dispatch 抛异常时，turn_internal_error 通知的 metadata 必须携带 error_detail。
+
+        对齐 loop._state_respond 契约（error_detail 写入 metadata），
+        供下游（如 tool_cron 错误透传）取用真实诊断串而非整段话术。
+        """
+        kernel = _make_mock_kernel()
+
+        mock_agent = self._make_mock_agent()
+        mock_agent.dispatch = AsyncMock(side_effect=RuntimeError("LLM 调用失败"))
+        kernel._agent_loop = mock_agent
+
+        result = await kernel._handle_message_impl(
+            message="hello world",
+            context_id="test_user",
+            channel="test",
+            sender_id="test_user",
+        )
+        assert result is not None
+        assert result.metadata["notification_type"] == "system"
+        assert result.metadata["severity"] == "error"
+        assert result.metadata["error_detail"] == "RuntimeError: LLM 调用失败"
+
+    @pytest.mark.asyncio
     async def test_stop_cancels_running_turn_in_kernel(self):
         """/stop 应通过 _active_turns 取消运行中的 turn。"""
         kernel = _make_mock_kernel()
