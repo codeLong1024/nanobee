@@ -414,7 +414,8 @@ class CronService:
         except Exception as e:
             job.state.last_status = "error"
             job.state.last_error = str(e)
-            logger.exception("Cron: 任务 '{}' 失败", job.name)
+            # 异常栈已在插件层（plugin._on_job_execute）logger.exception 记录，此处仅汇总避免重复刷屏
+            logger.error("Cron: 任务 '{}' 失败: {}", job.name, e)
 
         end_ms = _now_ms()
         job.state.last_run_at_ms = start_ms
