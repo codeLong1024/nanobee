@@ -4,21 +4,19 @@ audit_logger 参考插件 —— turn / tool 两级 span 审计
 本插件将原先的「计数日志」升级为结构化 span 审计：
 
 - tool span：``on_pre_invoke`` 记录工具开始，``on_post_invoke`` 配对出工具
-  完成 span（带原生 callId、耗时、isError、参数摘要）。
+  完成 span（带原生 callId、耗时、status、参数摘要）。
 - turn span：``on_message_completed`` 产出整轮 span（含 token 汇总、
   finish_reason、工具调用次数、迭代次数、用户输入原文与最终回复预览）。
 
-时间戳双轨：``start_time``/``end_time`` 为 ``time.perf_counter()`` 单调
-时钟（仅用于精确 duration 计算）；``ts_start_iso``/``ts_end_iso`` 为本地
-时区 ISO 墙钟时间（用于跨日志流对时与人工检索）。
+**数据契约（v1）**：JSONL 输出的字段命名对齐 OTel GenAI Semantic Conventions：
 
-span 同时落两份：
-1. 本地 JSONL：``<context_root>/audit_logger/<user_id>.jsonl``
-   （context_root 未注入时回退到系统临时目录）
-2. 结构化日志：通过 loguru 输出单行 JSON。
+- ``gen_ai.*``：严格采用 OTel GenAI 语义约定属性命名。
+- ``nanobee.*``：框架自有概念（截断标记、估算标记、内部统计）。
+- 无前缀通用字段（``schema``/``trace_id``/``start_time``/``end_time`` 等）：
+  通用 span 语义或契约元数据。
 
-callId 使用框架透传的原生工具调用 ID（``ToolCallRequest.id``）：框架
-``on_pre_invoke`` / ``on_post_invoke`` 钩子链已携带该 ID，插件据此做精确配对。
+一行 = 一个终态 turn（一次用户请求到最终回复的完整链路）。
+``perf_counter`` 单调时钟仅在进程内用于计算 ``duration_ms``，不落盘。
 """
 
 from __future__ import annotations
@@ -27,7 +25,7 @@ import json
 import tempfile
 import time
 import uuid
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -49,6 +47,13 @@ _REPLY_MAX_CHARS = 800
 # 判定工具结果是否为错误的标志（工具返回字符串时据此推断 isError）
 _ERROR_MARKERS = ("error:", "exception:", "failed", "错误", "异常", "失败")
 
+# OTel GenAI operation name 固定值
+_TURN_OPERATION = "invoke_agent"
+_TOOL_OPERATION = "execute_tool"
+
+# 契约版本标识
+_SCHEMA = "nanobee.audit/1"
+
 
 class AuditLoggerConfig(BaseModel):
     """audit_logger 插件声明式配置。
@@ -58,6 +63,7 @@ class AuditLoggerConfig(BaseModel):
     默认值，不阻塞框架启动。
 
     Attributes:
+        agent_name: gen_ai.agent.name 属性值（OTel；多 agent 场景必须唯一）。
         preview_truncate: 截断总开关；false 时全量记录（测试/联调临时开启）。
         arg_max_chars: 参数预览截断长度上限（正整数）。
         result_max_chars: 结果预览截断长度上限（正整数）。
@@ -65,6 +71,7 @@ class AuditLoggerConfig(BaseModel):
         reply_max_chars: turn 记录最终回复预览截断长度上限（正整数）。
     """
 
+    agent_name: str = "nanobee"
     preview_truncate: bool = True
     arg_max_chars: int = Field(default=_ARG_MAX_CHARS, ge=1)
     result_max_chars: int = Field(default=_RESULT_MAX_CHARS, ge=1)
@@ -74,25 +81,27 @@ class AuditLoggerConfig(BaseModel):
 
 @dataclass
 class ToolSpan:
-    """单个工具调用的 span 记录。
+    """单个工具调用的 span 记录（OTel GenAI 契约命名）。
 
-    call_id 为框架透传的原生工具调用 ID（ToolCallRequest.id），
-    用于在同一 turn 内将 on_pre_invoke / on_post_invoke 精确配对。
+    ``span_id`` 为框架透传的原生工具调用 ID（ToolCallRequest.id），空则
+    回退生成；用于在同一 turn 内将 on_pre_invoke / on_post_invoke 精确配对。
+    ``_pc_start`` 为进程内 perf_counter 起点，仅用于计算 duration_ms，不落盘。
     """
 
-    call_id: str
-    tool_name: str
-    start_time: float
-    ts_start_iso: str = ""
-    ts_end_iso: str = ""
-    end_time: float | None = None
+    span_id: str = ""
+    tool_name: str = ""                    # gen_ai.tool.name
+    start_time: str = ""                   # ISO 墙钟（was ts_start_iso）
+    end_time: str = ""                     # ISO 墙钟（was ts_end_iso）
     duration_ms: float | None = None
-    arg_preview: str = ""
-    arg_truncated: bool = False
-    result_preview: str = ""
-    result_truncated: bool = False
-    is_error: bool = False
-    interrupted: bool = False
+    arg_preview: str = ""                  # gen_ai.tool.call.arguments
+    arg_truncated: bool = False            # nanobee.arguments.truncated
+    result_preview: str = ""               # gen_ai.tool.call.result
+    result_truncated: bool = False         # nanobee.result.truncated
+    status: str = "unset"                  # "ok" / "error" / "unset"
+    interrupted: bool = False              # nanobee.interrupted
+
+    # 进程内内部计时起点（不落盘，repr=False 排除调试噪音）
+    _pc_start: float = field(default=0.0, repr=False, compare=False)
 
     def close(self, result: Any, result_max: int | None) -> None:
         """结束 span，记录耗时与结果。
@@ -103,43 +112,98 @@ class ToolSpan:
                 与 preview_truncate 开关）；None 表示不截断。调用方必须
                 显式传入，禁止默认值绕过配置。
         """
-        self.end_time = time.perf_counter()
-        self.ts_end_iso = _iso_now()
-        self.duration_ms = round((self.end_time - self.start_time) * 1000, 3)
+        self.end_time = _iso_now()
+        self.duration_ms = round(
+            (time.perf_counter() - self._pc_start) * 1000, 3,
+        )
         self.result_preview, self.result_truncated = _preview(result, result_max)
-        self.is_error = _looks_like_error(result)
+        if _looks_like_error(result):
+            self.status = "error"
+        elif self.status == "unset":
+            self.status = "ok"
+
+    def to_contract_dict(self) -> dict[str, Any]:
+        """序列化为 OTel GenAI 契约命名的 flat dict。"""
+        return {
+            "span_id": self.span_id,
+            "gen_ai.operation.name": _TOOL_OPERATION,
+            "gen_ai.tool.name": self.tool_name,
+            "gen_ai.tool.call.id": self.span_id,
+            "gen_ai.tool.call.arguments": self.arg_preview,
+            "gen_ai.tool.call.result": self.result_preview,
+            "start_time": self.start_time,
+            "end_time": self.end_time,
+            "duration_ms": self.duration_ms,
+            "status": self.status,
+            "nanobee.interrupted": self.interrupted,
+            "nanobee.arguments.truncated": self.arg_truncated,
+            "nanobee.result.truncated": self.result_truncated,
+        }
 
 
 @dataclass
 class TurnSpan:
-    """整轮交互的 span 记录。
+    """整轮交互的 span 记录（OTel GenAI 契约命名）。
 
-    user_text / reply_preview 为内容侧字段（P1-1）：user_text 取本轮
-    最后一条 user 消息（已剥离 Runtime Context 注入段），reply_preview
-    取最后一条 assistant 消息，作为幻觉类案件的第一定位索引。
-    start_time 仅锚定首个工具调用或 completion 懒创建时刻（无 turn
-    开始 Hook），跨日志对时应以 ts_end_iso 为准。
+    turn = 一条 trace：``trace_id`` 为 turn 唯一标识。
+    消息结构简化：``input_messages`` / ``output_messages`` 以
+    ``[{"role", "content"}]`` 简化格式存储（OTel 完整 parts 结构由 bridge 组装）。
+    ``_pc_start`` 为进程内 perf_counter 起点，仅用于计算 duration_ms，不落盘。
     """
 
-    type: str = "turn_span"
-    turn_id: str = ""
-    user_id: str = ""
-    start_time: float = 0.0
-    ts_start_iso: str = ""
-    ts_end_iso: str = ""
-    end_time: float | None = None
+    schema: str = _SCHEMA
+    trace_id: str = ""                     # turn_{uuid12}
+    operation_name: str = _TURN_OPERATION  # gen_ai.operation.name
+    agent_name: str = "nanobee"            # gen_ai.agent.name（配置项）
+    conversation_id: str = "default"       # gen_ai.conversation.id
+    start_time: str = ""                   # ISO 墙钟（was ts_start_iso）
+    end_time: str = ""                     # ISO 墙钟（was ts_end_iso）
     duration_ms: float | None = None
-    messages: int = 0
-    iterations: int = 0
-    tool_calls: int = 0
+    input_tokens: int = 0                  # gen_ai.usage.input_tokens
+    output_tokens: int = 0                 # gen_ai.usage.output_tokens
+    total_tokens: int = 0                  # gen_ai.usage.total_tokens
+    usage_estimated: bool = True           # nanobee.usage.estimated
+    finish_reasons: list[str] = field(default_factory=list)
+    # gen_ai.response.finish_reasons
+    input_messages: list[dict] = field(default_factory=list)
+    # gen_ai.input.messages: [{role, content}]
+    output_messages: list[dict] = field(default_factory=list)
+    # gen_ai.output.messages: [{role, content}]
+    input_truncated: bool = False          # nanobee.input.truncated
+    output_truncated: bool = False         # nanobee.output.truncated
+    iterations: int = 0                    # nanobee.iterations
+    message_count: int = 0                 # nanobee.messages
+    tool_calls: int = 0                    # nanobee.tool_calls
     tool_spans: list[ToolSpan] = field(default_factory=list)
-    prompt_tokens: int = 0
-    completion_tokens: int = 0
-    finish_reason: str = ""
-    user_text: str = ""
-    user_truncated: bool = False
-    reply_preview: str = ""
-    reply_truncated: bool = False
+
+    # 进程内内部计时起点（不落盘）
+    _pc_start: float = field(default=0.0, repr=False, compare=False)
+
+    def to_contract_dict(self) -> dict[str, Any]:
+        """序列化为 OTel GenAI 契约命名的 flat dict（含嵌套 tool_spans）。"""
+        return {
+            "schema": self.schema,
+            "trace_id": self.trace_id,
+            "gen_ai.operation.name": self.operation_name,
+            "gen_ai.agent.name": self.agent_name,
+            "gen_ai.conversation.id": self.conversation_id,
+            "start_time": self.start_time,
+            "end_time": self.end_time,
+            "duration_ms": self.duration_ms,
+            "gen_ai.usage.input_tokens": self.input_tokens,
+            "gen_ai.usage.output_tokens": self.output_tokens,
+            "gen_ai.usage.total_tokens": self.total_tokens,
+            "nanobee.usage.estimated": self.usage_estimated,
+            "gen_ai.response.finish_reasons": self.finish_reasons,
+            "gen_ai.input.messages": self.input_messages,
+            "gen_ai.output.messages": self.output_messages,
+            "nanobee.input.truncated": self.input_truncated,
+            "nanobee.output.truncated": self.output_truncated,
+            "nanobee.iterations": self.iterations,
+            "nanobee.messages": self.message_count,
+            "nanobee.tool_calls": self.tool_calls,
+            "tool_spans": [s.to_contract_dict() for s in self.tool_spans],
+        }
 
 
 @dataclass
@@ -240,11 +304,12 @@ class AuditLoggerPlugin(NanobeePlugin):
         if state is None:
             state = self._new_turn(user_id)
         arg_preview, arg_truncated = _preview(args, self._arg_limit())
+        span_id = call_id or f"call_{state.counter + 1}"
         span = ToolSpan(
-            call_id=call_id or f"call_{state.counter + 1}",
+            span_id=span_id,
             tool_name=tool_name,
-            start_time=time.perf_counter(),
-            ts_start_iso=_iso_now(),
+            start_time=_iso_now(),
+            _pc_start=time.perf_counter(),
             arg_preview=arg_preview,
             arg_truncated=arg_truncated,
         )
@@ -254,8 +319,8 @@ class AuditLoggerPlugin(NanobeePlugin):
         state.pending.append(span)
         state.span.tool_spans.append(span)
         logger.debug(
-            "[audit] tool-start user={} call={} tool={}",
-            user_id, span.call_id, tool_name,
+            "[audit] tool-start user={} span={} tool={}",
+            user_id, span.span_id, tool_name,
         )
         return args
 
@@ -281,9 +346,9 @@ class AuditLoggerPlugin(NanobeePlugin):
             return result
         span.close(result, self._result_limit())
         logger.info(
-            "[audit] tool-end user={} call={} tool={} duration={:.1f}ms isError={}",
-            user_id, span.call_id, span.tool_name,
-            span.duration_ms or 0.0, span.is_error,
+            "[audit] tool-end user={} span={} tool={} duration={:.1f}ms status={}",
+            user_id, span.span_id, span.tool_name,
+            span.duration_ms or 0.0, span.status,
         )
         return result
 
@@ -301,6 +366,10 @@ class AuditLoggerPlugin(NanobeePlugin):
         统计本轮消息数、迭代次数、工具调用次数，估算 token 汇总与
         finish_reason，连同子 tool span 一并写入 JSONL 与结构化日志。
         ``call_count`` 计数保持原有语义（按 user_id 累计）。
+
+        P2-1：主 JSONL 只落终态行 —— ``_write_turn`` 仅在本方法（终态
+        Hook）中被调用，不存在中途 flush 写点。perf_counter 仅在进程内
+        计算 duration_ms，不落盘。
         """
         user_id = _user_id(context)
         self._call_count[user_id] = self._call_count.get(user_id, 0) + 1
@@ -309,47 +378,60 @@ class AuditLoggerPlugin(NanobeePlugin):
         if state is None:
             state = self._new_turn(user_id)
         span = state.span
-        span.end_time = time.perf_counter()
-        span.ts_end_iso = _iso_now()
-        span.duration_ms = round((span.end_time - span.start_time) * 1000, 3)
-        span.messages = len(messages)
+        span.end_time = _iso_now()
+        span.duration_ms = round(
+            (time.perf_counter() - span._pc_start) * 1000, 3,
+        )
+        span.message_count = len(messages)
         span.iterations = _count_iterations(messages)
         span.tool_calls = _count_tool_calls(messages)
-        span.finish_reason = _infer_finish_reason(messages)
+        span.finish_reasons = _infer_finish_reason(messages)
 
         # 内容侧字段（P1-1）：本轮用户输入原文 + 最终回复预览
-        span.user_text, span.user_truncated = _extract_user_text(
+        user_text, user_truncated = _extract_user_text(
             messages, self._user_limit(),
         )
-        span.reply_preview, span.reply_truncated = _extract_reply_preview(
+        span.input_truncated = user_truncated
+        # 存在 user 消息时记录输入消息（缺失时留空列表）
+        if _has_role_content(messages, "user"):
+            span.input_messages = [{"role": "user", "content": user_text}]
+
+        reply_preview, reply_truncated = _extract_reply_preview(
             messages, self._reply_limit(),
         )
+        span.output_truncated = reply_truncated
+        # 存在 assistant 消息且 content 非空时记录输出消息
+        if _has_role_content(messages, "assistant"):
+            span.output_messages = [{"role": "assistant", "content": reply_preview}]
 
         # 估算 token 汇总（框架未把 usage 注入 messages，故用估算口径）
-        span.prompt_tokens = _estimate_prompt_tokens(messages)
-        span.completion_tokens = _estimate_completion_tokens(messages)
+        span.input_tokens = _estimate_prompt_tokens(messages)
+        span.output_tokens = _estimate_completion_tokens(messages)
+        span.total_tokens = span.input_tokens + span.output_tokens
 
         # 未配对的 pending span 标记为 interrupted（守卫拦截或异常中断）
+        pc_end = time.perf_counter()
         for pending_span in state.pending:
             pending_span.interrupted = True
-            pending_span.ts_end_iso = span.ts_end_iso
             pending_span.end_time = span.end_time
             pending_span.duration_ms = round(
-                (pending_span.end_time - pending_span.start_time) * 1000, 3,
+                (pc_end - pending_span._pc_start) * 1000, 3,
             )
+            # interrupted 的 span status 落 "unset"（原设计落 error 语义不准）
             logger.warning(
-                "[audit] tool-interrupted user={} call={} tool={}",
-                user_id, pending_span.call_id, pending_span.tool_name,
+                "[audit] tool-interrupted user={} span={} tool={}",
+                user_id, pending_span.span_id, pending_span.tool_name,
             )
 
         self._completed.setdefault(user_id, []).append(span)
         self._write_turn(user_id, span)
         logger.info(
             "[audit] turn-end user={} round={} messages={} iterations={} "
-            "tools={} prompt={} completion={} finish_reason={} duration={:.1f}ms",
-            user_id, self._call_count[user_id], span.messages,
-            span.iterations, span.tool_calls, span.prompt_tokens,
-            span.completion_tokens, span.finish_reason, span.duration_ms or 0.0,
+            "tools={} input_tokens={} output_tokens={} finish_reasons={} "
+            "duration={:.1f}ms",
+            user_id, self._call_count[user_id], span.message_count,
+            span.iterations, span.tool_calls, span.input_tokens,
+            span.output_tokens, span.finish_reasons, span.duration_ms or 0.0,
         )
 
     # =========================================================================
@@ -359,11 +441,14 @@ class AuditLoggerPlugin(NanobeePlugin):
     def _write_turn(self, user_id: str, span: TurnSpan) -> None:
         """将 turn span 写入 JSONL 文件，并输出结构化日志。
 
+        asdict 直落：``span.to_contract_dict()`` 直接输出契约命名
+        的 flat dict（字段名 = 契约键名），无需映射层。
+
         Args:
             user_id: 记录所属用户（用于 JSONL 文件名）。
             span: 待持久化的 turn span。
         """
-        record = asdict(span)
+        record = span.to_contract_dict()
         self._write_jsonl(user_id, record)
 
         # 结构化日志（单行 JSON）
@@ -408,10 +493,11 @@ class AuditLoggerPlugin(NanobeePlugin):
     def _new_turn(self, user_id: str) -> _TurnState:
         state = _TurnState(
             span=TurnSpan(
-                turn_id=f"turn_{uuid.uuid4().hex[:12]}",
-                user_id=user_id,
-                start_time=time.perf_counter(),
-                ts_start_iso=_iso_now(),
+                trace_id=f"turn_{uuid.uuid4().hex[:12]}",
+                conversation_id=user_id or "default",
+                agent_name=self.config.agent_name,
+                start_time=_iso_now(),
+                _pc_start=time.perf_counter(),
             ),
         )
         self._turns[user_id] = state
@@ -427,20 +513,23 @@ class AuditLoggerPlugin(NanobeePlugin):
         return sum(self._call_count.values())
 
     def completed_spans(self, user_id: str | None = None) -> list[dict[str, Any]]:
-        """获取已完成 turn span 的 dict 列表，用于测试断言。
+        """获取已完成 turn span 的 contract dict 列表，用于测试断言。
 
         Args:
             user_id: 过滤指定用户；None 返回全部用户的 span。
 
         Returns:
-            turn span 的 dict 列表（含嵌套 tool span）。
+            turn span 的 contract dict 列表（含嵌套 tool span）。
         """
         if user_id is not None:
-            return [asdict(s) for s in self._completed.get(user_id, [])]
-        return [asdict(s) for spans in self._completed.values() for s in spans]
+            return [s.to_contract_dict() for s in self._completed.get(user_id, [])]
+        return [
+            s.to_contract_dict()
+            for spans in self._completed.values() for s in spans
+        ]
 
     def tool_spans(self, user_id: str | None = None) -> list[dict[str, Any]]:
-        """获取已记录 tool span 的 dict 列表（含进行中与已完成的）。"""
+        """获取已记录 tool span 的 contract dict 列表（含进行中与已完成的）。"""
         spans: list[ToolSpan] = []
         for u, state in self._turns.items():
             if user_id is None or u == user_id:
@@ -449,7 +538,7 @@ class AuditLoggerPlugin(NanobeePlugin):
             if user_id is None or u == user_id:
                 for s in completed:
                     spans.extend(s.tool_spans)
-        return [asdict(s) for s in spans]
+        return [s.to_contract_dict() for s in spans]
 
 
 # =============================================================================
@@ -466,8 +555,8 @@ def _user_id(context: Any) -> str:
 def _iso_now() -> str:
     """当前本地时区墙钟时间的 ISO 格式字符串。
 
-    与 ``time.perf_counter()`` 双轨：后者仅用于 duration 计算，
-    本函数产出可读、可跨日志流对时的时间戳（P1-2）。
+    用于 start_time / end_time（OTel span 时间语义，墙钟）。
+    perf_counter 仅在进程内用于 duration_ms 计算，不落盘。
     """
     return datetime.now().astimezone().isoformat()
 
@@ -486,6 +575,32 @@ def _last_content(messages: list[dict[str, Any]], role: str) -> Any:
         if isinstance(m, dict) and m.get("role") == role:
             return m.get("content")
     return None
+
+
+def _has_role_content(
+    messages: list[dict[str, Any]], role: str,
+) -> bool:
+    """判断消息列表中是否存在指定角色的消息（content 存在或非空）。
+
+    用于决定 input/output messages 是否需要在契约中构建消息条目：
+    - ``_last_content`` 返回 None 表示该角色无消息 → 不构建条目。
+    - content 为字符串时，空串（如 tool_calls 消息的 content=""）仍视为
+      该角色有消息，但契约中 content 为空串是否保留由调用方决定。
+
+    Args:
+        messages: 消息列表。
+        role: 目标角色。
+
+    Returns:
+        该角色存在消息时返回 True。
+    """
+    content = _last_content(messages, role)
+    if content is None:
+        return False
+    # 非字符串 content（dict/list 等）视为有效内容
+    if isinstance(content, str):
+        return content != ""
+    return True
 
 
 def _extract_user_text(
@@ -549,18 +664,24 @@ def _count_iterations(messages: list[dict[str, Any]]) -> int:
     return sum(1 for m in messages if isinstance(m, dict) and m.get("role") == "assistant")
 
 
-def _infer_finish_reason(messages: list[dict[str, Any]]) -> str:
-    """从消息列表推断结束原因。
+def _infer_finish_reason(messages: list[dict[str, Any]]) -> list[str]:
+    """从消息列表推断结束原因（OTel 值域：stop / tool_calls）。
 
     框架未把 finish_reason 注入 messages（P1 约束），此处基于最后一条
     assistant 消息是否仍携带 tool_calls 做启发式推断。
+
+    Args:
+        messages: 本轮完整消息列表。
+
+    Returns:
+        ``["stop"]`` 或 ``["tool_calls"]``（OTel str[] 值域）。
     """
     for m in reversed(messages):
         if isinstance(m, dict) and m.get("role") == "assistant":
             if m.get("tool_calls"):
-                return "tool_call"
-            return "completed"
-    return "completed"
+                return ["tool_calls"]
+            return ["stop"]
+    return ["stop"]
 
 
 def _estimate_prompt_tokens(messages: list[dict[str, Any]]) -> int:
@@ -586,8 +707,8 @@ def _pop_pending(
 ) -> ToolSpan | None:
     """从 pending 中弹出与给定 call_id 匹配的 tool span。
 
-    优先按 call_id 精确匹配（框架透传的原生 ID 唯一）；call_id 为空时
-    回退为按 tool_name 匹配最早的 span（兼容无 ID 注入的测试场景）。
+    优先按 span_id（原生 call_id）精确匹配（框架透传的原生 ID 唯一）；
+    call_id 为空时回退为按 tool_name 匹配最早的 span（兼容无 ID 注入的测试场景）。
 
     Args:
         pending: 进行中 turn 的待配对 span 列表。
@@ -599,7 +720,7 @@ def _pop_pending(
     """
     if call_id:
         for span in pending:
-            if span.call_id == call_id:
+            if span.span_id == call_id:
                 pending.remove(span)
                 return span
         return None

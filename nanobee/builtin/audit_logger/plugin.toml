@@ -1,6 +1,6 @@
 [plugin]
 name = "audit_logger"
-version = "2.0.0"
+version = "3.0.0"
 description = "参考插件：turn/tool 两级 span 结构化审计日志"
 author = "nanobee"
 type = "audit"
