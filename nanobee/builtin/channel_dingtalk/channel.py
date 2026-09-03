@@ -43,7 +43,7 @@ class DingTalkChannelPlugin(ChannelPlugin):
     def __init__(self, metadata=None):
         super().__init__(metadata)
         self.logger = logger
-        self.config: DingTalkConfig | None = None
+        self.dingtalk_config: DingTalkConfig | None = None
         self._client: Any = None
         self._http: httpx.AsyncClient | None = None
         self._running = False
@@ -92,26 +92,26 @@ class DingTalkChannelPlugin(ChannelPlugin):
 
     async def start(self) -> None:
         """Start the DingTalk bot via Stream SDK."""
-        self.config = self._load_config()
+        self.dingtalk_config = self._load_config()
 
         if not DINGTALK_AVAILABLE:
             self.logger.error("dingtalk-stream SDK not installed. Run: pip install dingtalk-stream")
             return
 
-        if not self.config.client_id or not self.config.client_secret:
+        if not self.dingtalk_config.client_id or not self.dingtalk_config.client_secret:
             self.logger.error("client_id and client_secret not configured")
             return
 
         self._running = True
-        if self.config.proxy_url:
-            self._http = httpx.AsyncClient(proxies=self.config.proxy_url)
-            self.logger.info("HTTP client using proxy: {}", self.config.proxy_url)
+        if self.dingtalk_config.proxy_url:
+            self._http = httpx.AsyncClient(proxies=self.dingtalk_config.proxy_url)
+            self.logger.info("HTTP client using proxy: {}", self.dingtalk_config.proxy_url)
         else:
             self._http = httpx.AsyncClient()
 
         # 创建 sender（先不传 card_manager，它此时还未初始化）
         self.sender = DingTalkSender(
-            self.config, self.logger,
+            self.dingtalk_config, self.logger,
             http_client=self._http,
         )
         self.sender.setup(self._http)
@@ -119,7 +119,7 @@ class DingTalkChannelPlugin(ChannelPlugin):
         # 创建 card_client + card_manager（需要 sender 的 token 函数）
         self.card_client = DingTalkCardClient(
             access_token_fn=self.sender.get_access_token,
-            proxy_url=self.config.proxy_url,
+            proxy_url=self.dingtalk_config.proxy_url,
         )
         self.card_manager = CardManager(self.card_client)
 
@@ -128,9 +128,9 @@ class DingTalkChannelPlugin(ChannelPlugin):
 
         self.logger.info(
             "Initializing Stream Client with Client ID: {}...",
-            self.config.client_id,
+            self.dingtalk_config.client_id,
         )
-        credential = Credential(self.config.client_id, self.config.client_secret)
+        credential = Credential(self.dingtalk_config.client_id, self.dingtalk_config.client_secret)
         self._client = DingTalkStreamClient(credential)
 
         # Register handler
@@ -276,7 +276,7 @@ class DingTalkChannelPlugin(ChannelPlugin):
                 self.logger.warning("内核未就绪，无法处理钉钉消息")
                 return
 
-            use_streaming = self.config is not None and self.config.streaming and self.sender is not None
+            use_streaming = self.dingtalk_config is not None and self.dingtalk_config.streaming and self.sender is not None
 
             # 1. 调用内核
             if use_streaming:
@@ -610,7 +610,7 @@ class DingTalkChannelPlugin(ChannelPlugin):
             client_robot = getattr(self._client, "robot_code", None)
             if client_robot:
                 return client_robot
-        return (self.config.client_id if self.config else "")
+        return (self.dingtalk_config.client_id if self.dingtalk_config else "")
 
 
 __all__ = ["DingTalkChannelPlugin", "DingTalkConfig"]

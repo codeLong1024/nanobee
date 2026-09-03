@@ -253,3 +253,141 @@ class TestJsonlPersistence:
             {"system_prompt": "## Soul\n你是一个助手\n"}, ctx, [],
         )
         assert result_with == result_without
+
+
+class _Cfg:
+    """模拟 kernel.config（带 plugins 属性的简单对象）。"""
+
+    def __init__(self, plugins: dict) -> None:
+        self.plugins = plugins
+
+
+class _Kernel:
+    """模拟 NanobeeKernel（仅供 initialize 配置提取）。"""
+
+    def __init__(self, plugins: dict) -> None:
+        self.config = _Cfg(plugins)
+
+
+class TestTruncationFlags:
+    """截断诚实性：arg_truncated / result_truncated 标记与配置覆盖。"""
+
+    @pytest.mark.asyncio
+    async def test_short_args_and_results_not_truncated(self):
+        """短参数与短结果不触发截断标记。"""
+        plugin = _make_plugin()
+        ctx = _ctx()
+
+        await plugin.on_pre_invoke(ctx, "call_1", "read_file", {"path": "a.txt"})
+        await plugin.on_post_invoke(ctx, "call_1", "read_file", "ok")
+
+        span = plugin.tool_spans("test-user")[0]
+        assert span["arg_truncated"] is False
+        assert span["result_truncated"] is False
+
+    @pytest.mark.asyncio
+    async def test_long_args_marked_truncated(self):
+        """超过 arg_max_chars 的参数标记 arg_truncated=True 且预览带省略号。"""
+        plugin = _make_plugin()
+        ctx = _ctx()
+        long_args = {"path": "a" * 3000}
+
+        await plugin.on_pre_invoke(ctx, "call_1", "read_file", long_args)
+        span = plugin.tool_spans("test-user")[0]
+        assert span["arg_truncated"] is True
+        assert span["arg_preview"].endswith("...")
+        assert len(span["arg_preview"]) == plugin.config.arg_max_chars + len("...")
+
+    @pytest.mark.asyncio
+    async def test_long_result_marked_truncated(self):
+        """超过 result_max_chars 的结果标记 result_truncated=True 且预览带省略号。"""
+        plugin = _make_plugin()
+        ctx = _ctx()
+
+        await plugin.on_pre_invoke(ctx, "call_1", "read_file", {"path": "a.txt"})
+        await plugin.on_post_invoke(ctx, "call_1", "read_file", "x" * 3000)
+
+        span = plugin.tool_spans("test-user")[0]
+        assert span["result_truncated"] is True
+        assert span["result_preview"].endswith("...")
+        assert len(span["result_preview"]) == plugin.config.result_max_chars + len("...")
+
+    @pytest.mark.asyncio
+    async def test_jsonl_record_contains_truncation_fields(self, tmp_path: Path):
+        """JSONL 记录包含截断标记字段（纯增量字段）。"""
+        plugin = _make_plugin()
+        ctx = _ctx()
+        token = bind_context_root(tmp_path)
+        try:
+            await plugin.on_pre_invoke(ctx, "call_1", "read_file", {"path": "a" * 3000})
+            await plugin.on_post_invoke(ctx, "call_1", "read_file", "x" * 3000)
+            await plugin.on_message_completed(ctx, [])
+        finally:
+            reset_context_root(token)
+
+        jsonl = tmp_path / "audit_logger" / "test-user.jsonl"
+        record = json.loads(jsonl.read_text(encoding="utf-8").strip())
+        tool_span = record["tool_spans"][0]
+        assert tool_span["arg_truncated"] is True
+        assert tool_span["result_truncated"] is True
+
+    def test_init_defaults_without_initialize(self):
+        """未调用 initialize() 时 config_cls 已持默认实例（字段默认值可用）。"""
+        plugin = _make_plugin()
+        assert plugin.config.arg_max_chars == 2000
+        assert plugin.config.result_max_chars == 2000
+
+    @pytest.mark.asyncio
+    async def test_preview_truncate_false_disables_truncation(self):
+        """preview_truncate: false 关闭截断：全量记录且 truncated 标记为 False。"""
+        plugin = _make_plugin()
+        plugin.initialize(_Kernel({
+            "audit_logger": {"preview_truncate": False},
+        }))
+        ctx = _ctx()
+
+        await plugin.on_pre_invoke(ctx, "call_1", "read_file", {"path": "a" * 3000})
+        await plugin.on_post_invoke(ctx, "call_1", "read_file", "x" * 3000)
+
+        span = plugin.tool_spans("test-user")[0]
+        assert span["arg_truncated"] is False
+        assert "a" * 3000 in span["arg_preview"]
+        assert span["result_truncated"] is False
+        assert "x" * 3000 in span["result_preview"]
+
+    def test_non_positive_max_falls_back_to_default(self):
+        """preview_truncate 开启时，非正数的 max 配置回退默认值（显式校验，无隐式语义）。"""
+        plugin = _make_plugin()
+        plugin.initialize(_Kernel({"audit_logger": {"arg_max_chars": 0}}))
+        assert plugin.config.arg_max_chars == 2000
+
+    def test_non_numeric_max_falls_back_to_default(self):
+        """非数字的 max 配置回退默认值且不抛异常。"""
+        plugin = _make_plugin()
+        plugin.initialize(_Kernel({"audit_logger": {"result_max_chars": "abc"}}))
+        assert plugin.config.result_max_chars == 2000
+        assert plugin.config.arg_max_chars == 2000
+
+    def test_initialize_reads_config_override(self):
+        """initialize() 从 plugins.audit_logger 段读取截断阈值覆盖默认值。"""
+        plugin = _make_plugin()
+        kernel = _Kernel({
+            "audit_logger": {"arg_max_chars": 5, "result_max_chars": 5},
+        })
+        plugin.initialize(kernel)
+        assert plugin.config.arg_max_chars == 5
+        assert plugin.config.result_max_chars == 5
+
+    @pytest.mark.asyncio
+    async def test_config_override_takes_effect_on_spans(self):
+        """配置覆盖后的截断阈值实际作用于 span 预览。"""
+        plugin = _make_plugin()
+        plugin.initialize(_Kernel({
+            "audit_logger": {"arg_max_chars": 10},
+        }))
+        ctx = _ctx()
+
+        await plugin.on_pre_invoke(ctx, "call_1", "read_file", {"path": "a" * 50})
+        span = plugin.tool_spans("test-user")[0]
+        assert span["arg_truncated"] is True
+        assert len(span["arg_preview"]) == 10 + len("...")

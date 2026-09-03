@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
+from pydantic import BaseModel
+
 from nanobee.builtin.tool_cron.service import CronService
 from nanobee.builtin.tool_cron.types import CronJob, CronJobError, CronSchedule
 from nanobee.kernel.context_sandbox_var import current_request_context
@@ -21,6 +23,17 @@ _SYSTEM_NOTIFY_TYPE = "system"
 _SYSTEM_NOTIFY_SEVERITY = "error"
 
 
+class ToolCronConfig(BaseModel):
+    """tool_cron 插件声明式配置。
+
+    Attributes:
+        default_timezone: 未显式指定时区的 cron 表达式与 naive ISO 时间
+            的默认 IANA 时区。
+    """
+
+    default_timezone: str = "UTC"
+
+
 class ToolCronPlugin(ToolPlugin):
     """Cron 定时任务工具插件。
 
@@ -29,18 +42,16 @@ class ToolCronPlugin(ToolPlugin):
     按 context_id 隔离 CronService 实例，多用户并发互不干扰。
     """
 
+    config_cls = ToolCronConfig
+
     def __init__(self, metadata: Any = None):
         super().__init__(metadata)
         self._crons: dict[str, CronService] = {}
-        self._default_timezone: str = "UTC"
 
     def initialize(self, kernel: Any) -> None:
-        """初始化插件：创建 CronService 实例。"""
+        """初始化插件：记录默认时区。"""
         super().initialize(kernel)
-
-        self._default_timezone = self.get_config("default_timezone", "UTC")
-
-        logger.info("Cron 插件初始化完成")
+        logger.info("Cron 插件初始化完成，默认时区 {}", self.config.default_timezone)
 
     def on_enable(self) -> None:
         """启用时扫描并启动所有用户已有的 CronService。"""
@@ -135,7 +146,7 @@ class ToolCronPlugin(ToolPlugin):
                     "description": (
                         "Schedule reminders and recurring tasks. Actions: add, list, remove."
                         f" If tz is omitted, cron expressions and naive ISO times default to"
-                        f" {self._default_timezone}."
+                        f" {self.config.default_timezone}."
                     ),
                     "parameters": {
                         "type": "object",
@@ -291,7 +302,7 @@ class ToolCronPlugin(ToolPlugin):
         if every_seconds:
             schedule = CronSchedule(kind="every", every_ms=every_seconds * 1000)
         elif cron_expr:
-            effective_tz = tz or self._default_timezone
+            effective_tz = tz or self.config.default_timezone
             if err := self._validate_timezone(effective_tz):
                 return err
             schedule = CronSchedule(kind="cron", expr=cron_expr, tz=effective_tz)
@@ -301,9 +312,9 @@ class ToolCronPlugin(ToolPlugin):
             except ValueError:
                 return f"错误：无效的 ISO 时间格式 '{at}'。预期格式：YYYY-MM-DDTHH:MM:SS"
             if dt.tzinfo is None:
-                if err := self._validate_timezone(self._default_timezone):
+                if err := self._validate_timezone(self.config.default_timezone):
                     return err
-                dt = dt.replace(tzinfo=ZoneInfo(self._default_timezone))
+                dt = dt.replace(tzinfo=ZoneInfo(self.config.default_timezone))
             at_ms = int(dt.timestamp() * 1000)
             schedule = CronSchedule(kind="at", at_ms=at_ms)
             delete_after = True
@@ -351,7 +362,7 @@ class ToolCronPlugin(ToolPlugin):
 
     def _display_timezone(self, schedule: CronSchedule) -> str:
         """选择可读性最好的时区。"""
-        return schedule.tz or self._default_timezone
+        return schedule.tz or self.config.default_timezone
 
     def _format_state(self, job: CronJob) -> list[str]:
         """格式化任务状态为显示行。"""

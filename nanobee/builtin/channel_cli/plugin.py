@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from pydantic import BaseModel
+
 from nanobee.channel.base import ChannelPlugin
 from nanobee.channel.message import ChannelMessage, OutboundMessage, StreamingDelta
 from nanobee.kernel.context_manager import ContextManager
@@ -12,9 +14,22 @@ from nanobee.kernel.context_manager import ContextManager
 from nanobee.utils.logger import logger
 
 
+class ChannelCliConfig(BaseModel):
+    """channel_cli 插件声明式配置。
+
+    Attributes:
+        prompt_prefix: 出站消息前缀。
+        input_prefix: 输入提示符前缀。
+    """
+
+    prompt_prefix: str = "🐝 "
+    input_prefix: str = "你: "
+
 
 class ChannelCLIPlugin(ChannelPlugin):
     """命令行交互通道"""
+
+    config_cls = ChannelCliConfig
 
     display_name = "命令行"
     supports_streaming = True
@@ -52,7 +67,7 @@ class ChannelCLIPlugin(ChannelPlugin):
 
     async def send(self, message: OutboundMessage, context_id: str = "default") -> None:
         """发送完整出站消息到 CLI。"""
-        prefix = self.get_config("prompt_prefix", "🐝 ")
+        prefix = self.config.prompt_prefix
         if message.content:
             print(f"\n{prefix}{message.content}")
 
@@ -131,7 +146,7 @@ class ChannelCLIPlugin(ChannelPlugin):
     async def _interaction_loop(self) -> None:
         """交互循环（读取用户输入并转发给内核）"""
         loop = asyncio.get_event_loop()
-        prefix_prompt = self.get_config("input_prefix", "你: ")
+        prefix_prompt = self.config.input_prefix
 
         while self._running:
             try:

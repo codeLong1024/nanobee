@@ -22,6 +22,7 @@ import pytest
 from aiohttp.test_utils import AioHTTPTestCase
 
 from nanobee.builtin.channel_http.plugin import (
+    ChannelHttpConfig,
     HTTPChannelPlugin,
     _build_json_response,
     _build_sse_chunk,
@@ -54,15 +55,8 @@ def _create_plugin(api_key: str | None = None) -> HTTPChannelPlugin:
     plugin = HTTPChannelPlugin(PluginMetadata(name="channel_http", plugin_type="channel"))
     kernel = _mock_kernel()
     plugin.initialize(kernel)
-    # 模拟 get_config 返回 api_key
-    original_get_config = plugin.get_config
-
-    def _patched_get_config(key: str, default: Any = None) -> Any:
-        if key == "api_key":
-            return api_key if api_key is not None else default
-        return original_get_config(key, default)
-
-    plugin.get_config = _patched_get_config  # type: ignore[method-assign]
+    # 通过声明式配置注入 API Key（替代 get_config patch）
+    plugin._config = ChannelHttpConfig(api_key=api_key)
     return plugin
 
 

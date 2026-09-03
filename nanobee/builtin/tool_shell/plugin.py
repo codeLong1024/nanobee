@@ -16,6 +16,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from pydantic import BaseModel, Field
+
 from nanobee.builtin.tool_shell.sandbox import wrap_command as _wrap_sandbox_command
 from nanobee.kernel.context_sandbox_var import (
     current_bwrap_ro_bind,
@@ -73,8 +75,26 @@ class _PreparedCommand:
     login: bool
 
 
+class ToolShellConfig(BaseModel):
+    """tool_shell 插件声明式配置。
+
+    Attributes:
+        sandbox: 进程级沙箱后端标识（如 "bwrap"）；空字符串表示不启用。
+        extra_mounts: 额外只读挂载（source:target 格式）。
+        env: 注入沙箱的非敏感环境变量。
+        secrets: 注入沙箱的敏感环境变量（日志只记录数量）。
+    """
+
+    sandbox: str = ""
+    extra_mounts: list[str] = Field(default_factory=list)
+    env: dict[str, str] = Field(default_factory=dict)
+    secrets: dict[str, str] = Field(default_factory=dict)
+
+
 class ToolShellPlugin(ToolPlugin):
     """Shell 工具插件 — 提供 execute_shell 和 write_stdin 工具"""
+
+    config_cls = ToolShellConfig
 
     _MAX_TIMEOUT = 600
     _MAX_OUTPUT = 10_000
@@ -490,7 +510,7 @@ class ToolShellPlugin(ToolPlugin):
 
     def _wrap_sandbox(self, command: str, cwd: str) -> str:
         """如果配置了进程级沙箱后端，将命令包裹在沙箱中执行。"""
-        sandbox_backend = self.get_config("sandbox", "")
+        sandbox_backend = self.config.sandbox
         if not sandbox_backend:
             return command
 
@@ -517,8 +537,8 @@ class ToolShellPlugin(ToolPlugin):
 
             # 配置声明的额外只读挂载（source:target 格式，如 venv 或 SDK 目录）
             # 由部署方在 nanobee.yaml plugins.tool_shell.extra_mounts 中指定
-            extra_mounts = self.get_config("extra_mounts", [])
-            if isinstance(extra_mounts, list) and extra_mounts:
+            extra_mounts = self.config.extra_mounts
+            if extra_mounts:
                 extra_ro_bind.extend(extra_mounts)
                 logger.info("沙箱额外挂载: {}", extra_mounts)
 
@@ -529,12 +549,12 @@ class ToolShellPlugin(ToolPlugin):
             # 安全边界：值不进入 LLM 的 command 字段，但作为 bwrap 参数对 ps 可见
             # 同名 key 时 secrets 值优先（更安全的配置段胜出）
             extra_env: dict[str, str] = {}
-            env_overrides = self.get_config("env", {})
-            if isinstance(env_overrides, dict) and env_overrides:
+            env_overrides = self.config.env
+            if env_overrides:
                 extra_env.update(env_overrides)
                 logger.info("沙箱环境变量注入: {}", list(env_overrides.keys()))
-            secrets = self.get_config("secrets", {})
-            if isinstance(secrets, dict) and secrets:
+            secrets = self.config.secrets
+            if secrets:
                 _dup = set(extra_env) & set(secrets)
                 if _dup:
                     logger.warning(

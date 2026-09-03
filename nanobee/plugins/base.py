@@ -8,7 +8,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from .hook_mixin import PluginHookMixin
 
@@ -82,6 +82,11 @@ class NanobeePlugin(PluginHookMixin, ABC):
     不存在类级兜底——plugin.toml 是唯一真实源。
     """
 
+    # 插件声明式配置模型（pydantic BaseModel 子类）。
+    # None = 未声明，_config 保持 dict 原样透传（向后兼容旧插件）。
+    # FIP：框架只读标记、机械执行 model_validate，不懂字段含义。
+    config_cls: type[BaseModel] | None = None
+
     def __init__(self, metadata: PluginMetadata):
         """初始化插件
 
@@ -91,7 +96,9 @@ class NanobeePlugin(PluginHookMixin, ABC):
         self._metadata = metadata
         self._kernel: Any | None = None  # 私有属性，禁止插件直接访问
         self._enabled = False
-        self._config: dict[str, Any] = {}  # 插件专属配置（隔离）
+        # 声明 config_cls 时初始化默认实例（字段默认值可用），initialize() 再
+        # 用实际配置覆盖；未声明时保持空 dict（向后兼容旧插件）。
+        self._config: Any = self.config_cls() if self.config_cls is not None else {}
         self._tmp: Path | None = None  # 插件临时目录（框架注入）
 
     @property
@@ -148,22 +155,61 @@ class NanobeePlugin(PluginHookMixin, ABC):
 
         每个插件只能读取自己在 plugins.<plugin_name> 下的配置段，
         无法访问其他插件的配置或全局配置。
+
+        声明了 ``config_cls`` 的插件，框架在此统一 ``model_validate``，
+        完成类型强转（``"false"`` → ``False``、``"8080"`` → ``8080``）、
+        约束校验、默认值填充与非法值降级；未声明的插件保持 dict 原样透传。
         """
-        if self._kernel is None:
-            self._config = {}
+        raw = self._read_plugins_section()
+        if self.config_cls is None:
+            self._config = raw
             return
-        # 兼容 kernel 为 dict 的情况（测试场景）
-        if isinstance(self._kernel, dict):
-            self._config = {}
-            return
-        # kernel.config 可能是 Config 对象（有 .plugins）或普通 dict
+        self._config = self._coerce_config(raw)
+
+    def _coerce_config(self, raw: dict[str, Any]) -> BaseModel:
+        """字段级降级校验配置：非法字段回退默认值，合法字段保留。
+
+        逐次剔除 ``ValidationError`` 定位的非法字段并重试，避免一个字段
+        错误连带丢弃其余所有合法配置；若无法进一步剔除（如必填字段缺失），
+        整体回退默认实例，防止死循环。
+
+        Args:
+            raw: ``plugins.<plugin_name>`` 段的原始配置 dict。
+
+        Returns:
+            校验通过的 config_cls 实例。
+        """
+        while True:
+            try:
+                return self.config_cls.model_validate(raw)
+            except ValidationError as exc:
+                bad = {err["loc"][0] for err in exc.errors() if err["loc"]}
+                cleaned = {k: v for k, v in raw.items() if k not in bad}
+                if cleaned == raw:
+                    return self.config_cls()
+                logger.warning(
+                    "[plugin] {} 配置字段 {} 非法，已回退默认值: {}",
+                    self._metadata.name, sorted(bad), exc,
+                )
+                raw = cleaned
+
+    def _read_plugins_section(self) -> dict[str, Any]:
+        """读取 plugins.<plugin_name> 段的原始配置 dict。
+
+        兼容 kernel 为 None、dict（测试场景）或 Config 对象三种形态。
+
+        Returns:
+            原始配置 dict；无法提取时返回空 dict。
+        """
+        if self._kernel is None or isinstance(self._kernel, dict):
+            return {}
         cfg = self._kernel.config
         if hasattr(cfg, "plugins"):
             plugins_cfg = cfg.plugins
         else:
             plugins_cfg = cfg.get("plugins", {})
         plugin_config = plugins_cfg.get(self._metadata.name, {}) if isinstance(plugins_cfg, dict) else {}
-        self._config = dict(plugin_config) if isinstance(plugin_config, dict) else {}
+        return dict(plugin_config) if isinstance(plugin_config, dict) else {}
 
     def on_load(self) -> None:
         """插件加载后调用（注册工具、注册事件等）"""
@@ -182,7 +228,7 @@ class NanobeePlugin(PluginHookMixin, ABC):
     def on_unload(self) -> None:
         """插件卸载前调用（清理资源）"""
         self._kernel = None
-        self._config = {}
+        self._config = self.config_cls() if self.config_cls is not None else {}
 
     def destroy(self) -> None:
         """销毁插件（由 PluginManager 调用）"""
@@ -223,11 +269,19 @@ class NanobeePlugin(PluginHookMixin, ABC):
         """插件是否已启用"""
         return self._enabled
 
-    def get_config(self, key: str, default: Any = None) -> Any:
-        """从插件专属配置中获取指定键的值
+    @property
+    def config(self) -> Any | None:
+        """强类型配置对象。
 
-        每个插件只能访问自己在 plugins.<plugin_name> 下的配置段，
-        无法读取其他插件的配置或全局配置。
+        声明 ``config_cls`` 时返回 model 实例；未声明（dict 存储）时返回 None。
+        """
+        return None if isinstance(self._config, dict) else self._config
+
+    def get_config(self, key: str, default: Any = None) -> Any:
+        """从插件专属配置中获取指定键的值。
+
+        兼容两种存储：未声明 config_cls 时为 dict（``.get`` 语义）；
+        声明后为强类型 model（字段访问，键不存在时回退 default）。
 
         Args:
             key: 配置键名
@@ -236,7 +290,11 @@ class NanobeePlugin(PluginHookMixin, ABC):
         Returns:
             配置值
         """
-        return self._config.get(key, default)
+        if isinstance(self._config, dict):
+            return self._config.get(key, default)
+        if key in type(self._config).model_fields:
+            return getattr(self._config, key)
+        return default
 
     def install(self) -> None:
         """安装插件（可选，例如创建必要的目录或文件）"""
