@@ -11,7 +11,7 @@ Skill（技能）是 Nanobee 的**用户知识资产**——以 Markdown 文档�
 - [技能 vs 插件](#技能-vs-插件)
 - [SKILL.md 格式](#skillmd-格式)
 - [注入策略（full_inject 声明）](#注入策略full_inject-声明)
-- [内置技能（memory + skill-creator）](#内置技能memory--skill-creator)
+- [内置技能（cron + memory + skill-creator）](#内置技能cron--memory--skill-creator)
 - [编写技能文档](#编写技能文档)
   - [元数据编写规范](#元数据编写规范)
   - [正文编写规范](#正文编写规范)
@@ -68,6 +68,10 @@ full_inject: false
 | `full_inject` | 否 | bool | `true` 时 body 全量注入 system prompt；`false`（默认）仅注入元数据 |
 | `compatibility` | 否 | string | 兼容性说明，如 `"requires Python >= 3.10"` |
 | `license` | 否 | string | 许可证，如 `"MIT"` |
+
+### 内置 `cron` 技能
+
+`cron` 是内置的定时任务使用指南，通过渐进式注入（仅元数据），LLM 看到描述后按需读取正文。
 
 ### 内置 `memory` 技能
 
@@ -147,9 +151,15 @@ LLM 看到描述后，自主决定是否通过文件工具读取正文。这有�
 
 ---
 
-## 内置技能（memory + skill-creator）
+## 内置技能（cron + memory + skill-creator）
 
-框架打包两个内置技能，位于 `nanobee/skills/`（只读，不可覆盖）：
+框架打包三个内置技能，位于 `nanobee/skills/`（只读，不可覆盖）：
+
+### `cron` — 定时任务指南
+
+- **作用**：指导 LLM 使用 `cron` 工具调度提醒、周期任务与一次性任务
+- **注入方式**：渐进式注入（仅元数据），LLM 按需读取
+- **说明**：包含三种模式（Reminder/Task/One-time）、安全红线（30 秒下限）、时区用法等
 
 ### `memory` — 兜底记忆策略
 
@@ -230,6 +240,7 @@ SkillsLoader 从两个来源发现技能（2 秒 TTL 文件系统缓存）：
 ```
 来源 1: nanobee/skills/   ← 框架内置，只读
     nanobee/skills/
+      ├── cron/SKILL.md
       ├── memory/SKILL.md
       └── skill-creator/SKILL.md
 
@@ -418,6 +429,7 @@ ContextPipeline.build()
 │   └── pr-reviewer/SKILL.md
 │
 └── .venv/.../nanobee/skills/  ← 内置技能（只读）
+    ├── cron/SKILL.md
     ├── memory/SKILL.md
     └── skill-creator/SKILL.md
 ```

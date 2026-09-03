@@ -63,7 +63,7 @@
 
 ## 实例配置文件
 
-每个实例目录下必须有一个 `config.yaml`，参考 `deploy/config.example.yaml` 作为模板。
+每个实例目录下必须有一个 `config.yaml`，参考项目根目录的 `nanobee.yaml.example` 作为模板，或参考下方最小配置。
 
 ### 最小配置
 
@@ -135,7 +135,7 @@ sudo chown nanobee:nanobee /nanobee-data
 
 # 创建实例目录并放置配置
 sudo -u nanobee mkdir -p /nanobee-data/<instance-1>
-sudo -u nanobee cp deploy/config.example.yaml /nanobee-data/<instance-1>/config.yaml
+sudo -u nanobee cp /path/to/nanobee.yaml.example /nanobee-data/<instance-1>/config.yaml
 sudo -u nanobee vim /nanobee-data/<instance-1>/config.yaml
 ```
 
@@ -143,7 +143,7 @@ sudo -u nanobee vim /nanobee-data/<instance-1>/config.yaml
 
 ```bash
 # 复制 unit 文件到系统目录
-sudo cp deploy/nanobee-gateway.service /etc/systemd/system/
+sudo vim /etc/systemd/system/nanobee-gateway.service  # 按下方配置创建
 
 # 根据实际环境修改以下字段：
 sudo vim /etc/systemd/system/nanobee-gateway.service
@@ -174,7 +174,7 @@ sudo -u nanobee NANOBEE_DATA_DIR=/nanobee-data nanobee svc status
 
 ### systemd unit 安全加固说明
 
-`deploy/nanobee-gateway.service` 内建了完整的安全加固配置：
+systemd unit 内建完整的安全加固配置：
 
 | 配置项 | 作用 |
 |--------|------|
@@ -254,7 +254,7 @@ nanobee svc logs <instance-1> -f
 ```bash
 # 1. 创建实例目录和配置
 sudo -u nanobee mkdir -p /nanobee-data/<new-instance>/logs
-sudo -u nanobee cp deploy/config.example.yaml /nanobee-data/<new-instance>/config.yaml
+sudo -u nanobee cp /path/to/nanobee.yaml.example /nanobee-data/<new-instance>/config.yaml
 sudo -u nanobee vim /nanobee-data/<new-instance>/config.yaml
 # 修改: data_dir、gateway.port（确保不与其他实例冲突）、通道密钥等
 
