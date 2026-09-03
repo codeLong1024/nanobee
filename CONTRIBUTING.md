@@ -339,7 +339,7 @@ my_plugin/
 ### 插件命名规范
 
 - 使用小写字母、数字、下划线（PEP 8 Python 模块规范）
-- 类型前缀：`tool_` / `channel_` / `memory_` / `skill_`
+- 类型前缀：`tool_` / `channel_` / `memory_` / `audit_`
 - 示例：`tool_my_tool`、`channel_telegram`
 
 ### 插件元数据（plugin.toml）
