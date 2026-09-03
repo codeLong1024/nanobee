@@ -1,0 +1,697 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>nanobee 🐝 — 极简 AI Agent 微内核框架</title>
+<meta name="description" content="nanobee 是一个极简 AI Agent 微内核框架，聚焦路由、隔离、拼装三大核心基础设施，支持多租户，适用于企业数字员工。衍生自 nanobot，MIT 许可，1041 测试用例零回归。">
+<style>
+  :root{
+    --bg:#0a0b0f; --bg-1:#0f1117; --bg-2:#151824; --bg-3:#1b1f2e;
+    --line:#262b3d; --line-2:#333a52;
+    --txt:#e7e9f0; --txt-dim:#9aa1b8; --txt-mut:#666e88;
+    --honey:#ffb020; --honey-2:#ffd76a; --amber:#ff8a3d;
+    --green:#4ade80; --cyan:#38bdf8; --violet:#a78bfa; --red:#fb7185;
+    --mono:"JetBrains Mono","SFMono-Regular",Consolas,"Liberation Mono",Menlo,"Cascadia Code",monospace;
+    --sans:"Inter","Segoe UI",system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+    --maxw:1120px;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  body{
+    background:var(--bg); color:var(--txt); font-family:var(--sans);
+    line-height:1.7; -webkit-font-smoothing:antialiased; overflow-x:hidden;
+  }
+  body::before{
+    content:""; position:fixed; inset:0; z-index:-1; pointer-events:none;
+    background:
+      radial-gradient(900px 500px at 12% -8%, rgba(255,176,32,.10), transparent 60%),
+      radial-gradient(800px 500px at 100% 0%, rgba(56,189,248,.08), transparent 55%),
+      radial-gradient(700px 600px at 50% 120%, rgba(167,139,250,.07), transparent 60%);
+  }
+  a{color:inherit;text-decoration:none}
+  code,.mono{font-family:var(--mono)}
+
+  /* ---------- nav ---------- */
+  header.nav{
+    position:sticky; top:0; z-index:50; backdrop-filter:blur(12px);
+    background:rgba(10,11,15,.72); border-bottom:1px solid var(--line);
+  }
+  .nav-in{max-width:var(--maxw);margin:0 auto;padding:14px 24px;display:flex;align-items:center;gap:24px}
+  .brand{display:flex;align-items:center;gap:9px;font-weight:700;font-size:17px;letter-spacing:.2px}
+  .brand .bee{font-size:20px;filter:drop-shadow(0 0 10px rgba(255,176,32,.5))}
+  .brand b{color:var(--honey)}
+  nav.links{display:flex;gap:20px;margin-left:auto;font-size:14px;color:var(--txt-dim);flex-wrap:wrap}
+  nav.links a{transition:color .2s}
+  nav.links a:hover{color:var(--honey)}
+  .gh-btn{
+    display:inline-flex;align-items:center;gap:7px;padding:8px 14px;border-radius:9px;
+    border:1px solid var(--line-2); background:var(--bg-2); font-size:13.5px;font-weight:600;
+    transition:.2s; color:var(--txt);white-space:nowrap
+  }
+  .gh-btn:hover{border-color:var(--honey);box-shadow:0 0 0 3px rgba(255,176,32,.12)}
+  @media(max-width:1024px){nav.links{display:none}}
+
+  /* ---------- hero ---------- */
+  .wrap{max-width:var(--maxw);margin:0 auto;padding:0 24px}
+  .hero{padding:84px 0 54px;text-align:center}
+  .eyebrow{
+    display:inline-flex;align-items:center;gap:8px;font-family:var(--mono);font-size:12.5px;
+    color:var(--honey-2);background:rgba(255,176,32,.08);border:1px solid rgba(255,176,32,.25);
+    padding:6px 14px;border-radius:999px;letter-spacing:.4px
+  }
+  .eyebrow .dot{width:7px;height:7px;border-radius:50%;background:var(--honey);box-shadow:0 0 10px var(--honey);animation:pulse 2s infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+  h1.title{
+    font-size:clamp(42px,7vw,74px);line-height:1.05;font-weight:800;letter-spacing:-1.5px;margin:22px 0 8px
+  }
+  h1.title .grad{
+    background:linear-gradient(100deg,var(--honey-2),var(--honey) 40%,var(--amber));
+    -webkit-background-clip:text;background-clip:text;color:transparent
+  }
+  .tagline{font-size:clamp(17px,2.4vw,21px);color:var(--txt-dim);max-width:760px;margin:0 auto}
+  .tagline b{color:var(--txt)}
+  .pills{display:flex;flex-wrap:wrap;gap:10px;justify-content:center;margin:30px 0 8px}
+  .pill{
+    font-family:var(--mono);font-size:12.5px;color:var(--txt-dim);
+    background:var(--bg-1);border:1px solid var(--line);padding:6px 12px;border-radius:8px;display:inline-flex;gap:7px;align-items:center
+  }
+  .pill .k{color:var(--txt-mut)}
+  .pill .v{color:var(--txt)}
+  .pill.py .v{color:var(--cyan)} .pill.mi .v{color:var(--green)} .pill.st .v{color:var(--honey)}
+  .cta{display:flex;gap:14px;justify-content:center;flex-wrap:wrap;margin-top:28px}
+  .btn{padding:13px 26px;border-radius:11px;font-weight:650;font-size:15px;transition:.22s;display:inline-flex;gap:9px;align-items:center}
+  .btn-primary{background:linear-gradient(100deg,var(--honey),var(--amber));color:#1a1206;box-shadow:0 8px 30px -8px rgba(255,140,40,.55)}
+  .btn-primary:hover{transform:translateY(-2px);box-shadow:0 12px 36px -8px rgba(255,140,40,.7)}
+  .btn-ghost{border:1px solid var(--line-2);background:var(--bg-1);color:var(--txt)}
+  .btn-ghost:hover{border-color:var(--honey);color:var(--honey)}
+  .hero-code{
+    max-width:640px;margin:38px auto 0;text-align:left;background:var(--bg-1);
+    border:1px solid var(--line);border-radius:14px;overflow:hidden;box-shadow:0 30px 80px -40px rgba(0,0,0,.9)
+  }
+  .hero-code .bar{display:flex;gap:7px;padding:12px 16px;border-bottom:1px solid var(--line);align-items:center}
+  .hero-code .bar i{width:11px;height:11px;border-radius:50%;display:inline-block}
+  .hero-code .bar i:nth-child(1){background:#ff5f56}.hero-code .bar i:nth-child(2){background:#ffbd2e}.hero-code .bar i:nth-child(3){background:#27c93f}
+  .hero-code .bar span{margin-left:auto;font-family:var(--mono);font-size:12px;color:var(--txt-mut)}
+  .hero-code pre{padding:18px 20px;font-family:var(--mono);font-size:13.5px;line-height:1.85;color:var(--txt-dim);overflow:auto}
+
+  /* ---------- sections ---------- */
+  section{padding:64px 0;border-top:1px solid var(--line)}
+  .sec-head{margin-bottom:36px}
+  .sec-kicker{font-family:var(--mono);font-size:13px;color:var(--honey);letter-spacing:1.5px;text-transform:uppercase}
+  h2{font-size:clamp(26px,4vw,34px);font-weight:750;letter-spacing:-.5px;margin-top:8px}
+  .sec-sub{color:var(--txt-dim);margin-top:12px;max-width:680px;font-size:16px}
+
+  .grid{display:grid;gap:18px}
+  .g2{grid-template-columns:repeat(2,1fr)} .g3{grid-template-columns:repeat(3,1fr)} .g4{grid-template-columns:repeat(4,1fr)}
+  @media(max-width:900px){.g4{grid-template-columns:repeat(2,1fr)}.g3{grid-template-columns:repeat(2,1fr)}}
+  @media(max-width:640px){.g2,.g3,.g4{grid-template-columns:1fr}}
+  .card{
+    background:linear-gradient(180deg,var(--bg-1),var(--bg-2));border:1px solid var(--line);
+    border-radius:14px;padding:22px;transition:.24s;position:relative;overflow:hidden
+  }
+  .card:hover{border-color:var(--line-2);transform:translateY(-3px)}
+  .card:hover::after{opacity:.5}
+  .card::after{content:"";position:absolute;inset:0;background:radial-gradient(400px 120px at var(--mx,50%) 0%,rgba(255,176,32,.10),transparent 70%);opacity:0;transition:.3s;pointer-events:none}
+  .card .ic{font-size:22px;margin-bottom:12px;display:inline-flex;width:44px;height:44px;align-items:center;justify-content:center;border-radius:11px;background:rgba(255,176,32,.1);border:1px solid rgba(255,176,32,.2)}
+  .card h3{font-size:17px;font-weight:700;margin-bottom:8px}
+  .card p{font-size:14.5px;color:var(--txt-dim)}
+  .card .tag{font-family:var(--mono);font-size:11.5px;color:var(--honey-2);letter-spacing:.5px}
+  .card ul{margin:10px 0 0 0;padding-left:18px}
+  .card ul li{font-size:14px;color:var(--txt-dim);margin-bottom:6px}
+  .card ul li b{color:var(--txt)}
+
+  /* principle list */
+  .prin{display:grid;gap:14px}
+  .prin .row{display:grid;grid-template-columns:210px 1fr;gap:20px;padding:18px 20px;border:1px solid var(--line);border-radius:12px;background:var(--bg-1);transition:.2s}
+  .prin .row:hover{border-color:rgba(255,176,32,.4)}
+  .prin .row b{color:var(--honey-2);font-size:15.5px;display:block}
+  .prin .row span{font-size:12.5px;color:var(--txt-mut);font-family:var(--mono)}
+  .prin .row p{color:var(--txt-dim);font-size:14.5px}
+  @media(max-width:640px){.prin .row{grid-template-columns:1fr;gap:8px}}
+
+  /* code panel */
+  .code-panel{background:#0b0d13;border:1px solid var(--line);border-radius:14px;overflow:hidden}
+  .code-panel .top{display:flex;align-items:center;padding:11px 16px;border-bottom:1px solid var(--line);font-family:var(--mono);font-size:12.5px;color:var(--txt-mut);gap:8px}
+  .code-panel .top .lbl{color:var(--txt-dim)}
+  .code-panel pre{padding:20px 22px;overflow:auto;font-family:var(--mono);font-size:13px;line-height:1.75;color:#c7cee0}
+  .code-panel .cmt{color:var(--txt-mut)} .code-panel .hl{color:var(--honey)} .code-panel .cy{color:var(--cyan)} .code-panel .gr{color:var(--green)} .code-panel .vi{color:var(--violet)}
+  .code-panel.copy .top::after{content:"复制";margin-left:auto;color:var(--txt-dim);cursor:pointer;border:1px solid var(--line-2);padding:3px 10px;border-radius:7px;font-size:11.5px;transition:.2s}
+  .code-panel.copy .top:hover::after{color:var(--honey);border-color:var(--honey)}
+
+  /* tables */
+  .tbl-wrap{border:1px solid var(--line);border-radius:14px;overflow:hidden;background:var(--bg-1)}
+  table{width:100%;border-collapse:collapse;font-size:14px}
+  thead{background:var(--bg-2)}
+  th{text-align:left;padding:13px 16px;font-weight:600;color:var(--txt-dim);border-bottom:1px solid var(--line);font-size:13px}
+  td{padding:12px 16px;border-bottom:1px solid var(--line);color:var(--txt-dim);vertical-align:top}
+  tr:last-child td{border-bottom:none}
+  tbody tr{transition:background .15s}
+  tbody tr:hover{background:rgba(255,176,32,.04)}
+  td .name{font-family:var(--mono);color:var(--honey-2);font-size:13px;font-weight:600}
+  .badge{display:inline-block;font-size:11px;font-family:var(--mono);padding:2px 8px;border-radius:6px;border:1px solid}
+  .badge.ch{color:var(--cyan);border-color:rgba(56,189,248,.35);background:rgba(56,189,248,.08)}
+  .badge.to{color:var(--green);border-color:rgba(74,222,128,.35);background:rgba(74,222,128,.08)}
+  .badge.au{color:var(--violet);border-color:rgba(167,139,250,.35);background:rgba(167,139,250,.08)}
+  .badge.hk{color:var(--honey-2);border-color:rgba(255,176,32,.35);background:rgba(255,176,32,.08)}
+  .ok{color:var(--green)}
+  @media(max-width:640px){.tbl-wrap{overflow-x:auto}}
+
+  /* stats */
+  .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-top:8px}
+  .stat{text-align:center;padding:26px 14px;border:1px solid var(--line);border-radius:14px;background:linear-gradient(180deg,var(--bg-1),var(--bg-2))}
+  .stat .n{font-size:clamp(28px,4vw,40px);font-weight:800;background:linear-gradient(100deg,var(--honey-2),var(--amber));-webkit-background-clip:text;background-clip:text;color:transparent;letter-spacing:-1px}
+  .stat .l{font-size:13px;color:var(--txt-dim);margin-top:6px}
+  @media(max-width:640px){.stats{grid-template-columns:repeat(2,1fr)}}
+
+  /* feature table alt */
+  .feat{display:grid;gap:0;border:1px solid var(--line);border-radius:14px;overflow:hidden}
+  .feat .f{display:grid;grid-template-columns:230px 1fr;gap:0;border-bottom:1px solid var(--line)}
+  .feat .f:last-child{border-bottom:none}
+  .feat .f>div{padding:16px 20px}
+  .feat .f .ft{background:var(--bg-2);font-weight:650;color:var(--honey-2);font-size:14.5px}
+  .feat .f .fd{background:var(--bg-1);color:var(--txt-dim);font-size:14.5px}
+  .feat .f:nth-child(even) .ft{background:#191d2b}
+  @media(max-width:680px){.feat .f{grid-template-columns:1fr}.feat .f .ft{border-bottom:1px solid var(--line)}}
+
+  /* provider chips */
+  .chips{display:flex;flex-wrap:wrap;gap:10px;margin-top:14px}
+  .chip{font-family:var(--mono);font-size:13px;padding:8px 14px;border-radius:9px;background:var(--bg-2);border:1px solid var(--line);color:var(--txt-dim);transition:.2s}
+  .chip:hover{border-color:var(--honey);color:var(--txt)}
+
+  /* note */
+  .note{
+    border:1px solid rgba(56,189,248,.28);background:rgba(56,189,248,.06);
+    border-radius:12px;padding:16px 20px;color:var(--txt-dim);font-size:14.5px;margin-top:18px
+  }
+  .note b{color:var(--cyan)}
+
+  /* footer */
+  footer{border-top:1px solid var(--line);padding:48px 0 60px;margin-top:20px;text-align:center;color:var(--txt-mut);font-size:14px}
+  footer .bee{font-size:26px}
+  footer a{color:var(--honey)}
+  footer .links{display:flex;gap:20px;justify-content:center;margin:14px 0 20px;flex-wrap:wrap}
+
+  .reveal{opacity:0;transform:translateY(18px);transition:opacity .7s ease,transform .7s ease}
+  .reveal.in{opacity:1;transform:none}
+</style>
+</head>
+<body>
+
+<header class="nav">
+  <div class="nav-in">
+    <div class="brand"><span class="bee">🐝</span><span>nano<b>bee</b></span></div>
+    <nav class="links">
+      <a href="#idea">核心理念</a>
+      <a href="#mech">核心机制</a>
+      <a href="#arch">架构</a>
+      <a href="#plugins">内置插件</a>
+      <a href="#dev">插件开发</a>
+      <a href="#quick">快速开始</a>
+      <a href="#test">测试</a>
+    </nav>
+    <a class="gh-btn" href="https://github.com/codeLong1024/nanobee" target="_blank" rel="noopener">
+      <svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+      GitHub
+    </a>
+  </div>
+</header>
+
+<!-- HERO -->
+<div class="wrap">
+  <div class="hero">
+    <span class="eyebrow"><span class="dot"></span>Minimal AI-Agent Microkernel</span>
+    <h1 class="title">nano<span class="grad">bee</span> 🐝</h1>
+    <p class="tagline">极简 <b>AI Agent 微内核框架</b>——只做<b>路由、隔离、拼装</b>三件事，业务逻辑交给插件。继承自 <a href="https://github.com/HKUDS/nanobot" target="_blank" rel="noopener" style="color:var(--cyan)">nanobot</a>，支持多租户，适用于企业数字员工。</p>
+    <div class="pills">
+      <span class="pill py"><span class="k">语言</span><span class="v">Python ≥ 3.11</span></span>
+      <span class="pill mi"><span class="k">许可</span><span class="v">MIT</span></span>
+      <span class="pill st"><span class="k">★ Stars</span><span class="v">3</span></span>
+      <span class="pill"><span class="k">Forks</span><span class="v">1</span></span>
+      <span class="pill"><span class="k">测试</span><span class="v">1041 用例</span></span>
+      <span class="pill"><span class="k">Provider</span><span class="v">37 注册表</span></span>
+    </div>
+    <div class="cta">
+      <a class="btn btn-primary" href="#quick">快速开始 →</a>
+      <a class="btn btn-ghost" href="https://github.com/codeLong1024/nanobee" target="_blank" rel="noopener">查看源码仓库</a>
+    </div>
+    <div class="hero-code">
+      <div class="bar"><i></i><i></i><i></i><span>terminal</span></div>
+      <pre><span class="cmt"># 安装并跑起一个 Agent</span>
+pip install -e .
+<span class="hl">nanobee</span> run -m <span class="gr">"你好，帮我读一下今天的待办"</span>
+
+<span class="cmt"># 生产部署：带健康端点的完整 Gateway</span>
+<span class="hl">nanobee</span> gateway --port 8080</pre>
+    </div>
+  </div>
+</div>
+
+<!-- CORE IDEA -->
+<section id="idea">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <div class="sec-kicker">// Core Philosophy</div>
+      <h2>反「大而全」的微内核</h2>
+      <p class="sec-sub">大多数 AI Agent 框架是"大而全"的——自带记忆策略、梦境调度、人设漂移检测，但你可能用不上，或者想用自己的方案。nanobee 反其道而行：框架聚焦核心基础设施，业务逻辑通过插件实现，技能管理等高频核心能力直接内置于内核。</p>
+    </div>
+    <div class="prin">
+      <div class="row reveal"><div><b>核心与插件分离</b><span>Separation</span></div><p>高频核心能力（技能发现与注入）内置于 kernel；业务逻辑（审计、工具过滤）留给插件。</p></div>
+      <div class="row reveal"><div><b>框架无知论</b><span>Ignorance</span></div><p>框架不知道"记忆"是什么、不知道哪些技能该全量注入，只读 SKILL.md 的 <code>full_inject</code> 标记，按标记执行注入策略（全量 or 渐进）。策略决策由 LLM 自主完成。</p></div>
+      <div class="row reveal"><div><b>隔离绝对论</b><span>P0 · Isolation</span></div><p>P0 唯一生死线——物理隔离 + 沙箱拦截。哪怕所有插件崩溃，Alice 也绝无法越权读取 Bob 一字节文件。</p></div>
+      <div class="row reveal"><div><b>Hook 侵入论</b><span>Composable</span></div><p>在消息流转的所有关键切面留下接口，让插件劫持上下文、动态修改工具列表、监听生命周期。</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- STATS -->
+<section class="wrap" style="border-top:none;padding-top:0">
+  <div class="stats reveal">
+    <div class="stat"><div class="n">3</div><div class="l">核心基础设施<br>路由·隔离·拼装</div></div>
+    <div class="stat"><div class="n">10</div><div class="l">内置插件<br>3 通道 · 6 工具 · 1 审计</div></div>
+    <div class="stat"><div class="n">9</div><div class="l">Hook 契约<br>5 迭代级 + 4 run-level</div></div>
+    <div class="stat"><div class="n">1041</div><div class="l">测试用例<br>53 个测试文件 · 零回归</div></div>
+  </div>
+</section>
+
+<!-- MECHANISMS -->
+<section id="mech">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <div class="sec-kicker">// Core Mechanisms</div>
+      <h2>覆盖 Agent 完整生命周期的机制</h2>
+    </div>
+
+    <div class="code-panel reveal copy" style="margin-bottom:20px">
+      <div class="top"><span class="lbl">message-pipeline</span></div>
+<pre>用户输入 → ChannelPlugin → CommandRouter<span class="cmt">(拦截 / 命令)</span> → NanobeeKernel → <span class="cy">AgentLoop</span><span class="cmt">(状态机)</span>
+                                                                                  │
+      <span class="hl">RESTORE</span> → <span class="hl">BUILD</span><span class="cmt">(system prompt)</span> → <span class="hl">RUN</span><span class="cmt">(LLM + 工具迭代)</span> → <span class="hl">SAVE</span> → <span class="hl">RESPOND</span></pre>
+    </div>
+
+    <div class="grid g2">
+      <div class="card reveal">
+        <span class="ic">🔀</span><span class="tag">PIPELINE</span>
+        <h3>消息流水线 · 6 态状态机</h3>
+        <ul>
+          <li><b>命令拦截</b>：<code>/</code> 开头命令（<code>/stop</code>·<code>/new</code>·<code>/status</code>·<code>/help</code>）在获取用户锁之前拦截，零 token 消耗；<code>/stop</code> 可打断死锁 turn</li>
+          <li><b>异常恢复</b>：任一状态处理器异常时填充错误上下文、跳过 SAVE、直接进入 RESPOND 流式回复</li>
+          <li><b>双层 Hook</b>：5 个迭代级 Hook 覆盖工具执行前后；4 个 run-level Hook 包裹整个迭代循环</li>
+        </ul>
+      </div>
+      <div class="card reveal">
+        <span class="ic">🛡️</span><span class="tag">SECURITY</span>
+        <h3>感知与安全</h3>
+        <ul>
+          <li><b>ContextSandbox</b>：多根白名单——写操作仅限 <code>context_root</code>，读操作覆盖技能目录等只读根，防御 <code>../</code> 逃逸</li>
+          <li><b>ProcessWorkspace</b>：与路径校验边界解耦，tool_shell 据此做 bwrap mount namespace 隔离，<code>--tmpfs $HOME</code> 掩藏主目录</li>
+          <li><b>Overlay 文件系统</b>：tool_fs 支持前缀级只读回退（<code>skills/</code> 前缀自动回退到内置技能目录）</li>
+          <li><b>SoulGuard</b>：灵魂文件 chmod 444 + 写入拦截 Hook + SHA-256 哈希校验三层保护</li>
+        </ul>
+      </div>
+      <div class="card reveal">
+        <span class="ic">🧩</span><span class="tag">COMPOSITION</span>
+        <h3>System Prompt 拼装管线</h3>
+        <p>Soul 段 → Rules 段 → 技能段 → 插件段 → FinalGuard 段。框架只做拼装不做业务理解，每段有内容才注入。</p>
+        <ul>
+          <li><b>技能三级机制</b>：内置 → 实例 → 用户，同名去重优先级 <code>user &gt; instance &gt; builtin</code></li>
+          <li><b>渐进式注入</b>：<code>full_inject=true</code> 全量注入 body，其余仅注入元数据 + 文件绝对路径，LLM 按需 <code>read_file</code> 读取</li>
+        </ul>
+      </div>
+      <div class="card reveal">
+        <span class="ic">🗂️</span><span class="tag">SESSION</span>
+        <h3>会话管理</h3>
+        <p>SessionManager（内存缓存）→ SessionStore（原子 JSONL 持久化）。</p>
+        <ul>
+          <li><b>consolidate</b> 智能压缩归档 · <b>fork</b> 会话复制 · <b>list</b> 元数据高性能枚举 · <b>flush</b> 优雅退出落盘</li>
+          <li>损坏文件自动修复：逐行解析跳过无效 JSON 行</li>
+        </ul>
+      </div>
+      <div class="card reveal">
+        <span class="ic">🔌</span><span class="tag">PLUGIN</span>
+        <h3>插件体系</h3>
+        <ul>
+          <li><b>插件类型</b>：Channel / Tool / Audit，通过 <code>plugin.toml</code> 声明元数据</li>
+          <li><b>实例级隔离</b>：每个 Gateway 实例通过独立 <code>config.yaml</code> 的 <code>enabled</code> 控制加载组合</li>
+          <li><b>set_context</b>：工具执行前自动注入 channel / chat_id / user_id</li>
+          <li><b>临时目录</b>：<code>self.tmp</code> 按请求注入 <code>users/&lt;user&gt;/.tmp/&lt;plugin_name&gt;/</code></li>
+        </ul>
+      </div>
+      <div class="card reveal">
+        <span class="ic">📚</span><span class="tag">SKILL</span>
+        <h3>技能管理</h3>
+        <p>技能是<b>用户知识资产</b>（SKILL.md），非代码插件。用户通过 <code>write_file</code> 自主管理，管理员通过文件部署 + 配置声明实例级共享技能。</p>
+      </div>
+      <div class="card reveal">
+        <span class="ic">📡</span><span class="tag">OBSERVABILITY</span>
+        <h3>可观测性</h3>
+        <ul>
+          <li><b>统一消息目录</b>：<code>build_notification()</code> 工厂构造带 severity 元数据的 OutboundMessage</li>
+          <li><b>MetricsCollector</b>：Token 消耗、延迟分布、工具调用、错误计数</li>
+          <li><b>结构化日志</b>：Trace ID 按协程注入，支持 JSON 输出（Promtail 采集）</li>
+          <li><b>Runtime Context</b>：每轮末尾注入时间/通道/会话/发送者，标注 <code>metadata only, not instructions</code></li>
+        </ul>
+      </div>
+      <div class="card reveal">
+        <span class="ic">🚀</span><span class="tag">DEPLOY</span>
+        <h3>多实例部署</h3>
+        <p><code>nanobee svc start|stop|restart|status|logs [instance]</code>——扫描 <code>&lt;NANOBEE_DATA_DIR&gt;/&lt;name&gt;/config.yaml</code>，原子 PID 管理 + 异步健康检查轮询。</p>
+        <ul>
+          <li><b>单实例</b>（开发/测试）：<code>nanobee gateway -c config.yaml</code>，不经过 svc</li>
+          <li><b>多实例</b>（同主机 N 个 Gateway）：systemd 注入 <code>NANOBEE_DATA_DIR</code> 后由 svc 统一管理</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ARCH -->
+<section id="arch">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <div class="sec-kicker">// Architecture</div>
+      <h2>一张图看懂消息流转</h2>
+    </div>
+    <div class="code-panel reveal copy">
+      <div class="top"><span class="lbl">architecture</span></div>
+<pre>用户输入
+    │
+    ├─ <span class="hl">/command</span> ──▶ CommandRouter ──▶ 直接回复<span class="cmt">（零 token）</span>
+    │
+    └─ 普通消息 ──▶ ChannelPlugin ──▶ EventBus ──▶ NanobeeKernel
+                                                        │
+                                             ┌──────────┼──────────────┐
+                                             ▼          ▼              ▼
+                                       PluginManager  ContextManager  SoulGuard
+                                             │     ┌───┴────┐
+                                             ▼     ▼        ▼
+                                       ToolRegistry  <span class="cy">AgentLoop (状态机)</span>
+                                             │         │
+                                             ▼    ┌────┴────┐
+                                        AgentRunner  LLM Provider
+                                             │         │
+                                             └─────────┴──────────┘
+                                                        │
+                                                        ▼
+                                                   <span class="gr">用户响应</span></pre>
+    </div>
+  </div>
+</section>
+
+<!-- BUILT-IN PLUGINS -->
+<section id="plugins">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <div class="sec-kicker">// Built-in Plugins</div>
+      <h2>10 个开箱即用插件</h2>
+      <p class="sec-sub">3 通道 + 6 工具 + 1 审计，全部完整可用，实例级开关自由组合。</p>
+    </div>
+    <div class="tbl-wrap reveal">
+      <table>
+        <thead><tr><th>插件</th><th>类型</th><th>状态</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr><td><span class="name">channel_cli</span></td><td><span class="badge ch">Channel</span></td><td class="ok">✅ 完整</td><td>命令行交互通道</td></tr>
+          <tr><td><span class="name">channel_http</span></td><td><span class="badge ch">Channel</span></td><td class="ok">✅ 完整</td><td>OpenAI 兼容 HTTP API（<code>/v1/chat/completions</code>、<code>/v1/models</code>），支持流式 SSE，API Key 认证</td></tr>
+          <tr><td><span class="name">channel_dingtalk</span></td><td><span class="badge ch">Channel</span></td><td class="ok">✅ 完整</td><td>钉钉机器人通道（Stream SDK + AI Card 流式输出 + 媒体文件收发与解析）</td></tr>
+          <tr><td><span class="name">tool_echo</span></td><td><span class="badge to">Tool</span></td><td class="ok">✅ 完整</td><td>回显测试工具</td></tr>
+          <tr><td><span class="name">tool_fs</span></td><td><span class="badge to">Tool</span></td><td class="ok">✅ 完整</td><td>文件系统工具（<code>read_file</code>·<code>write_file</code>·<code>edit_file</code>·<code>delete_file</code>·<code>list_dir</code>），L1/L2 防御纵深，Overlay 文件系统（<code>skills/</code> 前缀自动回退到内置技能目录）</td></tr>
+          <tr><td><span class="name">tool_shell</span></td><td><span class="badge to">Tool</span></td><td class="ok">✅ 完整</td><td>Shell 命令工具（<code>execute_shell</code>），双层安全守卫：deny 模式拦截危险命令 + bwrap 进程级沙箱（掩藏 <code>$HOME</code> 仅暴露 <code>workspace/</code>）</td></tr>
+          <tr><td><span class="name">tool_web</span></td><td><span class="badge to">Tool</span></td><td class="ok">✅ 完整</td><td>Web 工具（<code>web_search</code>·<code>web_fetch</code>），含 HTML 清理、SSRF 保护</td></tr>
+          <tr><td><span class="name">tool_cron</span></td><td><span class="badge to">Tool</span></td><td class="ok">✅ 完整</td><td>Cron 定时任务（<code>add</code>·<code>list</code>·<code>remove</code>），用户隔离</td></tr>
+          <tr><td><span class="name">tool_history</span></td><td><span class="badge to">Tool</span></td><td class="ok">✅ 完整</td><td>历史消息管理（<code>trim_history</code> 粗暴截断 + <code>consolidate_history</code> 智能压缩归档）。纯机制：LLM 自主决定何时调用、保留多少</td></tr>
+          <tr><td><span class="name">audit_logger</span></td><td><span class="badge au">Audit</span></td><td class="ok">✅ 完整</td><td>turn/tool 两级 span 审计（JSONL + 结构化日志），预览截断带诚实标记，<code>preview_truncate</code> 开关支持全量记录</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- PLUGIN DEV -->
+<section id="dev">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <div class="sec-kicker">// Plugin Development</div>
+      <h2>插件开发 · Hook 契约</h2>
+      <p class="sec-sub">插件继承 <code>NanobeePlugin</code>，覆盖需要的 Hook 方法，通过 <code>plugin.toml</code> 声明元数据。</p>
+    </div>
+    <div class="tbl-wrap reveal">
+      <table>
+        <thead><tr><th>Hook</th><th>时机</th><th>用途</th></tr></thead>
+        <tbody>
+          <tr><td><span class="name">contribute_to_prompt(context)</span></td><td><span class="badge hk">构建时</span> System Prompt 构建时</td><td>向指定段注入文本</td></tr>
+          <tr><td><span class="name">contribute_to_tools(context, tools)</span></td><td><span class="badge hk">构建时</span> 工具列表构建时</td><td>动态增删工具</td></tr>
+          <tr><td><span class="name">on_pre_invoke(context, name, args)</span></td><td><span class="badge hk">执行前</span> 工具执行前</td><td>参数修改、鉴权</td></tr>
+          <tr><td><span class="name">on_post_invoke(context, name, result)</span></td><td><span class="badge hk">执行后</span> 工具执行后</td><td>结果修改、副作用</td></tr>
+          <tr><td><span class="name">on_message_completed(context, messages)</span></td><td><span class="badge hk">轮次末</span> 对话轮次结束</td><td>审计日志、后台整理</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="note reveal">AgentRunner 底层另有 <b>4 个 run-level Hook</b>（<code>before_run</code> / <code>after_run</code> / <code>on_error</code> / <code>on_finally</code>），包裹整个迭代循环。</div>
+  </div>
+</section>
+
+<!-- PROVIDERS -->
+<section>
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <div class="sec-kicker">// LLM Providers</div>
+      <h2>多 Provider · 链式降级</h2>
+      <p class="sec-sub">支持 FallbackProvider 链式降级、流式输出、Tool Calling。内置注册表支持 <b>37 个 ProviderSpec</b>。</p>
+    </div>
+    <div class="chips reveal">
+      <span class="chip">Anthropic</span>
+      <span class="chip">OpenAI</span>
+      <span class="chip">Azure OpenAI</span>
+      <span class="chip">AWS Bedrock</span>
+      <span class="chip">GitHub Copilot</span>
+      <span class="chip">OpenAI Codex</span>
+      <span class="chip">OpenAI 兼容</span>
+      <span class="chip">DeepSeek</span>
+      <span class="chip">Gemini</span>
+      <span class="chip">智谱</span>
+      <span class="chip">通义千问</span>
+      <span class="chip">Moonshot</span>
+      <span class="chip">MiniMax</span>
+      <span class="chip">Mistral</span>
+      <span class="chip">StepFun</span>
+    </div>
+  </div>
+</section>
+
+<!-- FEATURES -->
+<section>
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <div class="sec-kicker">// Signature Capabilities</div>
+      <h2>特色核心能力</h2>
+    </div>
+    <div class="feat reveal">
+      <div class="f"><div class="ft">微内核架构</div><div class="fd">框架只做路由、隔离、拼装三件事。记忆、审计、工具过滤等业务逻辑由插件实现，技能等高频核心能力内置于 kernel。</div></div>
+      <div class="f"><div class="ft">CommandRouter 命令系统</div><div class="fd"><code>/stop</code>·<code>/new</code>·<code>/status</code>·<code>/help</code>，锁前拦截零 token 消耗，<code>/stop</code> 可打断死锁 turn，插件可注册自定义命令。</div></div>
+      <div class="f"><div class="ft">Session 管理</div><div class="fd">SessionManager + SessionStore 双层架构：内存缓存 + 原子 JSONL 持久化，支持 consolidate / fork / flush、损坏自动修复。</div></div>
+      <div class="f"><div class="ft">物理隔离 + 沙箱</div><div class="fd">路径逃逸沙箱（多根白名单）+ 进程级 bwrap 隔离（<code>--tmpfs $HOME</code>）+ 按用户并发锁 + SSRF 前置拦截。</div></div>
+      <div class="f"><div class="ft">9 个 Hook 契约</div><div class="fd">5 迭代级（工具前后、prompt 注入、消息完成）+ 4 run-level（循环前后、错误、终结），插件在关键切面注入逻辑。</div></div>
+      <div class="f"><div class="ft">框架无知论</div><div class="fd">框架不持有任何策略决策——记忆策略、技能注入策略、工具过滤策略全部由 LLM 或声明式元数据（SKILL.md frontmatter）自主决定。</div></div>
+      <div class="f"><div class="ft">可观测性</div><div class="fd">Trace ID 按协程注入、结构化 JSON 日志、MetricsCollector（Token/延迟/工具/错误）、统一消息目录。</div></div>
+      <div class="f"><div class="ft">多实例部署</div><div class="fd"><code>nanobee svc</code> 管理同一主机 N 个 Gateway 实例：原子 PID、健康检查轮询、systemd 托管。</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- QUICK START -->
+<section id="quick">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <div class="sec-kicker">// Quick Start</div>
+      <h2>三步跑起来</h2>
+      <p class="sec-sub">环境要求 Python ≥ 3.11。开发调试用 CLI 模式，生产部署用 Gateway 服务栈。</p>
+    </div>
+    <div class="grid g2">
+      <div class="code-panel reveal copy">
+        <div class="top"><span class="lbl">Linux / macOS</span></div>
+<pre><span class="cmt"># 1. 创建虚拟环境</span>
+python3 -m venv .venv &amp;&amp; <span class="cy">source</span> .venv/bin/activate
+
+<span class="cmt"># 2. 安装</span>
+pip install -e .
+
+<span class="cmt"># 3. 配置</span>
+cp nanobee.yaml.example nanobee.yaml
+<span class="cmt"># 编辑 nanobee.yaml，填入 API Key</span>
+
+<span class="cmt"># 4. 运行对话 —— 轻量级 Agent CLI 模式</span>
+<span class="hl">nanobee</span> run
+<span class="hl">nanobee</span> run -v                       <span class="cmt"># 详细日志</span>
+<span class="hl">nanobee</span> run -m <span class="gr">"你好"</span>                 <span class="cmt"># 单次消息模式</span>
+<span class="hl">nanobee</span> run -s <span class="gr">"my-session"</span> -m <span class="gr">"hi"</span>  <span class="cmt"># 指定会话 + 单次消息</span>
+<span class="hl">nanobee</span> run -c /path/to/config.yaml
+
+<span class="cmt"># 完整 Gateway 服务栈模式（生产部署）</span>
+<span class="hl">nanobee</span> gateway
+<span class="hl">nanobee</span> gateway --port 8080           <span class="cmt"># 带健康检查 HTTP 端点</span>
+<span class="hl">nanobee</span> gateway -c /path/to/config.yaml
+
+<span class="cmt"># Gateway 支持优雅退出（SIGTERM/SIGINT 清理后退出）</span>
+<span class="hl">nanobee</span> gateway &amp;
+<span class="cy">kill</span> $!    <span class="cmt"># SIGTERM → 优雅关闭通道 + 保存状态 → 退出</span>
+
+<span class="cmt"># Gateway 多实例运行时管理</span>
+<span class="cy">export</span> NANOBEE_DATA_DIR=~/.nanobee
+<span class="hl">nanobee</span> svc status                    <span class="cmt"># 查看所有实例状态</span>
+<span class="hl">nanobee</span> svc start &lt;instance-1&gt;        <span class="cmt"># 启动指定实例</span>
+<span class="hl">nanobee</span> svc logs &lt;instance-1&gt; -f      <span class="cmt"># 跟踪查看实例日志</span></pre>
+      </div>
+      <div class="code-panel reveal copy">
+        <div class="top"><span class="lbl">Windows (PowerShell)</span></div>
+<pre><span class="cmt"># 1. 创建虚拟环境</span>
+python -m venv .venv
+
+<span class="cmt"># 2. 激活虚拟环境</span>
+.\.venv\Scripts\Activate.ps1
+
+<span class="cmt"># 3. 安装</span>
+pip install -e .
+
+<span class="cmt"># 4. 配置</span>
+copy nanobee.yaml.example nanobee.yaml
+<span class="cmt"># 编辑 nanobee.yaml，填入 API Key</span>
+
+<span class="cmt"># 5. 运行对话</span>
+
+<span class="cmt"># 轻量级 Agent CLI 模式</span>
+<span class="hl">nanobee</span> run
+<span class="hl">nanobee</span> run -m <span class="gr">"你好"</span>                 <span class="cmt"># 单次消息</span>
+
+<span class="cmt"># 完整 Gateway 服务栈模式</span>
+<span class="hl">nanobee</span> gateway
+
+<span class="cmt"># 或用根目录 run.bat 一键完成</span>
+<span class="cmt"># 自动创建虚拟环境 + 安装依赖 + 启动对话</span></pre>
+      </div>
+    </div>
+
+    <div class="code-panel reveal copy" style="margin-top:20px">
+      <div class="top"><span class="lbl">日志配置 · nanobee.yaml</span></div>
+<pre><span class="cmt"># 运行时日志由 logging: 配置节程序自管理</span>
+<span class="cmt"># dir 基于【配置文件所在目录】解析（非 CWD）</span>
+<span class="hl">logging</span>:
+  dir: <span class="gr">"logs"</span>               <span class="cmt"># 日志目录（基于配置文件所在目录解析）</span>
+  file: <span class="gr">"gateway.log"</span>        <span class="cmt"># 日志文件（不配则不写文件）</span>
+  level: <span class="gr">"INFO"</span>              <span class="cmt"># 日志级别</span>
+  rotation: <span class="gr">"500 MB"</span>         <span class="cmt"># 轮转策略："500 MB" / "1 day" / "00:00"</span>
+  retention: <span class="gr">"30 days"</span>       <span class="cmt"># 保留天数</span>
+  compression: <span class="gr">"gz"</span>          <span class="cmt"># 压缩历史文件</span>
+  json_format: <span class="vi">false</span>         <span class="cmt"># 生产环境建议 true（便于 Promtail 采集）</span></pre>
+    </div>
+    <div class="note reveal">不配 <code>file</code> 字段则仅输出 stderr，保持向后兼容。</div>
+  </div>
+</section>
+
+<!-- TEST -->
+<section id="test">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <div class="sec-kicker">// Testing</div>
+      <h2>1041 用例 · 零回归</h2>
+      <p class="sec-sub">覆盖核心模块：插件系统、Hook 机制、沙箱安全、消息路由、技能注入、故障分类等。测试文件按模块组织（<code>test_xxx.py</code> 对应 <code>nanobee/xxx.py</code>），无分期命名的历史遗留文件。</p>
+    </div>
+    <div class="code-panel reveal copy">
+      <div class="top"><span class="lbl">run tests</span></div>
+<pre><span class="cmt"># 安装开发依赖</span>
+pip install -e <span class="gr">".[dev]"</span>
+
+<span class="cmt"># 运行全部测试（1041 用例，零回归）</span>
+python -m pytest tests/ -v --tb=short
+
+<span class="cmt"># 查看覆盖率</span>
+python -m pytest tests/ --cov=nanobee --cov-report=term-missing</pre>
+    </div>
+
+    <div class="tbl-wrap reveal" style="margin-top:20px">
+      <table>
+        <thead><tr><th>测试文件</th><th>覆盖模块</th><th>用例</th></tr></thead>
+        <tbody>
+          <tr><td><span class="name">test_security.py</span></td><td>security/ — SSRF 防护、工作区策略</td><td>104</td></tr>
+          <tr><td><span class="name">test_gateway_runtime.py</span></td><td>gateway/ — Gateway 运行时</td><td>52</td></tr>
+          <tr><td><span class="name">test_channel_dingtalk.py</span></td><td>builtin/channel_dingtalk/ — 钉钉通道（流式卡片、媒体、限流）</td><td>50</td></tr>
+          <tr><td><span class="name">test_session.py</span></td><td>session/ — 会话管理</td><td>42</td></tr>
+          <tr><td><span class="name">test_exceptions.py</span></td><td>agent/exceptions.py — 异常体系</td><td>40</td></tr>
+          <tr><td><span class="name">test_sandbox.py</span></td><td>kernel/sandbox.py — 路径安全、白名单、拦截</td><td>39</td></tr>
+          <tr><td><span class="name">test_tool_shell_sandbox.py</span></td><td>builtin/tool_shell/sandbox.py — bwrap 沙箱</td><td>39</td></tr>
+          <tr><td><span class="name">test_tool_fs.py</span></td><td>builtin/tool_fs/plugin.py — 文件读写编辑删除</td><td>37</td></tr>
+          <tr><td><span class="name">test_audit_logger.py</span></td><td>builtin/audit_logger/plugin.py — turn/tool 两级 span 结构化审计</td><td>36</td></tr>
+          <tr><td><span class="name">test_hook_scheduling.py</span></td><td>plugins/hook_mixin.py — Hook 优先级调度</td><td>35</td></tr>
+          <tr><td colspan="2" style="color:var(--txt-mut)">… 另含 command_router(32) · plugin_system(30) · channel_http(29) · skill(25) · events(25) · tool_history(25) · stream_hook(23) · subagent(23) · cli_plugin(23) 等共 53 个测试文件</td><td><b style="color:var(--honey-2)">1041</b></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- STRUCTURE -->
+<section>
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <div class="sec-kicker">// Project Structure</div>
+      <h2>清晰的分层目录</h2>
+    </div>
+    <div class="code-panel reveal copy">
+      <div class="top"><span class="lbl">nanobee/</span></div>
+<pre><span class="hl">agent/</span>          <span class="cmt"># Agent 核心引擎（状态机/执行器/Hook/工具体系）</span>
+<span class="hl">builtin/</span>        <span class="cmt"># 10 个内置插件（3 通道 + 6 工具 + 1 审计）</span>
+<span class="hl">channel/</span>        <span class="cmt"># 通道抽象层（基类、消息处理）</span>
+<span class="hl">cli/</span>            <span class="cmt"># 命令行入口（run/gateway/svc）</span>
+<span class="hl">config/</span>         <span class="cmt"># 配置加载与校验（loader/schema/paths）</span>
+<span class="hl">events/</span>         <span class="cmt"># 事件总线（异步事件分发）</span>
+<span class="hl">gateway/</span>        <span class="cmt"># Gateway 多实例运行时（PID/进程/健康检查/发现/日志）</span>
+<span class="hl">kernel/</span>         <span class="cmt"># 微内核核心</span>
+<span class="hl">plugins/</span>        <span class="cmt"># 插件接口定义</span>
+<span class="hl">providers/</span>      <span class="cmt"># LLM Provider（6 后端实现 + 37 注册表 + Fallback/图像/语音）</span>
+<span class="hl">security/</span>       <span class="cmt"># 安全策略（SSRF + 路径边界）</span>
+<span class="hl">session/</span>        <span class="cmt"># 会话管理（SessionManager/Store/模型）</span>
+<span class="hl">skills/</span>         <span class="cmt"># 内置技能（只读，沙箱保护）</span>
+<span class="hl">templates/</span>      <span class="cmt"># 模板（core.md 默认/subagent system 等）</span>
+<span class="hl">utils/</span>          <span class="cmt"># 工具函数（通知/token 估算/可观测性）</span>
+<span class="hl">__main__.py</span>     <span class="cmt"># 允许 python -m nanobee 运行</span>
+<span class="hl">bootstrap.py</span>    <span class="cmt"># 组合根（配置→组件创建→AgentLoop 装配）</span>
+<span class="hl">exceptions.py</span>   <span class="cmt"># 统一异常层次</span></pre>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div class="bee">🐝</div>
+    <p style="margin-top:10px;color:var(--txt-dim)"><b>nanobee</b> — 极简 AI Agent 微内核框架 · MIT License</p>
+    <p style="font-size:13px;margin-top:8px">基于 <a href="https://github.com/HKUDS/nanobot" target="_blank" rel="noopener">nanobot</a>（MIT License）衍生开发<br>原始项目版权：Copyright © 2025-present Xubin Ren &amp; the nanobot contributors<br>本项目版权：Copyright © 2026 nanobee contributors</p>
+    <div class="links">
+      <a href="https://github.com/codeLong1024/nanobee" target="_blank" rel="noopener">GitHub 仓库 ↗</a>
+      <a href="#idea">核心理念</a>
+      <a href="#quick">快速开始</a>
+      <a href="#test">测试</a>
+      <a href="#" onclick="window.scrollTo({top:0,behavior:'smooth'});return false">回到顶部 ↑</a>
+    </div>
+    <p style="font-size:12px">本页依据项目 <a href="https://github.com/codeLong1024/nanobee/blob/main/README.md" target="_blank" rel="noopener" style="color:var(--txt-dim)">README</a> 生成 · 最后更新 2026-09-03</p>
+  </div>
+</footer>
+
+<script>
+  // scroll reveal
+  const io=new IntersectionObserver((es)=>{es.forEach(e=>{if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target)}})},{threshold:.12});
+  document.querySelectorAll('.reveal').forEach(el=>io.observe(el));
+  // card cursor glow
+  document.querySelectorAll('.card').forEach(c=>c.addEventListener('mousemove',e=>{const r=c.getBoundingClientRect();c.style.setProperty('--mx',((e.clientX-r.left)/r.width*100)+'%')}));
+  // copy buttons
+  document.querySelectorAll('.code-panel.copy .top').forEach(t=>{
+    t.style.cursor='pointer';
+    t.addEventListener('click',()=>{
+      const pre=t.parentElement.querySelector('pre');
+      navigator.clipboard&&navigator.clipboard.writeText(pre.innerText);
+      const lbl=t.querySelector('.lbl'); const old=lbl.textContent;
+      lbl.textContent='已复制 ✓';
+      setTimeout(()=>lbl.textContent=old,1400);
+    });
+  });
+</script>
+</body>
+</html>
