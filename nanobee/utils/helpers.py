@@ -293,6 +293,27 @@ def build_runtime_context(
     return _RUNTIME_CONTEXT_TAG + "\n" + "\n".join(lines) + "\n" + _RUNTIME_CONTEXT_END
 
 
+def strip_runtime_context(text: str) -> str:
+    """剥离用户消息尾部注入的 Runtime Context 段落。
+
+    Runtime Context 由 :func:`build_runtime_context` 生成并追加到每条
+    user 消息末尾（metadata only）。审计/展示场景需要还原用户原始输入时
+    使用本函数；标签常量与本函数同源维护，避免多处硬编码漂移。
+
+    Args:
+        text: 可能携带 Runtime Context 后缀的原始消息文本。
+
+    Returns:
+        剥离 Runtime Context 段后的用户原始文本；未携带标签时原样返回。
+    """
+    if not isinstance(text, str):
+        return ""
+    idx = text.find(_RUNTIME_CONTEXT_TAG)
+    if idx < 0:
+        return text
+    return text[:idx].rstrip()
+
+
 _UNSAFE_CHARS = re.compile(r'[<>:"/\\|?*]')
 _TOOL_RESULT_PREVIEW_CHARS = 1200
 _TOOL_RESULTS_DIR = ".nanobee/tool-results"

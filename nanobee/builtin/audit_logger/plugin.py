@@ -6,7 +6,11 @@ audit_logger 参考插件 —— turn / tool 两级 span 审计
 - tool span：``on_pre_invoke`` 记录工具开始，``on_post_invoke`` 配对出工具
   完成 span（带原生 callId、耗时、isError、参数摘要）。
 - turn span：``on_message_completed`` 产出整轮 span（含 token 汇总、
-  finish_reason、工具调用次数、迭代次数）。
+  finish_reason、工具调用次数、迭代次数、用户输入原文与最终回复预览）。
+
+时间戳双轨：``start_time``/``end_time`` 为 ``time.perf_counter()`` 单调
+时钟（仅用于精确 duration 计算）；``ts_start_iso``/``ts_end_iso`` 为本地
+时区 ISO 墙钟时间（用于跨日志流对时与人工检索）。
 
 span 同时落两份：
 1. 本地 JSONL：``<context_root>/audit_logger/<user_id>.jsonl``
@@ -24,6 +28,7 @@ import tempfile
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -31,12 +36,15 @@ from pydantic import BaseModel, Field
 
 from nanobee.plugins.base import NanobeePlugin
 
-from nanobee.utils.helpers import estimate_prompt_tokens
+from nanobee.utils.helpers import estimate_prompt_tokens, strip_runtime_context
 from nanobee.utils.logger import logger
 
 # 工具参数/结果的默认截断长度（AuditLoggerConfig 字段默认值）
 _ARG_MAX_CHARS = 2000
 _RESULT_MAX_CHARS = 2000
+# turn 内容侧字段的默认截断长度（用户输入原文 / 最终回复预览）
+_USER_MAX_CHARS = 500
+_REPLY_MAX_CHARS = 800
 
 # 判定工具结果是否为错误的标志（工具返回字符串时据此推断 isError）
 _ERROR_MARKERS = ("error:", "exception:", "failed", "错误", "异常", "失败")
@@ -53,11 +61,15 @@ class AuditLoggerConfig(BaseModel):
         preview_truncate: 截断总开关；false 时全量记录（测试/联调临时开启）。
         arg_max_chars: 参数预览截断长度上限（正整数）。
         result_max_chars: 结果预览截断长度上限（正整数）。
+        user_max_chars: turn 记录用户输入原文截断长度上限（正整数）。
+        reply_max_chars: turn 记录最终回复预览截断长度上限（正整数）。
     """
 
     preview_truncate: bool = True
     arg_max_chars: int = Field(default=_ARG_MAX_CHARS, ge=1)
     result_max_chars: int = Field(default=_RESULT_MAX_CHARS, ge=1)
+    user_max_chars: int = Field(default=_USER_MAX_CHARS, ge=1)
+    reply_max_chars: int = Field(default=_REPLY_MAX_CHARS, ge=1)
 
 
 @dataclass
@@ -71,6 +83,8 @@ class ToolSpan:
     call_id: str
     tool_name: str
     start_time: float
+    ts_start_iso: str = ""
+    ts_end_iso: str = ""
     end_time: float | None = None
     duration_ms: float | None = None
     arg_preview: str = ""
@@ -90,6 +104,7 @@ class ToolSpan:
                 显式传入，禁止默认值绕过配置。
         """
         self.end_time = time.perf_counter()
+        self.ts_end_iso = _iso_now()
         self.duration_ms = round((self.end_time - self.start_time) * 1000, 3)
         self.result_preview, self.result_truncated = _preview(result, result_max)
         self.is_error = _looks_like_error(result)
@@ -97,12 +112,21 @@ class ToolSpan:
 
 @dataclass
 class TurnSpan:
-    """整轮交互的 span 记录。"""
+    """整轮交互的 span 记录。
+
+    user_text / reply_preview 为内容侧字段（P1-1）：user_text 取本轮
+    最后一条 user 消息（已剥离 Runtime Context 注入段），reply_preview
+    取最后一条 assistant 消息，作为幻觉类案件的第一定位索引。
+    start_time 仅锚定首个工具调用或 completion 懒创建时刻（无 turn
+    开始 Hook），跨日志对时应以 ts_end_iso 为准。
+    """
 
     type: str = "turn_span"
     turn_id: str = ""
     user_id: str = ""
     start_time: float = 0.0
+    ts_start_iso: str = ""
+    ts_end_iso: str = ""
     end_time: float | None = None
     duration_ms: float | None = None
     messages: int = 0
@@ -112,6 +136,10 @@ class TurnSpan:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     finish_reason: str = ""
+    user_text: str = ""
+    user_truncated: bool = False
+    reply_preview: str = ""
+    reply_truncated: bool = False
 
 
 @dataclass
@@ -187,6 +215,14 @@ class AuditLoggerPlugin(NanobeePlugin):
         """结果截断长度上限；preview_truncate 关闭时为 None（不截断）。"""
         return self.config.result_max_chars if self.config.preview_truncate else None
 
+    def _user_limit(self) -> int | None:
+        """用户输入原文截断长度上限；preview_truncate 关闭时为 None（不截断）。"""
+        return self.config.user_max_chars if self.config.preview_truncate else None
+
+    def _reply_limit(self) -> int | None:
+        """回复预览截断长度上限；preview_truncate 关闭时为 None（不截断）。"""
+        return self.config.reply_max_chars if self.config.preview_truncate else None
+
     # =========================================================================
     # 工具调用 span（on_pre_invoke / on_post_invoke）
     # =========================================================================
@@ -208,6 +244,7 @@ class AuditLoggerPlugin(NanobeePlugin):
             call_id=call_id or f"call_{state.counter + 1}",
             tool_name=tool_name,
             start_time=time.perf_counter(),
+            ts_start_iso=_iso_now(),
             arg_preview=arg_preview,
             arg_truncated=arg_truncated,
         )
@@ -273,11 +310,20 @@ class AuditLoggerPlugin(NanobeePlugin):
             state = self._new_turn(user_id)
         span = state.span
         span.end_time = time.perf_counter()
+        span.ts_end_iso = _iso_now()
         span.duration_ms = round((span.end_time - span.start_time) * 1000, 3)
         span.messages = len(messages)
         span.iterations = _count_iterations(messages)
         span.tool_calls = _count_tool_calls(messages)
         span.finish_reason = _infer_finish_reason(messages)
+
+        # 内容侧字段（P1-1）：本轮用户输入原文 + 最终回复预览
+        span.user_text, span.user_truncated = _extract_user_text(
+            messages, self._user_limit(),
+        )
+        span.reply_preview, span.reply_truncated = _extract_reply_preview(
+            messages, self._reply_limit(),
+        )
 
         # 估算 token 汇总（框架未把 usage 注入 messages，故用估算口径）
         span.prompt_tokens = _estimate_prompt_tokens(messages)
@@ -286,6 +332,7 @@ class AuditLoggerPlugin(NanobeePlugin):
         # 未配对的 pending span 标记为 interrupted（守卫拦截或异常中断）
         for pending_span in state.pending:
             pending_span.interrupted = True
+            pending_span.ts_end_iso = span.ts_end_iso
             pending_span.end_time = span.end_time
             pending_span.duration_ms = round(
                 (pending_span.end_time - pending_span.start_time) * 1000, 3,
@@ -364,6 +411,7 @@ class AuditLoggerPlugin(NanobeePlugin):
                 turn_id=f"turn_{uuid.uuid4().hex[:12]}",
                 user_id=user_id,
                 start_time=time.perf_counter(),
+                ts_start_iso=_iso_now(),
             ),
         )
         self._turns[user_id] = state
@@ -413,6 +461,78 @@ def _user_id(context: Any) -> str:
     """从 context 提取 user_id，缺失时回退为 'default'。"""
     value = getattr(context, "user_id", None)
     return value if isinstance(value, str) and value else "default"
+
+
+def _iso_now() -> str:
+    """当前本地时区墙钟时间的 ISO 格式字符串。
+
+    与 ``time.perf_counter()`` 双轨：后者仅用于 duration 计算，
+    本函数产出可读、可跨日志流对时的时间戳（P1-2）。
+    """
+    return datetime.now().astimezone().isoformat()
+
+
+def _last_content(messages: list[dict[str, Any]], role: str) -> Any:
+    """取消息列表中指定角色的最后一条消息的 content。
+
+    Args:
+        messages: 本轮完整消息列表（全量历史 + 本轮输入）。
+        role: 目标角色（"user" 或 "assistant"）。
+
+    Returns:
+        该角色最后一条消息的 content（任意类型）；不存在时返回 None。
+    """
+    for m in reversed(messages):
+        if isinstance(m, dict) and m.get("role") == role:
+            return m.get("content")
+    return None
+
+
+def _extract_user_text(
+    messages: list[dict[str, Any]],
+    max_chars: int | None,
+) -> tuple[str, bool]:
+    """提取本轮用户输入原文（P1-1）。
+
+    取最后一条 user 消息：result.messages 为全量历史 + 本轮输入，
+    最后一条 user 消息即本轮输入（中轮注入消息亦为此语义）。
+    已剥离 Runtime Context 注入段并折叠空白。
+
+    Args:
+        messages: 本轮完整消息列表。
+        max_chars: 截断长度上限；None 表示不截断。
+
+    Returns:
+        (用户输入文本, 是否发生截断) 二元组。
+    """
+    content = _last_content(messages, "user")
+    if content is None:
+        return "", False
+    if isinstance(content, str):
+        content = strip_runtime_context(content)
+    return _preview(content, max_chars)
+
+
+def _extract_reply_preview(
+    messages: list[dict[str, Any]],
+    max_chars: int | None,
+) -> tuple[str, bool]:
+    """提取最终回复预览（P1-1，幻觉类案件的第一定位索引）。
+
+    取最后一条 assistant 消息（若其仍携带 tool_calls，说明轮次以
+    工具调用收尾，无最终回复文本，此时返回该消息 content 的预览）。
+
+    Args:
+        messages: 本轮完整消息列表。
+        max_chars: 截断长度上限；None 表示不截断。
+
+    Returns:
+        (回复预览文本, 是否发生截断) 二元组。
+    """
+    content = _last_content(messages, "assistant")
+    if content is None:
+        return "", False
+    return _preview(content, max_chars)
 
 
 def _count_tool_calls(messages: list[dict[str, Any]]) -> int:
