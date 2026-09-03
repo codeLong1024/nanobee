@@ -3,6 +3,10 @@
 核心模式：ToolPipeline.execute_one() 是守卫链模式——
 每个守卫检查一个前置条件，不满足时直接返回错误，通过后才进入下一守卫。
 最终到达核心执行阶段，统一处理异常和错误结果。
+
+所有 ``[TOOL]`` 日志行携带 ``[ctx=<context_id>]`` 关联键，与审计插件
+JSONL 记录的 ``user_id`` 同源，两条日志流可互查（P2-2）。截断策略
+保持运维日志定位不变，全量取证由审计 JSONL 承担（职责分层）。
 """
 
 from __future__ import annotations
@@ -128,11 +132,11 @@ class ToolPipeline:
         if intercepted := self._guard_throttle(spec, tool_call, external_lookup_counts):
             return intercepted
 
-        # 日志：工具请求
+        # 日志：工具请求（携带 ctx 关联键）
         args_str = str(tool_call.arguments)
         if len(args_str) > 500:
             args_str = args_str[:500] + "...(truncated)"
-        logger.info("[TOOL] 请求: {} | args={}", tool_call.name, args_str)
+        logger.info("[TOOL]{} 请求: {} | args={}", self._log_ctx(spec), tool_call.name, args_str)
 
         # 工具预备：获取工具实例和参数
         tool, params, prep_error = self._prepare(spec, tool_call)
@@ -153,7 +157,7 @@ class ToolPipeline:
             result_str = str(sandbox_error)
             if len(result_str) > 200:
                 result_str = result_str[:200] + "..."
-            logger.info("[TOOL] 结果: {} = 沙箱拦截: {}", tool_call.name, result_str)
+            logger.info("[TOOL]{} 结果: {} = 沙箱拦截: {}", self._log_ctx(spec), tool_call.name, result_str)
             return sandbox_error + _HINT, self._error_event(tool_call.name, f"sandbox: {sandbox_error}"), None
 
         # 守卫 4：Plugin pre-invoke hooks
@@ -168,6 +172,26 @@ class ToolPipeline:
         return await self._execute_core_and_handle(
             spec, tool_call, tool, params, fe_tracker, workspace_violation_counts,
         )
+
+    # =========================================================================
+    # 日志关联键
+    # =========================================================================
+
+    @staticmethod
+    def _log_ctx(spec: AgentRunSpec) -> str:
+        """构建 ``[TOOL]`` 日志行的关联键前缀。
+
+        ``context_id`` 与审计插件 JSONL 记录的 ``user_id`` 同源（kernel
+        以 context_id 作为用户上下文键），据此实现 debug.log 与审计
+        JSONL 两条日志流的互查（P2-2）。
+
+        Args:
+            spec: Agent 执行配置。
+
+        Returns:
+            ``[ctx=<context_id>]``；context_id 为空时返回空串（不污染日志）。
+        """
+        return f"[ctx={spec.context_id}]" if spec.context_id else ""
 
     # =========================================================================
     # 守卫方法
@@ -290,11 +314,11 @@ class ToolPipeline:
             # Plugin post-invoke hooks
             result = await self._apply_post_hooks(spec, tool_call, result)
 
-            # 日志：工具结果
+            # 日志：工具结果（携带 ctx 关联键）
             result_str = str(result)
             if len(result_str) > 300:
                 result_str = result_str[:300] + "...(truncated)"
-            logger.info("[TOOL] 结果: {} = {}", tool_call.name, result_str)
+            logger.info("[TOOL]{} 结果: {} = {}", self._log_ctx(spec), tool_call.name, result_str)
 
         except asyncio.CancelledError:
             raise

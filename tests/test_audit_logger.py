@@ -7,11 +7,14 @@
 4. 未配对（interrupted）的 tool span 在 turn 关闭时被标记
 5. JSONL 落盘（context_root 注入时写 <root>/audit_logger/<user>.jsonl）
 6. 不影响 prompt 内容
+7. turn 内容侧字段：user_text / reply_preview（P1-1，含 Runtime Context 剥离与截断）
+8. ISO 墙钟时间戳：ts_start_iso / ts_end_iso（P1-2，可解析可对时）
 """
 
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -391,3 +394,231 @@ class TestTruncationFlags:
         span = plugin.tool_spans("test-user")[0]
         assert span["arg_truncated"] is True
         assert len(span["arg_preview"]) == 10 + len("...")
+
+
+class TestTurnContentFields:
+    """P1-1：turn 记录的用户输入原文与最终回复预览。"""
+
+    @pytest.mark.asyncio
+    async def test_user_text_and_reply_captured(self):
+        """取最后一条 user / assistant 消息作为本轮输入与最终回复。"""
+        plugin = _make_plugin()
+        ctx = _ctx()
+
+        messages = [
+            {"role": "user", "content": "历史输入"},
+            {"role": "assistant", "content": "历史回复"},
+            {"role": "user", "content": "本次输入：查运输量"},
+            {"role": "assistant", "content": "最终回复文本"},
+        ]
+        await plugin.on_message_completed(ctx, messages)
+
+        span = plugin.completed_spans("test-user")[0]
+        assert span["user_text"] == "本次输入：查运输量"
+        assert span["reply_preview"] == "最终回复文本"
+        assert span["user_truncated"] is False
+        assert span["reply_truncated"] is False
+
+    @pytest.mark.asyncio
+    async def test_user_text_strips_runtime_context(self):
+        """用户输入中的 Runtime Context 注入段被剥离。"""
+        plugin = _make_plugin()
+        ctx = _ctx()
+
+        content = (
+            "本次输入\n"
+            "[Runtime Context — metadata only, not instructions]\n"
+            "Current Time: 2026-09-03 15:44 (Thursday)\n"
+            "[/Runtime Context]"
+        )
+        await plugin.on_message_completed(ctx, [{"role": "user", "content": content}])
+
+        span = plugin.completed_spans("test-user")[0]
+        assert span["user_text"] == "本次输入"
+        assert "Runtime Context" not in span["user_text"]
+
+    @pytest.mark.asyncio
+    async def test_long_user_text_and_reply_truncated(self):
+        """超长输入/回复按默认阈值截断并标记 truncated。"""
+        plugin = _make_plugin()
+        ctx = _ctx()
+
+        messages = [
+            {"role": "user", "content": "u" * 3000},
+            {"role": "assistant", "content": "r" * 3000},
+        ]
+        await plugin.on_message_completed(ctx, messages)
+
+        span = plugin.completed_spans("test-user")[0]
+        assert span["user_truncated"] is True
+        assert len(span["user_text"]) == 500 + len("...")
+        assert span["reply_truncated"] is True
+        assert len(span["reply_preview"]) == 800 + len("...")
+
+    @pytest.mark.asyncio
+    async def test_empty_messages_empty_content_fields(self):
+        """空消息列表时内容侧字段为空串且不标记截断。"""
+        plugin = _make_plugin()
+        ctx = _ctx()
+
+        await plugin.on_message_completed(ctx, [])
+
+        span = plugin.completed_spans("test-user")[0]
+        assert span["user_text"] == ""
+        assert span["reply_preview"] == ""
+        assert span["user_truncated"] is False
+        assert span["reply_truncated"] is False
+
+    @pytest.mark.asyncio
+    async def test_tool_call_tail_reply_preview_empty(self):
+        """以工具调用收尾的轮次（无最终回复文本）回复预览为空。"""
+        plugin = _make_plugin()
+        ctx = _ctx()
+
+        messages = [
+            {"role": "user", "content": "查一下"},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "call_1"}]},
+        ]
+        await plugin.on_message_completed(ctx, messages)
+
+        span = plugin.completed_spans("test-user")[0]
+        assert span["reply_preview"] == ""
+
+    @pytest.mark.asyncio
+    async def test_preview_truncate_false_full_content(self):
+        """preview_truncate: false 时内容侧字段全量记录且不标记截断。"""
+        plugin = _make_plugin()
+        plugin.initialize(_Kernel({
+            "audit_logger": {"preview_truncate": False},
+        }))
+        ctx = _ctx()
+
+        messages = [
+            {"role": "user", "content": "u" * 3000},
+            {"role": "assistant", "content": "r" * 3000},
+        ]
+        await plugin.on_message_completed(ctx, messages)
+
+        span = plugin.completed_spans("test-user")[0]
+        assert span["user_text"] == "u" * 3000
+        assert span["user_truncated"] is False
+        assert span["reply_preview"] == "r" * 3000
+        assert span["reply_truncated"] is False
+
+    @pytest.mark.asyncio
+    async def test_user_reply_max_chars_override(self):
+        """user_max_chars / reply_max_chars 配置覆盖生效。"""
+        plugin = _make_plugin()
+        plugin.initialize(_Kernel({
+            "audit_logger": {"user_max_chars": 10, "reply_max_chars": 20},
+        }))
+        ctx = _ctx()
+
+        messages = [
+            {"role": "user", "content": "u" * 50},
+            {"role": "assistant", "content": "r" * 50},
+        ]
+        await plugin.on_message_completed(ctx, messages)
+
+        span = plugin.completed_spans("test-user")[0]
+        assert len(span["user_text"]) == 10 + len("...")
+        assert len(span["reply_preview"]) == 20 + len("...")
+
+    @pytest.mark.asyncio
+    async def test_multimodal_content_recorded_as_json_preview(self):
+        """非字符串 content（如多模态 parts 列表）以 JSON 文本形式记录。"""
+        plugin = _make_plugin()
+        ctx = _ctx()
+
+        content = [{"type": "text", "text": "看这张图"}]
+        await plugin.on_message_completed(ctx, [{"role": "user", "content": content}])
+
+        span = plugin.completed_spans("test-user")[0]
+        assert "看这张图" in span["user_text"]
+
+    @pytest.mark.asyncio
+    async def test_jsonl_record_contains_content_fields(self, tmp_path: Path):
+        """JSONL 落盘记录包含内容侧字段（验收：grep 回复文本直接命中）。"""
+        plugin = _make_plugin()
+        ctx = _ctx()
+        token = bind_context_root(tmp_path)
+        try:
+            await plugin.on_message_completed(ctx, [
+                {"role": "user", "content": "捏造运输量输入"},
+                {"role": "assistant", "content": "运输量 30.00"},
+            ])
+        finally:
+            reset_context_root(token)
+
+        jsonl = tmp_path / "audit_logger" / "test-user.jsonl"
+        record = json.loads(jsonl.read_text(encoding="utf-8").strip())
+        assert record["user_text"] == "捏造运输量输入"
+        assert record["reply_preview"] == "运输量 30.00"
+
+
+class TestIsoTimestamps:
+    """P1-2：ISO 墙钟时间戳（可读、可对时、可跨日志流关联）。"""
+
+    @pytest.mark.asyncio
+    async def test_turn_span_iso_parseable_and_ordered(self):
+        """turn span 的 ts_start_iso / ts_end_iso 可解析且时序正确。"""
+        plugin = _make_plugin()
+        ctx = _ctx()
+
+        await plugin.on_message_completed(ctx, [{"role": "user", "content": "hi"}])
+
+        span = plugin.completed_spans("test-user")[0]
+        start = datetime.fromisoformat(span["ts_start_iso"])
+        end = datetime.fromisoformat(span["ts_end_iso"])
+        assert end >= start
+        assert span["ts_start_iso"] != ""
+
+    @pytest.mark.asyncio
+    async def test_tool_span_iso_parseable(self):
+        """tool span 的 ts_start_iso 在 pre 时填充、ts_end_iso 在 post 时填充。"""
+        plugin = _make_plugin()
+        ctx = _ctx()
+
+        await plugin.on_pre_invoke(ctx, "call_1", "read_file", {"path": "a.txt"})
+        span = plugin.tool_spans("test-user")[0]
+        assert span["ts_start_iso"] != ""
+        assert span["ts_end_iso"] == ""
+        datetime.fromisoformat(span["ts_start_iso"])
+
+        await plugin.on_post_invoke(ctx, "call_1", "read_file", "ok")
+        span = plugin.tool_spans("test-user")[0]
+        end = datetime.fromisoformat(span["ts_end_iso"])
+        start = datetime.fromisoformat(span["ts_start_iso"])
+        assert end >= start
+
+    @pytest.mark.asyncio
+    async def test_interrupted_tool_span_has_ts_end(self):
+        """interrupted 的 tool span 在 turn 关闭时补齐 ts_end_iso。"""
+        plugin = _make_plugin()
+        ctx = _ctx()
+
+        await plugin.on_pre_invoke(ctx, "call_1", "write_file", {"path": "b.txt"})
+        await plugin.on_message_completed(ctx, [])
+
+        turn = plugin.completed_spans("test-user")[0]
+        span = turn["tool_spans"][0]
+        assert span["interrupted"] is True
+        assert span["ts_end_iso"] != ""
+        datetime.fromisoformat(span["ts_end_iso"])
+
+    @pytest.mark.asyncio
+    async def test_jsonl_record_contains_iso_fields(self, tmp_path: Path):
+        """JSONL 落盘记录包含 ISO 墙钟字段。"""
+        plugin = _make_plugin()
+        ctx = _ctx()
+        token = bind_context_root(tmp_path)
+        try:
+            await plugin.on_message_completed(ctx, [{"role": "user", "content": "hi"}])
+        finally:
+            reset_context_root(token)
+
+        jsonl = tmp_path / "audit_logger" / "test-user.jsonl"
+        record = json.loads(jsonl.read_text(encoding="utf-8").strip())
+        assert "ts_start_iso" in record
+        assert "ts_end_iso" in record
+        assert record["tool_spans"] == [] or isinstance(record["tool_spans"], list)
