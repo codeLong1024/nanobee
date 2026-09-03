@@ -108,7 +108,7 @@ async def test_error_notification_preserves_partial_stream_buffer():
     plugin = DingTalkChannelPlugin.__new__(DingTalkChannelPlugin)
     plugin.__init__(metadata=SimpleNamespace(name="channel_dingtalk"))
     plugin.logger = MagicMock()
-    plugin.config = DingTalkConfig(streaming=False)
+    plugin.dingtalk_config = DingTalkConfig(streaming=False)
     plugin.name = "channel_dingtalk"
 
     card_manager = MagicMock()
@@ -158,7 +158,7 @@ async def test_error_turn_has_single_fail_card_exit():
     plugin = DingTalkChannelPlugin.__new__(DingTalkChannelPlugin)
     plugin.__init__(metadata=SimpleNamespace(name="channel_dingtalk"))
     plugin.logger = MagicMock()
-    plugin.config = DingTalkConfig(streaming=False)
+    plugin.dingtalk_config = DingTalkConfig(streaming=False)
     plugin.name = "channel_dingtalk"
 
     card_manager = MagicMock()
@@ -210,7 +210,7 @@ async def test_fail_card_failure_falls_back_to_text_response():
     plugin = DingTalkChannelPlugin.__new__(DingTalkChannelPlugin)
     plugin.__init__(metadata=SimpleNamespace(name="channel_dingtalk"))
     plugin.logger = MagicMock()
-    plugin.config = DingTalkConfig(streaming=False)
+    plugin.dingtalk_config = DingTalkConfig(streaming=False)
     plugin.name = "channel_dingtalk"
 
     card_manager = MagicMock()

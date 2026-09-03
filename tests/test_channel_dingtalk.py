@@ -649,7 +649,7 @@ def dingtalk_plugin():
     plugin = DingTalkChannelPlugin.__new__(DingTalkChannelPlugin)
     plugin.__init__(metadata=SimpleNamespace(name="channel_dingtalk"))
     plugin.logger = MagicMock()
-    plugin.config = DingTalkConfig(streaming=False)  # 默认非流式
+    plugin.dingtalk_config = DingTalkConfig(streaming=False)  # 默认非流式
     plugin.sender = None
     plugin.card_manager = None
     plugin.name = "channel_dingtalk"
@@ -688,7 +688,7 @@ class TestOnMessageResponseDelivery:
         """非流式模式：有内容有 media → sender.send 携带 content + media。"""
         from nanobee.channel.message import OutboundMessage
 
-        dingtalk_plugin.config.streaming = False
+        dingtalk_plugin.dingtalk_config.streaming = False
         dingtalk_plugin.sender = _make_sender()
 
         response = OutboundMessage(
@@ -718,7 +718,7 @@ class TestOnMessageResponseDelivery:
         """非流式但无 sender → 跳过 send（不崩溃）。"""
         from nanobee.channel.message import OutboundMessage
 
-        dingtalk_plugin.config.streaming = False
+        dingtalk_plugin.dingtalk_config.streaming = False
         dingtalk_plugin.sender = None
 
         response = OutboundMessage(
@@ -741,7 +741,7 @@ class TestOnMessageResponseDelivery:
         self, dingtalk_plugin,
     ):
         """非流式但 kernel 返回 None → 跳过 send。"""
-        dingtalk_plugin.config.streaming = False
+        dingtalk_plugin.dingtalk_config.streaming = False
         dingtalk_plugin.sender = _make_sender()
         dingtalk_plugin._kernel.handle_message.return_value = None
 
@@ -763,7 +763,7 @@ class TestOnMessageResponseDelivery:
         """流式但无 card_id → markdown fallback sender.send(content + media)。"""
         from nanobee.channel.message import OutboundMessage
 
-        dingtalk_plugin.config.streaming = True
+        dingtalk_plugin.dingtalk_config.streaming = True
         dingtalk_plugin.sender = _make_sender()
 
         response = OutboundMessage(
@@ -796,7 +796,7 @@ class TestOnMessageResponseDelivery:
         """流式 + card 存在但未被流式处理 → sender.send(content + media)。"""
         from nanobee.channel.message import OutboundMessage
 
-        dingtalk_plugin.config.streaming = True
+        dingtalk_plugin.dingtalk_config.streaming = True
         dingtalk_plugin.sender = _make_sender()
         dingtalk_plugin.sender.is_card_handled_by_streaming.return_value = False
 
@@ -831,7 +831,7 @@ class TestOnMessageResponseDelivery:
         """流式 + card 已由流式处理 + 正常完成 → 跳过内容 send，仅投递 media。"""
         from nanobee.channel.message import OutboundMessage
 
-        dingtalk_plugin.config.streaming = True
+        dingtalk_plugin.dingtalk_config.streaming = True
         dingtalk_plugin.sender = _make_sender()
         dingtalk_plugin.sender.is_card_handled_by_streaming.return_value = True
 
@@ -866,7 +866,7 @@ class TestOnMessageResponseDelivery:
         """流式 + card 已处理 + 正常完成 + 无 media → 完全不调用 send。"""
         from nanobee.channel.message import OutboundMessage
 
-        dingtalk_plugin.config.streaming = True
+        dingtalk_plugin.dingtalk_config.streaming = True
         dingtalk_plugin.sender = _make_sender()
         dingtalk_plugin.sender.is_card_handled_by_streaming.return_value = True
 
@@ -897,7 +897,7 @@ class TestOnMessageResponseDelivery:
         """流式 + card 已处理 + max_iterations → finalize_card_with_notification + media。"""
         from nanobee.channel.message import OutboundMessage
 
-        dingtalk_plugin.config.streaming = True
+        dingtalk_plugin.dingtalk_config.streaming = True
         dingtalk_plugin.sender = _make_sender()
         dingtalk_plugin.sender.is_card_handled_by_streaming.return_value = True
 
@@ -938,7 +938,7 @@ class TestOnMessageResponseDelivery:
         """error 系统通知 + 有 card → fail_card（卡片 FINISHED 终态 + 错误文案，不残留空卡片）。"""
         from nanobee.channel.message import OutboundMessage
 
-        dingtalk_plugin.config.streaming = True
+        dingtalk_plugin.dingtalk_config.streaming = True
         dingtalk_plugin.sender = _make_sender()
         dingtalk_plugin.sender.is_card_handled_by_streaming.return_value = True
         # 纯错误场景无半截流式内容，take_stream_buffer 返回空串
@@ -976,7 +976,7 @@ class TestOnMessageResponseDelivery:
         """info 系统通知 + 无 card → markdown 兜底 sender.send。"""
         from nanobee.channel.message import OutboundMessage
 
-        dingtalk_plugin.config.streaming = True
+        dingtalk_plugin.dingtalk_config.streaming = True
         dingtalk_plugin.sender = _make_sender()
 
         response = OutboundMessage(
@@ -1007,7 +1007,7 @@ class TestOnMessageResponseDelivery:
         """info 系统通知 + 有 card 且已被流式处理 → finalize_card_with_notification。"""
         from nanobee.channel.message import OutboundMessage
 
-        dingtalk_plugin.config.streaming = True
+        dingtalk_plugin.dingtalk_config.streaming = True
         dingtalk_plugin.sender = _make_sender()
         dingtalk_plugin.sender.is_card_handled_by_streaming.return_value = True
 

@@ -7,6 +7,9 @@
 # 多实例场景下每个实例有独立的 config.yaml，在各自 data_dir 子目录中
 data_dir: "~/.nanobee"
 
+# 灵魂文件路径（core.md，受 SoulGuard 完整性校验保护）
+# core_md_path: "core.md"
+
 # 网关配置（端口与多实例运行时管理）
 # gateway:
 #   port: 8080
@@ -23,6 +26,8 @@ data_dir: "~/.nanobee"
 
 agents:
   defaults:
+    # Provider 名称（对应 providers 段的键，默认 auto）
+    # provider: "anthropic"
     # 模型名称，格式：provider/model-name
     model: "anthropic/claude-sonnet-4-20250514"
     # 最大输出 token 数
@@ -31,6 +36,15 @@ agents:
     context_window_tokens: 65536
     # 温度参数（0-1，越高越随机）
     temperature: 0.1
+    # 模型预设名（引用 model_presets 段，快速切换模型 + 生成参数）
+    # model_preset: "fast"
+    # 降级模型（主模型失败时按序尝试）
+    # 字符串 = model_presets 中的预设名；或内联配置（未填字段继承主模型）
+    # fallback_models:
+    #   - "fast"
+    #   - model: "openai/gpt-4o-mini"
+    #     provider: "openai"
+    #     max_tokens: 4096
     # 记忆存储阈值（消息对数，超过此值时触发记忆提取与检索）
     # memory_store_threshold: 20
     # 最大对话循环次数（LLM 最多执行多少次思考-工具调用循环）
@@ -39,6 +53,10 @@ agents:
     # max_messages: 120
     # 最大并发子代理数（超出时需等待已有子代理完成后才能创建新的）
     # max_concurrent_subagents: 4
+    # 工具白名单（非空时仅列表内工具可用，优先于 blacklist）
+    # whitelist:
+    #   - read_file
+    #   - execute_shell
 
 # Provider 配置
 providers:
@@ -61,6 +79,19 @@ providers:
   # custom:
   #   api_key: "your-api-key"
   #   api_base: "http://localhost:8000/v1"
+
+# 模型预设（可选）：命名的模型 + 生成参数组合，供 model_preset / fallback_models 引用
+# model_presets:
+#   fast:
+#     model: "openai/gpt-4o-mini"
+#     provider: "openai"
+#     max_tokens: 4096
+#     temperature: 0.3
+#   deep:
+#     model: "anthropic/claude-sonnet-4-20250514"
+#     provider: "anthropic"
+#     max_tokens: 16384
+#     reasoning_effort: "high"
 
 # MCP 服务器配置（可选）
 # 连接 MCP 服务器并注册其工具、资源和提示
@@ -196,17 +227,32 @@ channels:
 #     # 额外只读挂载（source:target 格式，可选）
 #     # extra_mounts:
 #     #   - "/path/to/venv:/sandbox_venv"
-    #     # 环境变量（通过 bwrap --setenv 注入，不进入 LLM 的 command 字段）：
-    #     # 注意：值作为 bwrap 命令行参数，对同主机能执行 ps 的用户可见。
-    #     # PATH 语义：配的是前缀，框架自动追加 /usr/local/bin:/usr/bin:/bin
-    #     # 请勿使用 $PATH 引用，配置文件不经过 shell 展开。
-    #     # env:
-    #     #   PYTHONPATH: "/sandbox_venv/lib/python3.11/site-packages"
-    #     #   PATH: "/sandbox_venv/bin"
+#     # 环境变量（通过 bwrap --setenv 注入，不进入 LLM 的 command 字段）：
+#     # 注意：值作为 bwrap 命令行参数，对同主机能执行 ps 的用户可见。
+#     # PATH 语义：配的是前缀，框架自动追加 /usr/local/bin:/usr/bin:/bin
+#     # 请勿使用 $PATH 引用，配置文件不经过 shell 展开。
+#     # env:
+#     #   PYTHONPATH: "/sandbox_venv/lib/python3.11/site-packages"
+#     #   PATH: "/sandbox_venv/bin"
 #     #
 #     # 密钥类环境变量（同 env 机制，日志只记数量不记 key；ps 同样可见）：
 #     # secrets:
 #     #   TIANYANCHA_TOKEN: "your-api-token-here"
+#
+# audit_logger（审计日志）示例：
+#   参数/结果预览截断长度（正整数，默认 2000；发生截断时 JSONL 记录
+#   arg_truncated / result_truncated 诚实标记）：
+# plugins:
+#   audit_logger:
+#     arg_max_chars: 2000
+#     result_max_chars: 2000
+#     # 截断总开关；false 时全量记录（测试/联调临时开启，跑完删掉）
+#     preview_truncate: true
+#
+#   声明式配置（config_cls）：内置插件通过 pydantic 模型声明配置 schema，
+#   框架在加载时统一 model_validate，自动类型强转（"false"→False、"8080"→8080）、
+#   约束校验（ge/le）与默认值填充；非法值自动降级为默认值，不阻塞启动。
+#   因此 plugins.<name> 段无需再手写 int()/bool()/isinstance() 类型解析。
 #
 # 仅当实例插件不在默认的 <data_dir>/plugins/ 时，才需要配置 plugin_dirs：
 # plugin_dirs:

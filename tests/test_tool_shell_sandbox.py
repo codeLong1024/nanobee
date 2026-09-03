@@ -14,7 +14,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from nanobee.builtin.tool_shell.plugin import ToolShellPlugin
+from nanobee.builtin.tool_shell.plugin import ToolShellConfig, ToolShellPlugin
 from nanobee.kernel.context_sandbox_var import (
     bind_process_workspace,
     bind_sandbox,
@@ -330,7 +330,7 @@ def test_wrap_sandbox_no_config(plugin: ToolShellPlugin):
 
 def test_wrap_sandbox_empty_config(plugin: ToolShellPlugin):
     """空字符串配置也返回原命令"""
-    plugin.get_config = lambda k, d="": ""  # type: ignore[method-assign]
+    plugin._config = ToolShellConfig(sandbox="")
     result = plugin._wrap_sandbox("echo hello", "/tmp")
     assert result == "echo hello"
 
@@ -340,7 +340,7 @@ def test_wrap_sandbox_bwrap_not_installed(plugin: ToolShellPlugin, tmp_path: Pat
     import shutil
     if shutil.which("bwrap"):
         pytest.skip("bwrap 已安装，跳过降级测试")
-    plugin.get_config = lambda k, d="": "bwrap"  # type: ignore[method-assign]
+    plugin._config = ToolShellConfig(sandbox="bwrap")
     result = plugin._wrap_sandbox("echo hello", str(tmp_path))
     # 应该返回原始命令（不支持跳过不报错）
     assert result == "echo hello"
@@ -348,7 +348,7 @@ def test_wrap_sandbox_bwrap_not_installed(plugin: ToolShellPlugin, tmp_path: Pat
 
 def test_wrap_sandbox_unknown_backend(plugin: ToolShellPlugin, tmp_path: Path):
     """未知后端时优雅降级"""
-    plugin.get_config = lambda k, d="": "nonexistent"  # type: ignore[method-assign]
+    plugin._config = ToolShellConfig(sandbox="nonexistent")
     result = plugin._wrap_sandbox("echo hello", str(tmp_path))
     assert result == "echo hello"
 
@@ -549,15 +549,11 @@ def test_secrets_config_injected_as_extra_env(plugin: ToolShellPlugin, tmp_path:
     ws_inner = ws / "sub"
     ws_inner.mkdir()
 
-    with patch.object(
-        plugin, "get_config",
-        side_effect=lambda key, default=None: {
-            "sandbox": "bwrap",
-            "env": {},
-            "secrets": {"TIANYANCHA_TOKEN": "sk-mock-token"},
-            "extra_mounts": [],
-        }.get(key, default),
-    ), patch(
+    plugin._config = ToolShellConfig(
+        sandbox="bwrap",
+        secrets={"TIANYANCHA_TOKEN": "sk-mock-token"},
+    )
+    with patch(
         "nanobee.builtin.tool_shell.plugin.current_process_workspace",
         return_value=ws,
     ), patch(
@@ -579,15 +575,11 @@ def test_env_config_uses_setenv_not_export(plugin: ToolShellPlugin, tmp_path: Pa
     ws = tmp_path / "workspace"
     ws.mkdir()
 
-    with patch.object(
-        plugin, "get_config",
-        side_effect=lambda key, default=None: {
-            "sandbox": "bwrap",
-            "env": {"PYTHONPATH": "/custom/path"},
-            "secrets": {},
-            "extra_mounts": [],
-        }.get(key, default),
-    ), patch(
+    plugin._config = ToolShellConfig(
+        sandbox="bwrap",
+        env={"PYTHONPATH": "/custom/path"},
+    )
+    with patch(
         "nanobee.builtin.tool_shell.plugin.current_process_workspace",
         return_value=ws,
     ), patch(
@@ -610,15 +602,12 @@ def test_env_excludes_secrets_keys(plugin: ToolShellPlugin, tmp_path: Path):
     ws = tmp_path / "workspace"
     ws.mkdir()
 
-    with patch.object(
-        plugin, "get_config",
-        side_effect=lambda key, default=None: {
-            "sandbox": "bwrap",
-            "env": {"TIANYANCHA_TOKEN": "visible-in-export", "PYTHONPATH": "/x"},
-            "secrets": {"TIANYANCHA_TOKEN": "sk-safe-token"},
-            "extra_mounts": [],
-        }.get(key, default),
-    ), patch(
+    plugin._config = ToolShellConfig(
+        sandbox="bwrap",
+        env={"TIANYANCHA_TOKEN": "visible-in-export", "PYTHONPATH": "/x"},
+        secrets={"TIANYANCHA_TOKEN": "sk-safe-token"},
+    )
+    with patch(
         "nanobee.builtin.tool_shell.plugin.current_process_workspace",
         return_value=ws,
     ), patch(
@@ -641,30 +630,21 @@ def test_env_excludes_secrets_keys(plugin: ToolShellPlugin, tmp_path: Path):
 
 def test_secrets_no_sandbox_not_injected(plugin: ToolShellPlugin):
     """未配置 sandbox 时，secrets 不会注入（命令不经过 bwrap 包裹）"""
-    with patch.object(
-        plugin, "get_config",
-        side_effect=lambda key, default=None: {
-            "sandbox": "",
-            "secrets": {"TOKEN": "sk-test"},
-        }.get(key, default),
-    ):
-        # 传入的必须是绝对路径，插件直接使用不做重解析
-        result = plugin._wrap_sandbox("echo hello", "/tmp")
-        assert result == "echo hello"
-        assert "TOKEN" not in result
+    plugin._config = ToolShellConfig(sandbox="", secrets={"TOKEN": "sk-test"})
+    # 传入的必须是绝对路径，插件直接使用不做重解析
+    result = plugin._wrap_sandbox("echo hello", "/tmp")
+    assert result == "echo hello"
+    assert "TOKEN" not in result
 
 
 def test_env_path_prefix_appends_system_paths(plugin: ToolShellPlugin):
     """env PATH 作为前缀，框架自动追加最小系统路径确保 execvp 能搜索 sh"""
-    with patch.object(
-        plugin, "get_config",
-        side_effect=lambda key, default=None: {
-            "sandbox": "bwrap",
-            "env": {"PATH": "/custom/bin"},
-            "secrets": {},
-        }.get(key, default),
-    ), patch("nanobee.builtin.tool_shell.plugin.current_process_workspace",
-            return_value=Path("/tmp/ws")):
+    plugin._config = ToolShellConfig(
+        sandbox="bwrap",
+        env={"PATH": "/custom/bin"},
+    )
+    with patch("nanobee.builtin.tool_shell.plugin.current_process_workspace",
+               return_value=Path("/tmp/ws")):
         result = plugin._wrap_sandbox("echo hello", "/tmp/ws")
         # --setenv PATH 的值应包含用户前缀 + 系统路径
         setenv_idx = result.index("--setenv")

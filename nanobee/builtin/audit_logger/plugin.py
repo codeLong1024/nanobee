@@ -27,17 +27,37 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from pydantic import BaseModel, Field
+
 from nanobee.plugins.base import NanobeePlugin
 
 from nanobee.utils.helpers import estimate_prompt_tokens
 from nanobee.utils.logger import logger
 
-# 工具结果过长时的截断长度
-_ARG_MAX_CHARS = 200
-_RESULT_MAX_CHARS = 120
+# 工具参数/结果的默认截断长度（AuditLoggerConfig 字段默认值）
+_ARG_MAX_CHARS = 2000
+_RESULT_MAX_CHARS = 2000
 
 # 判定工具结果是否为错误的标志（工具返回字符串时据此推断 isError）
 _ERROR_MARKERS = ("error:", "exception:", "failed", "错误", "异常", "失败")
+
+
+class AuditLoggerConfig(BaseModel):
+    """audit_logger 插件声明式配置。
+
+    框架在 initialize 阶段统一 model_validate，完成类型强转（``"false"``
+    → ``False``）、约束校验（``ge=1``）与默认值填充；非法值自动降级为
+    默认值，不阻塞框架启动。
+
+    Attributes:
+        preview_truncate: 截断总开关；false 时全量记录（测试/联调临时开启）。
+        arg_max_chars: 参数预览截断长度上限（正整数）。
+        result_max_chars: 结果预览截断长度上限（正整数）。
+    """
+
+    preview_truncate: bool = True
+    arg_max_chars: int = Field(default=_ARG_MAX_CHARS, ge=1)
+    result_max_chars: int = Field(default=_RESULT_MAX_CHARS, ge=1)
 
 
 @dataclass
@@ -54,15 +74,24 @@ class ToolSpan:
     end_time: float | None = None
     duration_ms: float | None = None
     arg_preview: str = ""
+    arg_truncated: bool = False
     result_preview: str = ""
+    result_truncated: bool = False
     is_error: bool = False
     interrupted: bool = False
 
-    def close(self, result: Any) -> None:
-        """结束 span，记录耗时与结果。"""
+    def close(self, result: Any, result_max: int | None) -> None:
+        """结束 span，记录耗时与结果。
+
+        Args:
+            result: 工具执行结果（任意类型）。
+            result_max: 结果预览截断长度上限（来自 config.result_max_chars
+                与 preview_truncate 开关）；None 表示不截断。调用方必须
+                显式传入，禁止默认值绕过配置。
+        """
         self.end_time = time.perf_counter()
         self.duration_ms = round((self.end_time - self.start_time) * 1000, 3)
-        self.result_preview = _preview(result, _RESULT_MAX_CHARS)
+        self.result_preview, self.result_truncated = _preview(result, result_max)
         self.is_error = _looks_like_error(result)
 
 
@@ -94,8 +123,16 @@ class _TurnState:
     pending: list[ToolSpan] = field(default_factory=list)
 
 
-def _preview(value: Any, max_chars: int) -> str:
-    """将任意值转换为可读的截断预览文本。"""
+def _preview(value: Any, max_chars: int | None) -> tuple[str, bool]:
+    """将任意值转换为可读的截断预览文本。
+
+    Args:
+        value: 待转换的任意值。
+        max_chars: 截断长度上限（正整数）；None 表示不截断（全量返回）。
+
+    Returns:
+        (预览文本, 是否发生截断) 二元组。
+    """
     if isinstance(value, str):
         text = value
     elif isinstance(value, (dict, list)):
@@ -106,7 +143,10 @@ def _preview(value: Any, max_chars: int) -> str:
     else:
         text = str(value)
     text = " ".join(text.split())
-    return text[:max_chars] + ("..." if len(text) > max_chars else "")
+    if max_chars is None:
+        return text, False
+    truncated = len(text) > max_chars
+    return text[:max_chars] + ("..." if truncated else ""), truncated
 
 
 def _looks_like_error(result: Any) -> bool:
@@ -126,7 +166,10 @@ class AuditLoggerPlugin(NanobeePlugin):
 
     实现 ``on_pre_invoke`` / ``on_post_invoke`` / ``on_message_completed``
     三个 Hook，零贡献提示词与工具。
+    截断阈值由 ``AuditLoggerConfig`` 声明，框架统一 model_validate 强转与校验。
     """
+
+    config_cls = AuditLoggerConfig
 
     def __init__(self, metadata: Any = None) -> None:
         super().__init__(metadata)
@@ -135,6 +178,14 @@ class AuditLoggerPlugin(NanobeePlugin):
         self._turns: dict[str, _TurnState] = {}
         # user_id -> 已完成 turn span 列表（供测试断言）
         self._completed: dict[str, list[TurnSpan]] = {}
+
+    def _arg_limit(self) -> int | None:
+        """参数截断长度上限；preview_truncate 关闭时为 None（不截断）。"""
+        return self.config.arg_max_chars if self.config.preview_truncate else None
+
+    def _result_limit(self) -> int | None:
+        """结果截断长度上限；preview_truncate 关闭时为 None（不截断）。"""
+        return self.config.result_max_chars if self.config.preview_truncate else None
 
     # =========================================================================
     # 工具调用 span（on_pre_invoke / on_post_invoke）
@@ -152,11 +203,13 @@ class AuditLoggerPlugin(NanobeePlugin):
         state = self._turns.get(user_id)
         if state is None:
             state = self._new_turn(user_id)
+        arg_preview, arg_truncated = _preview(args, self._arg_limit())
         span = ToolSpan(
             call_id=call_id or f"call_{state.counter + 1}",
             tool_name=tool_name,
             start_time=time.perf_counter(),
-            arg_preview=_preview(args, _ARG_MAX_CHARS),
+            arg_preview=arg_preview,
+            arg_truncated=arg_truncated,
         )
         if not call_id:
             state.counter += 1
@@ -189,7 +242,7 @@ class AuditLoggerPlugin(NanobeePlugin):
                 user_id, call_id, tool_name,
             )
             return result
-        span.close(result)
+        span.close(result, self._result_limit())
         logger.info(
             "[audit] tool-end user={} call={} tool={} duration={:.1f}ms isError={}",
             user_id, span.call_id, span.tool_name,

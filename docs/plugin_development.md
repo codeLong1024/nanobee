@@ -287,32 +287,38 @@ class MyPlugin(NanobeePlugin):
     name = "my_plugin"
     plugin_type = "audit"
 
-    async def initialize(self, kernel: "Kernel") -> None:
-        """插件加载时初始化（必须调用 super()）"""
-        await super().initialize(kernel)
-        # 这里可以缓存 kernel 引用
-        self._kernel = kernel
+    def initialize(self, kernel: "Kernel") -> None:
+        """插件加载时初始化（同步方法，必须调用 super()）"""
+        super().initialize(kernel)
+        # super() 已注入 self._kernel 并提取 plugins.<name> 专属配置，
+        # 此处可读取 self.get_config("key", default) 完成自身初始化
 
-    async def on_load(self) -> None:
-        """插件加载完成后的回调"""
+    def on_load(self) -> None:
+        """插件加载完成后的回调（同步）"""
         logger.info("{} 插件已加载", self.name)
 
-    async def on_enable(self) -> None:
-        """插件启用时的回调"""
+    def on_enable(self) -> None:
+        """插件启用时的回调（同步）"""
         pass
 
-    async def on_disable(self) -> None:
-        """插件禁用时的回调"""
+    def on_disable(self) -> None:
+        """插件禁用时的回调（同步）"""
         pass
 
-    async def on_unload(self) -> None:
-        """卸载时清理资源（文件句柄、网络连接等）"""
+    def on_unload(self) -> None:
+        """卸载时清理资源（文件句柄等，同步）"""
         pass
 
-    async def destroy(self) -> None:
-        """彻底销毁，释放所有资源"""
+    def destroy(self) -> None:
+        """彻底销毁，释放所有资源（同步）"""
         pass
 ```
+
+> **注意**：基类的 6 个生命周期方法（`initialize` / `on_load` / `on_enable` /
+> `on_disable` / `on_unload` / `destroy`）均为**同步方法**，不要声明为 `async`，
+> 否则 PluginManager 调用时返回协程对象、初始化逻辑不会执行。
+> 需要异步操作的场景（如启动网络服务）放到 Hook 或通道插件的
+> `async start()` / `async stop()` 中（见 [开发 Channel 插件](#开发-channel-插件)）。
 
 ---
 
@@ -546,8 +552,8 @@ priority = 100
 ```python
 # 旧方案（已不可用）
 class MyOldPlugin(NanobeePlugin):
-    async def initialize(self, kernel):
-        await super().initialize(kernel)
+    def initialize(self, kernel):
+        super().initialize(kernel)
         kernel.event_bus.subscribe("agent.turn_completed", self._on_turn_done)
 
     async def _on_turn_done(self, data: dict):
@@ -769,13 +775,16 @@ class MyChannelPlugin(NanobeePlugin):
     name = "my_channel"
     plugin_type = "channel"
 
-    async def initialize(self, kernel) -> None:
-        await super().initialize(kernel)
-        # 建立网络监听
+    def initialize(self, kernel) -> None:
+        """同步初始化（读取配置等，必须调用 super()）"""
+        super().initialize(kernel)
+
+    async def start(self) -> None:
+        """启动网络服务（由框架在通道启动阶段 await 调用）。"""
         self._server = await self._start_server()
 
-    async def on_unload(self) -> None:
-        # 关闭网络连接
+    async def stop(self) -> None:
+        """关闭网络连接（由框架在通道停止阶段 await 调用）。"""
         if self._server:
             await self._server.close()
 
@@ -837,13 +846,52 @@ plugins:
 
 ```python
 class MyPlugin(NanobeePlugin):
-    async def initialize(self, kernel) -> None:
-        await super().initialize(kernel)
+    def initialize(self, kernel) -> None:
+        super().initialize(kernel)
         # 读取 my_plugin.api_key, my_plugin.max_retries
         api_key = self.get_config("api_key", "default_key")
         max_retries = self.get_config("max_retries", 5)
-        is_enabled = self.is_enabled()
+        is_enabled = self.is_enabled  # 注意：is_enabled 是 property，不是方法
 ```
+
+### 声明式配置（config_cls，推荐）
+
+对于需要类型强转 / 约束校验的配置（布尔开关、端口、正整数阈值等），推荐声明
+`config_cls`（pydantic `BaseModel` 子类）。框架在 `initialize` 阶段统一
+`model_validate`，自动完成类型强转（`"false"` → `False`、`"8080"` → `8080`）、
+约束校验（`ge`/`le`/`pattern`）与默认值填充；非法值自动降级为默认值，不阻塞框架启动。
+
+```python
+from pydantic import BaseModel, Field
+
+from nanobee.plugins.base import NanobeePlugin
+
+
+class MyConfig(BaseModel):
+    """my_plugin 声明式配置。"""
+
+    enabled: bool = True
+    port: int = Field(default=8080, ge=1, le=65535)
+    retries: int = Field(default=5, ge=0)
+
+
+class MyPlugin(NanobeePlugin):
+    config_cls = MyConfig
+
+    def initialize(self, kernel) -> None:
+        super().initialize(kernel)
+        # 直接访问强类型配置对象（已强转、已校验、已填默认值）
+        if not self.config.enabled:
+            return
+        logger.info("端口 {}，重试 {} 次", self.config.port, self.config.retries)
+```
+
+要点：
+
+- `config_cls` 未声明时，`_config` 保持 dict 原样透传，`get_config()` 走 `.get` 语义（向后兼容旧插件）。
+- `self.config` 返回强类型模型实例；未声明 `config_cls` 时为 `None`。
+- 声明 `config_cls` 后，`__init__` 即持默认实例，`initialize` 前 `self.config` 也可用。
+- 配置仍读 `plugins.<plugin_name>` 段；默认值由 config class 的 `Field(default=...)` 承担（单一来源）。
 
 ---
 

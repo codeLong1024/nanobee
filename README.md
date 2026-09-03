@@ -233,11 +233,11 @@ logging:
 | `tool_cron` | Tool | ✅ 完整 | Cron 定时任务（add, list, remove），用户隔离 |
 | `tool_history` | Tool | ✅ 完整 | 历史消息管理（trim_history 粗暴截断 + consolidate_history 智能压缩归档）。纯机制：LLM 自主决定何时调用、保留多少 |
 | `tool_dingtalk` | Tool | ✅ 完整 | 钉钉工具（文档操作、多维表操作、数据管道 + MCP 客户端） |
-| `audit_logger` | Audit | ✅ 完整 | 参考：on_message_completed 审计日志 |
+| `audit_logger` | Audit | ✅ 完整 | 参考：turn/tool 两级 span 审计（JSONL + 结构化日志），预览截断带诚实标记，`preview_truncate` 开关支持全量记录 |
 
 ### 测试覆盖
 
-项目共有 **841 个测试用例**，覆盖核心模块：插件系统、Hook 机制、沙箱安全、消息路由、技能注入、故障分类等。
+项目共有 **1011 个测试用例**，覆盖核心模块：插件系统、Hook 机制、沙箱安全、消息路由、技能注入、故障分类等。
 测试文件按模块组织（如 `test_xxx.py` 对应 `nanobee/xxx.py`），无分期命名的历史遗留文件。
 
 ## 插件开发
@@ -260,7 +260,7 @@ AgentRunner 底层另有 4 个 run-level Hook（`before_run`/`after_run`/`on_err
 # 安装开发依赖
 pip install -e ".[dev]"
 
-# 运行全部测试（841 用例，零回归）
+# 运行全部测试（1011 用例，零回归）
 python -m pytest tests/ -v --tb=short
 
 # 查看覆盖率
@@ -313,7 +313,7 @@ python -m pytest tests/ --cov=nanobee --cov-report=term-missing
 | `test_message_tool.py` | `agent/tools/message.py` — MessageTool | 17 |
 | `test_notifications.py` | `utils/notifications.py` — 通知系统 | 15 |
 | `test_result_normalizer.py` | `agent/result_normalizer.py` — 结果标准化 | 10 |
-| `test_audit_logger.py` | `builtin/audit_logger/plugin.py` — 审计日志 | 4 |
+| `test_audit_logger.py` | `builtin/audit_logger/plugin.py` — 审计日志 | 23 |
 
 ## 项目结构
 
@@ -354,7 +354,7 @@ tests/
 ├── test_message_tool.py          # MessageTool、消息合并
 ├── test_notifications.py         # Notification 消息目录
 ├── test_audit_logger.py          # 审计日志
-└── ...                           # 共 44 个测试文件，841 用例
+└── ...                           # 共 51 个测试文件，1011 用例
 ```
 
 ## LLM Provider 支持

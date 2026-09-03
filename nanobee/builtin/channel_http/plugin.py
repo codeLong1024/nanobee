@@ -32,6 +32,7 @@ import uuid
 from typing import Any
 
 from aiohttp import web
+from pydantic import BaseModel, Field
 
 from nanobee.channel.base import ChannelPlugin
 from nanobee.channel.message import OutboundMessage, StreamingDelta
@@ -202,11 +203,29 @@ def _parse_openai_messages(
 # HTTP 通道插件
 # =============================================================================
 
+class ChannelHttpConfig(BaseModel):
+    """channel_http 插件声明式配置。
+
+    Attributes:
+        enabled: 是否启动 HTTP 服务器（默认 False）。
+        host: 监听地址。
+        port: 监听端口（1~65535）。
+        api_key: API Key（可选，不配置时无需认证）。
+    """
+
+    enabled: bool = False
+    host: str = "127.0.0.1"
+    port: int = Field(default=8080, ge=1, le=65535)
+    api_key: str | None = None
+
+
 class HTTPChannelPlugin(ChannelPlugin):
     """HTTP 通道插件 — OpenAI 兼容 API。
 
     启动一个 aiohttp 服务器，将 nanobee 暴露为 OpenAI 兼容的 HTTP API。
     """
+
+    config_cls = ChannelHttpConfig
 
     display_name = "HTTP API"
     supports_streaming = True
@@ -235,11 +254,11 @@ class HTTPChannelPlugin(ChannelPlugin):
 
     async def start(self) -> None:
         """启动 aiohttp HTTP 服务器（检查 enabled 配置）。"""
-        if not self.get_config("enabled", False):
+        if not self.config.enabled:
             logger.info("HTTP 通道已禁用（enabled: false），跳过启动")
             return
-        host = self.get_config("host", "127.0.0.1")
-        port = int(self.get_config("port", 8080))
+        host = self.config.host
+        port = self.config.port
 
         self._app = web.Application()
         self._app.router.add_post("/v1/chat/completions", self._handle_completions)
@@ -254,7 +273,7 @@ class HTTPChannelPlugin(ChannelPlugin):
         logger.info(
             "HTTP 通道已启动: http://{host}:{port} (model={model}, auth={auth})",
             host=host, port=port, model=self._model,
-            auth="enabled" if self.get_config("api_key") else "disabled",
+            auth="enabled" if self.config.api_key else "disabled",
         )
 
     async def stop(self) -> None:
@@ -295,7 +314,7 @@ class HTTPChannelPlugin(ChannelPlugin):
         Returns:
             True 表示认证通过或未配置认证
         """
-        configured_key = self.get_config("api_key")
+        configured_key = self.config.api_key
         if not configured_key:
             return True  # 未配置 API Key，不限制
 

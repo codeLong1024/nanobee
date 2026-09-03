@@ -163,11 +163,11 @@ class NanobeeDingTalkHandler(ChatbotHandler):
                 chatbot_msg, message, sender_id, content,
             )
 
-        if getattr(self.channel.config, "enable_file_parsing", False) and file_paths:
+        if getattr(self.channel.dingtalk_config, "enable_file_parsing", False) and file_paths:
             for fp in list(file_paths):
                 parsed = await parse_file_content(fp)
                 if parsed:
-                    max_chars = getattr(self.channel.config, "max_file_parse_chars", 2000)
+                    max_chars = getattr(self.channel.dingtalk_config, "max_file_parse_chars", 2000)
                     snippet = parsed.text[:max_chars]
                     self.channel.logger.info(
                         "Parsed file content: format={} size={} chars={}",
@@ -304,7 +304,7 @@ class NanobeeDingTalkHandler(ChatbotHandler):
         4. Route to nanobee kernel — streaming updates via EventBus
         5. On error: fail_card + recall emoji
         """
-        config = self.channel.config
+        config = self.channel.dingtalk_config
         if config is None:
             return
 
