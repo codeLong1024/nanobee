@@ -151,9 +151,7 @@ class TurnSpan:
     ``_pc_start`` 为进程内 perf_counter 起点，仅用于计算 duration_ms，不落盘。
     """
 
-    schema: str = _SCHEMA
     trace_id: str = ""                     # turn_{uuid12}
-    operation_name: str = _TURN_OPERATION  # gen_ai.operation.name
     agent_name: str = "nanobee"            # gen_ai.agent.name（配置项）
     conversation_id: str = "default"       # gen_ai.conversation.id
     start_time: str = ""                   # ISO 墙钟（was ts_start_iso）
@@ -162,7 +160,6 @@ class TurnSpan:
     input_tokens: int = 0                  # gen_ai.usage.input_tokens
     output_tokens: int = 0                 # gen_ai.usage.output_tokens
     total_tokens: int = 0                  # gen_ai.usage.total_tokens
-    usage_estimated: bool = True           # nanobee.usage.estimated
     finish_reasons: list[str] = field(default_factory=list)
     # gen_ai.response.finish_reasons
     input_messages: list[dict] = field(default_factory=list)
@@ -182,9 +179,9 @@ class TurnSpan:
     def to_contract_dict(self) -> dict[str, Any]:
         """序列化为 OTel GenAI 契约命名的 flat dict（含嵌套 tool_spans）。"""
         return {
-            "schema": self.schema,
+            "schema": _SCHEMA,
             "trace_id": self.trace_id,
-            "gen_ai.operation.name": self.operation_name,
+            "gen_ai.operation.name": _TURN_OPERATION,
             "gen_ai.agent.name": self.agent_name,
             "gen_ai.conversation.id": self.conversation_id,
             "start_time": self.start_time,
@@ -193,7 +190,7 @@ class TurnSpan:
             "gen_ai.usage.input_tokens": self.input_tokens,
             "gen_ai.usage.output_tokens": self.output_tokens,
             "gen_ai.usage.total_tokens": self.total_tokens,
-            "nanobee.usage.estimated": self.usage_estimated,
+            "nanobee.usage.estimated": True,
             "gen_ai.response.finish_reasons": self.finish_reasons,
             "gen_ai.input.messages": self.input_messages,
             "gen_ai.output.messages": self.output_messages,
