@@ -270,7 +270,7 @@ python -m pytest tests/ --cov=nanobee --cov-report=term-missing
 
 | 文件 | 覆盖模块 | 用例 |
 |------|---------|------|
-| `test_audit_logger.py` | `builtin/audit_logger/plugin.py` — turn/tool 两级 span 结构化审计 | 36 |
+| `test_audit_logger.py` | `builtin/audit_logger/plugin.py` — turn/tool 两级 span 结构化审计 | 39 |
 | `test_channel_dingtalk.py` | `builtin/channel_dingtalk/` — 钉钉通道（流式卡片、媒体、限流） | 50 |
 | `test_channel_http.py` | `builtin/channel_http/` — HTTP 通道 | 29 |
 | `test_channel_manager.py` | `kernel/channel_manager.py` — 通道启停、优雅关闭 | 12 |
