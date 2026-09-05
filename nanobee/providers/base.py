@@ -72,6 +72,11 @@ class ToolCallRequest:
     extra_content: dict[str, Any] | None = None
     provider_specific_fields: dict[str, Any] | None = None
     function_provider_specific_fields: dict[str, Any] | None = None
+    # Raw arguments string as received from the provider (before json_repair).
+    # None when arguments arrived as a pre-parsed dict. Used by PR-B call-level
+    # truncation detection: runner can strict-json.loads this when the response
+    # has a truncated (length) finish_reason to detect clipped argument JSON.
+    arguments_raw: str | None = None
 
     def to_openai_tool_call(self) -> dict[str, Any]:
         """Serialize to an OpenAI-style tool_call payload."""
