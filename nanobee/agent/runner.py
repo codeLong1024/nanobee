@@ -503,9 +503,13 @@ class AgentRunner:
                 continue
 
             # PR-B: truncated rounds with tool calls are dispatched individually below.
+            # 其余 finish_reason 语义（blocked=refusal/content_filter、error）带工具调用时，
+            # 调用被 gate 抑制不执行——仅在 content 非空时随正文输出；此处 warning 明确
+            # 落点语义，避免与 truncation 分发的"执行/忽略"决策混淆。
             if response.has_tool_calls and response.canonical_finish != "truncated":
                 logger.warning(
-                    "Ignoring tool calls under finish_reason='{}' for {}",
+                    "Suppressing tool calls on {} round (finish_reason='{}') for {}",
+                    response.canonical_finish,
                     response.finish_reason,
                     spec.context_id or "default",
                 )
@@ -580,12 +584,13 @@ class AgentRunner:
                         truncated_tool_names = [tc.name for tc in truncated_calls]
 
                         # Build assistant message including all tool calls
-                        messages.append(build_assistant_message(
+                        assistant_message = build_assistant_message(
                             clean,
                             tool_calls=[tc.to_openai_tool_call() for tc in response.tool_calls],
                             reasoning_content=response.reasoning_content,
                             thinking_blocks=response.thinking_blocks,
-                        ))
+                        )
+                        messages.append(assistant_message)
                         tools_used.extend(tc.name for tc in response.tool_calls)
 
                         # PR-B 分发同样发射 awaiting_tools checkpoint，与正常工具路径一致，
@@ -596,7 +601,7 @@ class AgentRunner:
                                 "phase": "awaiting_tools",
                                 "iteration": iteration,
                                 "model": spec.model,
-                                "assistant_message": messages[-1],
+                                "assistant_message": assistant_message,
                                 "completed_tool_results": [],
                                 "pending_tool_calls": [tc.to_openai_tool_call() for tc in valid_calls],
                             },
@@ -615,17 +620,28 @@ class AgentRunner:
                             tool_events.extend(new_events)
                             if fatal_error is not None:
                                 error = f"Error: {type(fatal_error).__name__}: {fatal_error}"
+                                # 失败无"回复"，错误语义由 error 字段承载，不伪装成 assistant 回复
                                 final_content = None
                                 exit_reason = ExitReason.COMPLETED
                                 context.final_content = final_content
                                 context.error = error
                                 context.exit_reason = exit_reason
                                 await hook.after_iteration(context)
+                                # 与正常工具路径一致：break 前先排空待处理注入，
+                                # 若排空到注入则回一轮继续，避免注入被吞。
+                                should_continue, injection_cycles = await self._try_drain_injections(
+                                    spec, messages, None, injection_cycles,
+                                    phase="after tool error",
+                                )
+                                if should_continue:
+                                    had_injections = True
+                                    continue
                                 break
 
                         # Append tool results for valid calls
+                        completed_tool_results: list[dict[str, Any]] = []
                         for tc, result in zip(valid_calls, valid_results):
-                            messages.append({
+                            tool_message = {
                                 "role": "tool",
                                 "tool_call_id": tc.id,
                                 "name": tc.name,
@@ -637,16 +653,34 @@ class AgentRunner:
                                     context_id=spec.context_id,
                                     max_chars=spec.max_tool_result_chars,
                                 ),
-                            })
+                            }
+                            messages.append(tool_message)
+                            completed_tool_results.append(tool_message)
 
                         # Synthesize error tool results for truncated calls
                         for tc in truncated_calls:
-                            messages.append({
+                            tool_message = {
                                 "role": "tool",
                                 "tool_call_id": tc.id,
                                 "name": tc.name,
                                 "content": f"Error: {TRUNCATED_ARGS_ERROR_MESSAGE}",
-                            })
+                            }
+                            messages.append(tool_message)
+                            completed_tool_results.append(tool_message)
+
+                        # 执行完补发 tools_completed checkpoint，与正常工具路径一致，
+                        # 仅发过 awaiting_tools 会让依赖 checkpoint 的消费方看不到完成态。
+                        await self._emit_checkpoint(
+                            spec,
+                            {
+                                "phase": "tools_completed",
+                                "iteration": iteration,
+                                "model": spec.model,
+                                "assistant_message": assistant_message,
+                                "completed_tool_results": completed_tool_results,
+                                "pending_tool_calls": [],
+                            },
+                        )
                     else:
                         # No tool calls: keep original flow
                         messages.append(build_assistant_message(
