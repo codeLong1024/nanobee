@@ -9,17 +9,19 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from jinja2 import Environment, FileSystemLoader
+from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 _TEMPLATES_ROOT = Path(__file__).resolve().parent.parent / "templates"
 
 
 @lru_cache
 def _environment() -> Environment:
-    # Plain-text prompts: do not HTML-escape variable values.
+    # Plain-text prompts: HTML-escape only actual HTML files.
     return Environment(
         loader=FileSystemLoader(str(_TEMPLATES_ROOT)),
-        autoescape=False,
+        autoescape=select_autoescape(
+            enabled_extensions=("html", "htm", "xml")
+        ),
         trim_blocks=True,
         lstrip_blocks=True,
     )
