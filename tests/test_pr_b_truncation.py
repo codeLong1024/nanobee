@@ -12,7 +12,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import json
 import pytest
 
 from nanobee.agent.hook import AgentHook
@@ -296,21 +295,19 @@ async def test_length_recovery_exhausted_emits_framework_message():
     truncated_2 = LLMResponse(content="partial response 2", finish_reason="length")
     truncated_3 = LLMResponse(content="partial response 3", finish_reason="length")
 
-    provider = _StaticProvider(truncated_3)  # Always truncated
-    runner = AgentRunner(provider)  # type: ignore[arg-type]
-
     # Use a sequence provider so the runner sees the same truncated response repeatedly
     provider_seq = _SequenceProvider(truncated_1, truncated_2, truncated_3)
     runner_seq = AgentRunner(provider_seq)  # type: ignore[arg-type]
     result = await runner_seq.run(_build_spec())
 
     # Recovery budget is 2, so on the 3rd truncated response we hit exhaustion
-    # Should produce a framework message, not the model's partial content
+    # Should produce a framework message, not the model's partial content.
+    # ctx.error 携带单一文案源（turn_truncated 中文目录文案），经 loop 透传为用户可见 detail。
     assert result.error is not None
-    assert "truncated" in result.error.lower() or "Output truncated" in result.error
+    assert "截断" in result.error
 
     # Framework honest message is the final content (not model output)
-    assert "截断" in result.final_content or "truncated" in str(result.final_content).lower()
+    assert "截断" in result.final_content
 
     # The 3rd partial model content should NOT appear as a standalone assistant message
     content_3 = "partial response 3"
@@ -352,8 +349,6 @@ def test_max_tokens_maps_to_truncated():
 
 
 # ── 流式 path: SSE chunks 截断 ────────────────────────────────────────────
-
-import json as _json
 
 def test_parse_chunks_sets_arguments_raw_for_streaming():
     """_parse_chunks 在流式聚合后保存 arguments_raw。"""
