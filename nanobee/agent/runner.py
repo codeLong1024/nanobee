@@ -540,6 +540,15 @@ class AgentRunner:
                 context.response = response
                 context.usage = dict(raw_usage)
                 context.tool_calls = list(response.tool_calls)
+                # 泄漏口（PR-A 场景）：finalization 也可能带正常工具调用返回，但
+                # should_execute_tools 检查点已在本轮执行分支之前过去——若在此内联交付，
+                # 调用不会执行、正文照常送出，连 506 行的 warning 都不触发。
+                # 收尾提示先落库、本轮就此打住（continue），交回正常管线由
+                # should_execute_tools 路径去分发执行该调用。
+                if response.has_tool_calls:
+                    messages.append(build_finalization_retry_message())
+                    await hook.after_iteration(context)
+                    continue
                 clean = hook.finalize_content(context, response.content)
 
             # 截断轮可能只有工具调用（content 为空但参数被截断），同样进入 PR-B 恢复；
