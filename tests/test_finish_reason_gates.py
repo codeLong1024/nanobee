@@ -15,8 +15,9 @@ import pytest
 
 from nanobee.agent.hook import AgentHook
 from nanobee.agent.runner import AgentRunner, AgentRunSpec
+from nanobee.agent.tools.base import Tool
 from nanobee.agent.tools.registry import ToolRegistry
-from nanobee.providers.base import LLMResponse, classify_finish_reason
+from nanobee.providers.base import LLMResponse, ToolCallRequest, classify_finish_reason
 
 
 def _build_spec(hook: AgentHook | None = None) -> AgentRunSpec:
@@ -248,3 +249,69 @@ def test_classify_finish_reason_aliases(finish_reason, expected):
 def test_classify_finish_reason_unknown_to_normal():
     """未知枚举 → normal（拒绝必须显式列举，不误杀网关自定义词表）。"""
     assert classify_finish_reason("gateway_specific_reason") == "normal"
+
+
+# ── finalization 返回正常工具调用不应被吞（PR-A 泄漏口）──────────────
+
+class _QueryTool(Tool):
+    """测试用查询工具，返回固定文本。"""
+
+    @property
+    def name(self) -> str:
+        return "query_sql"
+
+    @property
+    def description(self) -> str:
+        return "查询 SQL 数据库"
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {"type": "object", "properties": {"query": {"type": "string"}}}
+
+    async def execute(self, **kwargs: Any) -> Any:
+        return f"SQL result for: {kwargs.get('query', '')}"
+
+
+def _spec_with_tools() -> AgentRunSpec:
+    reg = ToolRegistry()
+    reg.register(_QueryTool())
+    return AgentRunSpec(
+        initial_messages=[{"role": "user", "content": "hi"}],
+        tools=reg,
+        model="test-model",
+        max_iterations=10,
+        max_tool_result_chars=65536,
+        error_message="Sorry, I encountered an error calling the AI model.",
+    )
+
+
+@pytest.mark.asyncio
+async def test_finalization_tool_call_routed_back_to_pipeline():
+    """finalization 响应带正常工具调用时，交回正常管线执行，不被吞。
+
+    序列：空×2（空重试耗尽）→ finalization 返回工具调用 → 工具调用被交回
+    正常管线（重新走 should_execute_tools 分发执行）→ 最终正文交付。
+    """
+    blank = LLMResponse(content=None, finish_reason="stop")
+    tool_call_resp = LLMResponse(
+        content=None,
+        finish_reason="tool_calls",
+        tool_calls=[ToolCallRequest(
+            id="call_q",
+            name="query_sql",
+            arguments={"query": "SELECT 1"},
+        )],
+    )
+    final = LLMResponse(content="final answer", finish_reason="stop")
+
+    # blank(iter0) → blank(iter1, 触发 finalization) →
+    # tool_call(iter1 finalization 响应，被本修复交回管线 → continue 至 iter2) →
+    # tool_call(iter2, 经 should_execute_tools 真正执行) → final(iter3 交付)
+    provider = _SequenceProvider(blank, blank, tool_call_resp, tool_call_resp, final)
+    runner = AgentRunner(provider)  # type: ignore[arg-type]
+    result = await runner.run(_spec_with_tools())
+
+    assert result.final_content == "final answer"
+    assert result.error is None
+    # 工具调用必须真正执行过（走正常管线），而不是被内联吞掉直接落到空最终响应。
+    assert result.tool_events, "finalization 返回的工具调用应被正常管线执行"
