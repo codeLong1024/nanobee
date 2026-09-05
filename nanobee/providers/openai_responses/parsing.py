@@ -135,6 +135,7 @@ async def consume_sse(
                         id=f"{call_id}|{buf.get('id') or item.get('id') or 'fc_0'}",
                         name=buf.get("name") or item.get("name") or "",
                         arguments=args,
+                        arguments_raw=args_raw if isinstance(args_raw, str) else None,
                     )
                 )
         elif event_type == "response.completed":
@@ -197,6 +198,7 @@ def parse_response_output(response: Any) -> LLMResponse:
                 id=f"{call_id}|{item_id}",
                 name=item.get("name") or "",
                 arguments=args if isinstance(args, dict) else {},
+                arguments_raw=args_raw if isinstance(args_raw, str) else None,
             ))
 
     usage_raw = response.get("usage") or {}
@@ -299,6 +301,7 @@ async def consume_sdk_stream(
                         id=f"{call_id}|{buf.get('id') or getattr(item, 'id', None) or 'fc_0'}",
                         name=buf.get("name") or getattr(item, "name", None) or "",
                         arguments=args,
+                        arguments_raw=args_raw if isinstance(args_raw, str) else None,
                     )
                 )
         elif event_type == "response.completed":
