@@ -10,12 +10,57 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
-from typing import Any
+from functools import cached_property
+from typing import Any, Literal
 
 from nanobee.utils.logger import logger
 
 
 from nanobee.utils.helpers import image_placeholder_text
+
+# finish_reason 归一化别名集。
+#
+# 各 provider / 网关的 finish_reason 原始串在四处被直接比较
+# （should_execute_tools 白名单、_classify_finish、空重试门、上游 663 式集合），
+# 清单互不一致导致"拦下工具仍交付正文"的泄漏口。此函数把原始串折叠为四个
+# 语义档，供所有决策层统一读取。
+_FINISH_REASON_ALIASES: dict[str, str] = {
+    "tool_calls": "normal",
+    "function_call": "normal",
+    "stop": "normal",
+    "end_turn": "normal",
+    "stop_sequence": "normal",
+    "tool_use": "normal",
+    "length": "truncated",
+    "max_tokens": "truncated",
+    "content_filter": "blocked",
+    "refusal": "blocked",
+    "error": "error",
+}
+
+
+def map_finish_reason(finish_reason: str | None) -> Literal["normal", "truncated", "blocked", "error"]:
+    """将 provider 原始 finish_reason 折叠为语义档。
+
+    Args:
+        finish_reason: provider 返回的 finish_reason 原始串。
+
+    Returns:
+        "normal": 正常终止（可执行工具 / 交付正文）
+        "truncated": 输出被截断（max_tokens 命中）
+        "blocked": 被内容过滤 / 拒绝（refusal / content_filter）
+        "error": 模型错误
+    """
+    if finish_reason is None:
+        return "normal"
+    canonical = _FINISH_REASON_ALIASES.get(finish_reason)
+    if canonical is None:
+        logger.warning(
+            "Unknown finish_reason='{}' mapped to normal (preserve original semantics)",
+            finish_reason,
+        )
+        return "normal"
+    return canonical  # type: ignore[return-value]
 
 
 @dataclass
@@ -70,13 +115,23 @@ class LLMResponse:
         """Check if response contains tool calls."""
         return len(self.tool_calls) > 0
 
+    @cached_property
+    def canonical_finish(self) -> Literal["normal", "truncated", "blocked", "error"]:
+        """finish_reason 语义档：单点折叠供四处决策层复用。
+
+        调用方不得直接比较 finish_reason 原始串，统一读此归一值。
+        """
+        return map_finish_reason(self.finish_reason)
+
     @property
     def should_execute_tools(self) -> bool:
-        """Tools execute only when has_tool_calls AND finish_reason is a tool-capable stop.
-        Blocks gateway-injected calls under ``refusal`` / ``content_filter`` / ``error`` (#3220)."""
+        """Tools execute only when has_tool_calls AND canonical finish is normal.
+
+        Blocks gateway-injected calls under ``refusal`` / ``content_filter`` / ``error`` (#3220),
+        and truncation under ``length`` / ``max_tokens``."""
         if not self.has_tool_calls:
             return False
-        return self.finish_reason in ("tool_calls", "function_call", "stop")
+        return self.canonical_finish == "normal"
 
 
 @dataclass(frozen=True)
