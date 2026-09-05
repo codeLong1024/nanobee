@@ -542,7 +542,11 @@ class AgentRunner:
                 context.tool_calls = list(response.tool_calls)
                 clean = hook.finalize_content(context, response.content)
 
-            if response.canonical_finish == "truncated" and not is_blank_text(clean):
+            # 截断轮可能只有工具调用（content 为空但参数被截断），同样进入 PR-B 恢复；
+            # 仅当无内容且无工具调用时才跳过（无可续作素材）。
+            if response.canonical_finish == "truncated" and (
+                not is_blank_text(clean) or response.has_tool_calls
+            ):
                 length_recovery_count += 1
                 if length_recovery_count <= _MAX_LENGTH_RECOVERIES:
                     logger.info(
@@ -575,6 +579,19 @@ class AgentRunner:
                         ))
                         tools_used.extend(tc.name for tc in response.tool_calls)
 
+                        # PR-B 分发同样发射 awaiting_tools checkpoint，与正常工具路径一致，
+                        # 保证依赖 checkpoint 做恢复/审计的消费方在截断分发路径上可观测。
+                        await self._emit_checkpoint(
+                            spec,
+                            {
+                                "phase": "awaiting_tools",
+                                "iteration": iteration,
+                                "model": spec.model,
+                                "assistant_message": messages[-1],
+                                "completed_tool_results": [],
+                                "pending_tool_calls": [tc.to_openai_tool_call() for tc in valid_calls],
+                            },
+                        )
                         # Execute valid calls
                         valid_results: list[Any] = []
                         if valid_calls:
@@ -638,24 +655,27 @@ class AgentRunner:
             # PR-B: truncated round with recovery exhausted — never deliver partial
             # truncated content as the final answer. Output a framework honest message
             # (not model output) and carry the truncation fact in context.error.
-            if response.canonical_finish == "truncated" and not is_blank_text(clean):
+            # 与恢复门控同口径：允许"空正文 + 工具调用"的截断轮也走到耗尽出口。
+            if response.canonical_finish == "truncated" and (
+                not is_blank_text(clean) or response.has_tool_calls
+            ):
                 logger.warning(
                     "Output truncation exceeded {} recovery attempts for {}; emitting framework message",
                     _MAX_LENGTH_RECOVERIES,
                     spec.context_id or "default",
                 )
-                final_content = get_notification_content("turn_truncated")
+                # 单一文案源：目录文案同时进入对话历史与 ctx.error（经 loop 透传为
+                # turn_internal_error 的 detail），避免框架内双份截断文案漂移。
+                notice = get_notification_content("turn_truncated")
+                final_content = notice
                 self._append_final_message(messages, final_content)
-                error = (
-                    f"Output truncated after {_MAX_LENGTH_RECOVERIES} recovery attempts. "
-                    "The model repeatedly exceeded its output token limit."
-                )
+                error = notice
                 exit_reason = ExitReason.COMPLETED
                 context.final_content = None
                 context.error = error
                 context.exit_reason = exit_reason
-                if hook.wants_streaming():
-                    await hook.on_stream_end(context, resuming=False)
+                # 错误信号唯一出口：不触发 on_stream_end（错误是"流中止"非"流结束"），
+                # 卡片保持流活跃，由 loop 的 fail_card 两步式终态化（与 is_error 分支一致）。
                 await hook.after_iteration(context)
                 break
 
