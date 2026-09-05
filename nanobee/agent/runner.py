@@ -27,7 +27,12 @@ from nanobee.agent.specs import (
     _DEFAULT_ERROR_MESSAGE,
 )
 from nanobee.agent.tool_pipeline import ToolPipeline
-from nanobee.providers.base import LLMProvider, LLMResponse, ToolCallRequest
+from nanobee.providers.base import (
+    LLMProvider,
+    LLMResponse,
+    ToolCallRequest,
+    map_finish_reason,
+)
 from nanobee.utils.file_edit_events import (
     prepare_file_edit_tracker as _prepare_file_edit_tracker,
     StreamingFileEditTracker,
@@ -74,18 +79,19 @@ class AgentRunner:
 
     @staticmethod
     def _classify_finish(finish_reason: str | None) -> bool:
-        """provider 的 finish_reason → 是否失败。单点维护语义映射。
+        """provider 的 finish_reason → 是否失败。读归一值单点映射。
 
-        finish_reason 字符串只在 runner 边界出现一次，越过边界后变成
-        ``error`` 字段，不再向上泄漏字符串枚举。
+        ``map_finish_reason`` 把原始 finish_reason 折叠为四个语义档，
+        此处把 error 与 blocked 档（refusal / content_filter）判定为失败，
+        truncated 档由 length 恢复逻辑单独处理（PR-B 扩展）。
 
         Args:
-            finish_reason: provider 返回的 finish_reason。
+            finish_reason: provider 返回的 finish_reason 原始串。
 
         Returns:
-            True 表示该轮是 LLM 错误响应。
+            True 表示该轮是 LLM 错误响应或内容被拦截。
         """
-        return finish_reason == "error"
+        return map_finish_reason(finish_reason) in ("error", "blocked")
 
     @staticmethod
     def _merge_message_content(left: Any, right: Any) -> str | list[dict[str, Any]]:
@@ -484,7 +490,7 @@ class AgentRunner:
                 )
 
             clean = hook.finalize_content(context, response.content)
-            if not is_error and is_blank_text(clean):
+            if response.canonical_finish == "normal" and is_blank_text(clean):
                 empty_content_retries += 1
                 if empty_content_retries < _MAX_EMPTY_RETRIES:
                     logger.warning(
@@ -506,7 +512,7 @@ class AgentRunner:
                 )
                 if hook.wants_streaming():
                     await hook.on_stream_end(context, resuming=False)
-                response = await self._request_finalization_retry(spec, messages_for_model)
+                response = await self._request_finalization(spec, messages_for_model)
                 retry_usage = self._usage_dict(response.usage)
                 self._accumulate_usage(usage, retry_usage)
                 raw_usage = self._merge_usage(raw_usage, retry_usage)
@@ -819,14 +825,24 @@ class AgentRunner:
             await hook.emit_reasoning_end()
         return response
 
-    async def _request_finalization_retry(
+    async def _request_finalization(
         self,
         spec: AgentRunSpec,
         messages: list[dict[str, Any]],
     ) -> LLMResponse:
+        """空响应轮的重试：保留工具定义，允许模型继续调工具而非没收工具逼答。
+
+        tools=None 的旧行为在真·空响应轮会把模型逼成编造文本 ——
+        PR-A 将其废除：空响应恢复与普通轮走同一请求构造（含 spec.tools），
+        由空重试门（canonical==normal）保证仅在正常终止轮进入。
+        """
         retry_messages = list(messages)
         retry_messages.append(build_finalization_retry_message())
-        kwargs = self._build_request_kwargs(spec, retry_messages, tools=None)
+        kwargs = self._build_request_kwargs(
+            spec,
+            retry_messages,
+            tools=spec.tools.get_definitions(),
+        )
         return await self.provider.chat_with_retry(**kwargs)
 
     @staticmethod
