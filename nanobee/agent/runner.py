@@ -32,7 +32,7 @@ from nanobee.providers.base import (
     LLMProvider,
     LLMResponse,
     ToolCallRequest,
-    map_finish_reason,
+    classify_finish_reason,
 )
 from nanobee.utils.file_edit_events import (
     prepare_file_edit_tracker as _prepare_file_edit_tracker,
@@ -83,7 +83,7 @@ class AgentRunner:
     def _classify_finish(finish_reason: str | None) -> bool:
         """provider 的 finish_reason → 是否失败。读归一值单点映射。
 
-        ``map_finish_reason`` 把原始 finish_reason 折叠为四个语义档，
+        ``classify_finish_reason`` 把原始 finish_reason 折叠为四个语义档，
         此处把 error 与 blocked 档（refusal / content_filter）判定为失败，
         truncated 档由 length 恢复逻辑单独处理（PR-B 扩展）。
 
@@ -93,7 +93,7 @@ class AgentRunner:
         Returns:
             True 表示该轮是 LLM 错误响应或内容被拦截。
         """
-        return map_finish_reason(finish_reason) in ("error", "blocked")
+        return classify_finish_reason(finish_reason) in ("error", "blocked")
 
 
     @staticmethod
@@ -559,14 +559,11 @@ class AgentRunner:
                     # tool result ("参数被截断未执行，请完整重发") instead of execution.
                     truncated_tool_names: list[str] = []
                     if response.has_tool_calls:
-                        valid_calls = [
-                            tc for tc in response.tool_calls
-                            if not self._has_truncated_arguments(tc)
-                        ]
-                        truncated_calls = [
-                            tc for tc in response.tool_calls
-                            if self._has_truncated_arguments(tc)
-                        ]
+                        # Single pass partition: each tool call's truncation test runs once.
+                        valid_calls = []
+                        truncated_calls = []
+                        for tc in response.tool_calls:
+                            (truncated_calls if self._has_truncated_arguments(tc) else valid_calls).append(tc)
                         truncated_tool_names = [tc.name for tc in truncated_calls]
 
                         # Build assistant message including all tool calls
@@ -641,7 +638,7 @@ class AgentRunner:
             # PR-B: truncated round with recovery exhausted — never deliver partial
             # truncated content as the final answer. Output a framework honest message
             # (not model output) and carry the truncation fact in context.error.
-            if response.canonical_finish == "truncated" and not is_blank_text(clean) and not is_error:
+            if response.canonical_finish == "truncated" and not is_blank_text(clean):
                 logger.warning(
                     "Output truncation exceeded {} recovery attempts for {}; emitting framework message",
                     _MAX_LENGTH_RECOVERIES,

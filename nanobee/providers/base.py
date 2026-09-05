@@ -39,7 +39,7 @@ _FINISH_REASON_ALIASES: dict[str, str] = {
 }
 
 
-def map_finish_reason(finish_reason: str | None) -> Literal["normal", "truncated", "blocked", "error"]:
+def classify_finish_reason(finish_reason: str | None) -> Literal["normal", "truncated", "blocked", "error"]:
     """将 provider 原始 finish_reason 折叠为语义档。
 
     Args:
@@ -126,7 +126,7 @@ class LLMResponse:
 
         调用方不得直接比较 finish_reason 原始串，统一读此归一值。
         """
-        return map_finish_reason(self.finish_reason)
+        return classify_finish_reason(self.finish_reason)
 
     @property
     def should_execute_tools(self) -> bool:
