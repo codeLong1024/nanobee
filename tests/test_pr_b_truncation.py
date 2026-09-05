@@ -20,7 +20,9 @@ from nanobee.agent.tools.base import Tool
 from nanobee.agent.tools.registry import ToolRegistry
 from nanobee.providers.base import LLMResponse, ToolCallRequest, classify_finish_reason
 from nanobee.utils.runtime import (
+    EMPTY_FINAL_RESPONSE_MESSAGE,
     TRUNCATED_ARGS_ERROR_MESSAGE,
+    TRUNCATED_TOOL_ADVICE,
     build_length_recovery_message,
 )
 
@@ -233,6 +235,52 @@ async def test_truncated_round_tools_used_tracked():
     assert "query_sql" in result.tools_used
 
 
+@pytest.mark.asyncio
+async def test_truncated_dispatch_emits_tools_completed_checkpoint():
+    """PR-B 截断分发在 awaiting_tools 之后应补发 tools_completed checkpoint。"""
+    tool_a = _tool_call(
+        "query_sql",
+        {"query": "SELECT 1"},
+        raw='{"query": "SELECT 1"}',
+        call_id="call_a",
+    )
+    tool_b = _tool_call(
+        "query_sql",
+        {"query": "incomplete"},
+        raw='{"query": "incomplete',  # 截断
+        call_id="call_b",
+    )
+
+    truncated = LLMResponse(
+        content="Let me query...",
+        tool_calls=[tool_a, tool_b],
+        finish_reason="length",
+    )
+    completed = LLMResponse(content="Done.", finish_reason="stop")
+
+    phases: list[str] = []
+
+    async def _on_checkpoint(payload: dict) -> None:
+        phases.append(payload.get("phase", ""))
+
+    provider = _SequenceProvider(truncated, completed)
+    runner = AgentRunner(provider)  # type: ignore[arg-type]
+    spec = AgentRunSpec(
+        initial_messages=[{"role": "user", "content": "hi"}],
+        tools=_registry_with_tools(),
+        model="test-model",
+        max_iterations=10,
+        max_tool_result_chars=65536,
+        checkpoint_callback=_on_checkpoint,
+    )
+    await runner.run(spec)
+
+    # 截断分发路径应先 awaiting_tools，再 tools_completed。
+    assert "awaiting_tools" in phases
+    assert "tools_completed" in phases
+    assert phases.index("tools_completed") > phases.index("awaiting_tools")
+
+
 # ── 参数化长度恢复消息 ──────────────────────────────────────────────────
 
 def test_build_length_recovery_message_with_tool_names():
@@ -254,6 +302,38 @@ def test_build_length_recovery_message_empty_tool_names():
     """空列表传 None → 通用文案。"""
     msg = build_length_recovery_message(tool_names=[])
     assert "Output limit reached" in msg["content"]
+
+
+def test_build_length_recovery_message_applies_shrink_advice():
+    """带截断工具名时命中 TRUNCATED_TOOL_ADVICE 收缩建议，不再引导原样重发。"""
+    msg = build_length_recovery_message(tool_names=["write_file"])
+    content = msg["content"]
+    # 处方是"缩小操作"而非"完整重发"，命中映射工具给出具体收缩建议。
+    assert TRUNCATED_TOOL_ADVICE["write_file"].split("——")[0] in content
+    assert "narrow" in content or "缩小" in content
+
+
+def test_build_length_recovery_message_dedups_tool_names():
+    """同名多次截断只给出一次建议，且每条建议均被保留。"""
+    msg = build_length_recovery_message(tool_names=["edit_file", "edit_file", "write_file"])
+    content = msg["content"]
+    for tool in ("edit_file", "write_file"):
+        assert f"- {tool}:" in content
+
+
+def test_build_length_recovery_message_falls_back_to_generic_shrink():
+    """未命中映射的工具名回落到通用收缩处方，仍含工具名与收缩语义。"""
+    msg = build_length_recovery_message(tool_names=["query_sql"])
+    content = msg["content"]
+    assert "query_sql" in content
+    # 通用回落同样引导收窄操作，而非重发完整参数。
+    assert "narrow" in content or "缩小" in content
+
+
+def test_empty_final_response_message_is_honest():
+    """兜底文案不得编造"工具步骤已完成"，应如实说明本轮未产出最终答案。"""
+    assert "couldn't produce a final answer" in EMPTY_FINAL_RESPONSE_MESSAGE
+    assert "completed the tool steps" not in EMPTY_FINAL_RESPONSE_MESSAGE
 
 
 # ── 截断参数判定 ────────────────────────────────────────────────────────
