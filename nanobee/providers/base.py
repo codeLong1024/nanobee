@@ -39,7 +39,7 @@ _FINISH_REASON_ALIASES: dict[str, str] = {
 }
 
 
-def map_finish_reason(finish_reason: str | None) -> Literal["normal", "truncated", "blocked", "error"]:
+def classify_finish_reason(finish_reason: str | None) -> Literal["normal", "truncated", "blocked", "error"]:
     """将 provider 原始 finish_reason 折叠为语义档。
 
     Args:
@@ -72,6 +72,11 @@ class ToolCallRequest:
     extra_content: dict[str, Any] | None = None
     provider_specific_fields: dict[str, Any] | None = None
     function_provider_specific_fields: dict[str, Any] | None = None
+    # Raw arguments string as received from the provider (before json_repair).
+    # None when arguments arrived as a pre-parsed dict. Used by PR-B call-level
+    # truncation detection: runner can strict-json.loads this when the response
+    # has a truncated (length) finish_reason to detect clipped argument JSON.
+    arguments_raw: str | None = None
 
     def to_openai_tool_call(self) -> dict[str, Any]:
         """Serialize to an OpenAI-style tool_call payload."""
@@ -121,7 +126,7 @@ class LLMResponse:
 
         调用方不得直接比较 finish_reason 原始串，统一读此归一值。
         """
-        return map_finish_reason(self.finish_reason)
+        return classify_finish_reason(self.finish_reason)
 
     @property
     def should_execute_tools(self) -> bool:

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import os
 import time
 from copy import deepcopy
@@ -31,7 +32,7 @@ from nanobee.providers.base import (
     LLMProvider,
     LLMResponse,
     ToolCallRequest,
-    map_finish_reason,
+    classify_finish_reason,
 )
 from nanobee.utils.file_edit_events import (
     prepare_file_edit_tracker as _prepare_file_edit_tracker,
@@ -56,10 +57,11 @@ from nanobee.utils.runtime import (
     build_finalization_retry_message,
     build_length_recovery_message,
     is_blank_text,
+    TRUNCATED_ARGS_ERROR_MESSAGE,
 )
 
 _MAX_EMPTY_RETRIES = 2
-_MAX_LENGTH_RECOVERIES = 3
+_MAX_LENGTH_RECOVERIES = 2
 _MAX_INJECTIONS_PER_TURN = 3
 _MAX_INJECTION_CYCLES = 5
 _SNIP_SAFETY_BUFFER = 1024
@@ -81,7 +83,7 @@ class AgentRunner:
     def _classify_finish(finish_reason: str | None) -> bool:
         """provider 的 finish_reason → 是否失败。读归一值单点映射。
 
-        ``map_finish_reason`` 把原始 finish_reason 折叠为四个语义档，
+        ``classify_finish_reason`` 把原始 finish_reason 折叠为四个语义档，
         此处把 error 与 blocked 档（refusal / content_filter）判定为失败，
         truncated 档由 length 恢复逻辑单独处理（PR-B 扩展）。
 
@@ -91,7 +93,25 @@ class AgentRunner:
         Returns:
             True 表示该轮是 LLM 错误响应或内容被拦截。
         """
-        return map_finish_reason(finish_reason) in ("error", "blocked")
+        return classify_finish_reason(finish_reason) in ("error", "blocked")
+
+
+    @staticmethod
+    def _has_truncated_arguments(tool_call: ToolCallRequest) -> bool:
+        """Return True if the tool call's raw arguments fail strict JSON parsing.
+
+        Only meaningful when the response had a truncated (length) finish_reason.
+        arguments_raw is None when the provider delivered arguments as a dict
+        (no raw string to check); in that case the call is assumed complete.
+        """
+        raw = tool_call.arguments_raw
+        if raw is None:
+            return False
+        try:
+            json.loads(raw)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return True
+        return False
 
     @staticmethod
     def _merge_message_content(left: Any, right: Any) -> str | list[dict[str, Any]]:
@@ -482,7 +502,8 @@ class AgentRunner:
                 await hook.after_iteration(context)
                 continue
 
-            if response.has_tool_calls:
+            # PR-B: truncated rounds with tool calls are dispatched individually below.
+            if response.has_tool_calls and response.canonical_finish != "truncated":
                 logger.warning(
                     "Ignoring tool calls under finish_reason='{}' for {}",
                     response.finish_reason,
@@ -521,7 +542,7 @@ class AgentRunner:
                 context.tool_calls = list(response.tool_calls)
                 clean = hook.finalize_content(context, response.content)
 
-            if response.finish_reason == "length" and not is_blank_text(clean):
+            if response.canonical_finish == "truncated" and not is_blank_text(clean):
                 length_recovery_count += 1
                 if length_recovery_count <= _MAX_LENGTH_RECOVERIES:
                     logger.info(
@@ -533,14 +554,110 @@ class AgentRunner:
                     )
                     if hook.wants_streaming():
                         await hook.on_stream_end(context, resuming=True)
-                    messages.append(build_assistant_message(
-                        clean,
-                        reasoning_content=response.reasoning_content,
-                        thinking_blocks=response.thinking_blocks,
+                    # PR-B: call-level dispatch for truncated rounds with tool calls.
+                    # Valid calls execute normally; truncated calls receive an error
+                    # tool result ("参数被截断未执行，请完整重发") instead of execution.
+                    truncated_tool_names: list[str] = []
+                    if response.has_tool_calls:
+                        # Single pass partition: each tool call's truncation test runs once.
+                        valid_calls = []
+                        truncated_calls = []
+                        for tc in response.tool_calls:
+                            (truncated_calls if self._has_truncated_arguments(tc) else valid_calls).append(tc)
+                        truncated_tool_names = [tc.name for tc in truncated_calls]
+
+                        # Build assistant message including all tool calls
+                        messages.append(build_assistant_message(
+                            clean,
+                            tool_calls=[tc.to_openai_tool_call() for tc in response.tool_calls],
+                            reasoning_content=response.reasoning_content,
+                            thinking_blocks=response.thinking_blocks,
+                        ))
+                        tools_used.extend(tc.name for tc in response.tool_calls)
+
+                        # Execute valid calls
+                        valid_results: list[Any] = []
+                        if valid_calls:
+                            valid_results, new_events, fatal_error = (
+                                await self._tool_pipeline.execute_all(
+                                    spec,
+                                    valid_calls,
+                                    external_lookup_counts,
+                                    workspace_violation_counts,
+                                )
+                            )
+                            tool_events.extend(new_events)
+                            if fatal_error is not None:
+                                error = f"Error: {type(fatal_error).__name__}: {fatal_error}"
+                                final_content = None
+                                exit_reason = ExitReason.COMPLETED
+                                context.final_content = final_content
+                                context.error = error
+                                context.exit_reason = exit_reason
+                                await hook.after_iteration(context)
+                                break
+
+                        # Append tool results for valid calls
+                        for tc, result in zip(valid_calls, valid_results):
+                            messages.append({
+                                "role": "tool",
+                                "tool_call_id": tc.id,
+                                "name": tc.name,
+                                "content": self._result_normalizer.normalize(
+                                    result,
+                                    tool_name=tc.name,
+                                    tool_call_id=tc.id,
+                                    workspace=spec.workspace,
+                                    context_id=spec.context_id,
+                                    max_chars=spec.max_tool_result_chars,
+                                ),
+                            })
+
+                        # Synthesize error tool results for truncated calls
+                        for tc in truncated_calls:
+                            messages.append({
+                                "role": "tool",
+                                "tool_call_id": tc.id,
+                                "name": tc.name,
+                                "content": f"Error: {TRUNCATED_ARGS_ERROR_MESSAGE}",
+                            })
+                    else:
+                        # No tool calls: keep original flow
+                        messages.append(build_assistant_message(
+                            clean,
+                            reasoning_content=response.reasoning_content,
+                            thinking_blocks=response.thinking_blocks,
+                        ))
+
+                    messages.append(build_length_recovery_message(
+                        tool_names=truncated_tool_names or None,
                     ))
-                    messages.append(build_length_recovery_message())
                     await hook.after_iteration(context)
                     continue
+
+            # PR-B: truncated round with recovery exhausted — never deliver partial
+            # truncated content as the final answer. Output a framework honest message
+            # (not model output) and carry the truncation fact in context.error.
+            if response.canonical_finish == "truncated" and not is_blank_text(clean):
+                logger.warning(
+                    "Output truncation exceeded {} recovery attempts for {}; emitting framework message",
+                    _MAX_LENGTH_RECOVERIES,
+                    spec.context_id or "default",
+                )
+                final_content = get_notification_content("turn_truncated")
+                self._append_final_message(messages, final_content)
+                error = (
+                    f"Output truncated after {_MAX_LENGTH_RECOVERIES} recovery attempts. "
+                    "The model repeatedly exceeded its output token limit."
+                )
+                exit_reason = ExitReason.COMPLETED
+                context.final_content = None
+                context.error = error
+                context.exit_reason = exit_reason
+                if hook.wants_streaming():
+                    await hook.on_stream_end(context, resuming=False)
+                await hook.after_iteration(context)
+                break
 
             assistant_message: dict[str, Any] | None = None
             if not is_error and not is_blank_text(clean):

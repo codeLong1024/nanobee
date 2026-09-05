@@ -16,7 +16,7 @@ import pytest
 from nanobee.agent.hook import AgentHook
 from nanobee.agent.runner import AgentRunner, AgentRunSpec
 from nanobee.agent.tools.registry import ToolRegistry
-from nanobee.providers.base import LLMResponse, map_finish_reason
+from nanobee.providers.base import LLMResponse, classify_finish_reason
 
 
 def _build_spec(hook: AgentHook | None = None) -> AgentRunSpec:
@@ -225,7 +225,7 @@ def test_classify_finish_maps_blocked_to_error():
     assert classify(None) is False
 
 
-# ── map_finish_reason 归一化单测 ──────────────────────────────────────
+# ── classify_finish_reason 归一化单测 ──────────────────────────────────────
 
 @pytest.mark.parametrize("finish_reason,expected", [
     ("stop", "normal"),
@@ -241,10 +241,10 @@ def test_classify_finish_maps_blocked_to_error():
     ("error", "error"),
     (None, "normal"),
 ])
-def test_map_finish_reason_aliases(finish_reason, expected):
-    assert map_finish_reason(finish_reason) == expected
+def test_classify_finish_reason_aliases(finish_reason, expected):
+    assert classify_finish_reason(finish_reason) == expected
 
 
-def test_map_finish_reason_unknown_to_normal():
+def test_classify_finish_reason_unknown_to_normal():
     """未知枚举 → normal（拒绝必须显式列举，不误杀网关自定义词表）。"""
-    assert map_finish_reason("gateway_specific_reason") == "normal"
+    assert classify_finish_reason("gateway_specific_reason") == "normal"
