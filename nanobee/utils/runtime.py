@@ -30,6 +30,14 @@ LENGTH_RECOVERY_PROMPT = (
     "— no recap, no apology. Break remaining work into smaller steps if needed."
 )
 
+# 截断工具参数的错误 tool result 文案前缀。
+# PR-B 在 truncated(length) 轮发现参数被截断时，不执行该工具调用，
+# 而合成一条 is_error tool result 告知模型参数不完整、需完整重发。
+TRUNCATED_ARGS_ERROR_MESSAGE = (
+    "参数被截断未执行 — 此工具调用的参数在生成过程中被输出长度限制截断。"
+    "请勿以文本代替工具调用，请使用完整参数重新发起此工具调用。"
+)
+
 
 def empty_tool_result_message(tool_name: str) -> str:
     """Short prompt-safe marker for tools that completed without visible output."""
@@ -61,8 +69,24 @@ def build_finalization_retry_message() -> dict[str, str]:
     return {"role": "user", "content": FINALIZATION_RETRY_PROMPT}
 
 
-def build_length_recovery_message() -> dict[str, str]:
-    """Prompt the model to continue after hitting output token limit."""
+def build_length_recovery_message(tool_names: list[str] | None = None) -> dict[str, str]:
+    """Prompt the model to continue after hitting output token limit.
+
+    Args:
+        tool_names: When provided, lists the specific tool call(s) whose
+            arguments were truncated. The recovery prompt is parameterized
+            to tell the model which tool to re-send with complete arguments.
+            When empty, falls back to the generic continuation prompt.
+    """
+    if tool_names:
+        names = ", ".join(tool_names)
+        msg = (
+            "Output limit reached. The following tool call argument(s) were "
+            f"truncated before completion: {names}. "
+            "Please re-send these tool call(s) with complete arguments, "
+            "and continue exactly where you left off."
+        )
+        return {"role": "user", "content": msg}
     return {"role": "user", "content": LENGTH_RECOVERY_PROMPT}
 
 

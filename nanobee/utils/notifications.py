@@ -83,6 +83,12 @@ _CATALOG: dict[str, Notification] = {
         content="对话因超出最大迭代次数（{max_iterations} 次）而自动终止。如有需要，请重新发起提问。",
         severity="warning",
     ),
+    # PR-B: 输出截断恢复耗尽
+    "turn_truncated": Notification(
+        kind="turn_truncated",
+        content="任务因模型输出多次被截断而无法完成，已自动终止。如有需要，请尝试缩小问题范围或重新提问。",
+        severity="warning",
+    ),
     # ── 子代理通知 ──
     "subagent_spawned": Notification(
         kind="subagent_spawned",
