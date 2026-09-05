@@ -82,13 +82,15 @@ if usage.get("cached_tokens"):
 
 ```python
 import asyncio
+import os
 from nanobee.providers.openai_compat_provider import OpenAICompatProvider
 from nanobee.providers.registry import ProviderSpec
 
 async def get_token_usage():
+    # 密钥只从环境变量读取，禁止硬编码进代码或文档
     provider = OpenAICompatProvider(
-        api_key="sk-xxx",
-        api_base="http://172.30.0.23:4000/v1",
+        api_key=os.environ["LLM_API_KEY"],
+        api_base=os.environ.get("LLM_API_BASE", "https://your-llm-gateway.example.com/v1"),
         default_model="deepseek-v4-flash",
         spec=ProviderSpec(
             name="custom",
@@ -183,13 +185,14 @@ class CustomRunner(AgentRunner):
 
 ## 配置文件
 
-从 `<data_dir>/config.yaml` 读取：
+从 `<data_dir>/config.yaml` 读取。**禁止把真实 API Key 写进配置文件**，一律使用 `${ENV_VAR}` 占位符，
+由 `config/loader.py` 的 `resolve_config_env_vars()` 在加载时解析（支持 `${VAR}` 与 `${VAR:-默认值}`）：
 
 ```yaml
 providers:
   custom:
-    api_key: "sk-7mzRQO19cByKbbLixPapLw"
-    api_base: "http://172.30.0.23:4000/v1"
+    api_key: "${CUSTOM_API_KEY}"
+    api_base: "${CUSTOM_API_BASE:-https://your-llm-gateway.example.com/v1}"
 
 agents:
   defaults:
@@ -197,6 +200,10 @@ agents:
     model: "deepseek-v4-flash"
     max_tokens: 50000
 ```
+
+> **安全提示**：本文档早期版本曾在示例中写入过真实 Key，现已替换为占位符。
+> 如果你曾经复制使用过该 Key，请立即到网关侧吊销并轮换（revoke & rotate）；
+> 因为该 Key 已随提交进入远端仓库历史，仅删除文档无法收回泄露。
 
 ## 测试结果
 
