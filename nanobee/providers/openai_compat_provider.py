@@ -953,7 +953,9 @@ class OpenAICompatProvider(LLMProvider):
                 tc_map = self._maybe_mapping(tc) or {}
                 fn = self._maybe_mapping(tc_map.get("function")) or {}
                 args = fn.get("arguments", {})
+                raw_args = None
                 if isinstance(args, str):
+                    raw_args = args
                     args = json_repair.loads(args)
                 ec, prov, fn_prov = _extract_tc_extras(tc)
                 parsed_tool_calls.append(ToolCallRequest(
@@ -963,6 +965,7 @@ class OpenAICompatProvider(LLMProvider):
                     extra_content=ec,
                     provider_specific_fields=prov,
                     function_provider_specific_fields=fn_prov,
+                    arguments_raw=raw_args,
                 ))
 
             return LLMResponse(
@@ -996,7 +999,9 @@ class OpenAICompatProvider(LLMProvider):
         tool_calls = []
         for tc in raw_tool_calls:
             args = tc.function.arguments
+            raw_args = None
             if isinstance(args, str):
+                raw_args = args
                 args = json_repair.loads(args)
             ec, prov, fn_prov = _extract_tc_extras(tc)
             tool_calls.append(ToolCallRequest(
@@ -1006,6 +1011,7 @@ class OpenAICompatProvider(LLMProvider):
                 extra_content=ec,
                 provider_specific_fields=prov,
                 function_provider_specific_fields=fn_prov,
+                arguments_raw=raw_args,
             ))
 
         reasoning_content = getattr(msg, "reasoning_content", None) or None
@@ -1142,6 +1148,7 @@ class OpenAICompatProvider(LLMProvider):
                     extra_content=b.get("extra_content"),
                     provider_specific_fields=b.get("prov"),
                     function_provider_specific_fields=b.get("fn_prov"),
+                    arguments_raw=b["arguments"] or None,
                 )
                 for b in tc_bufs.values()
             ],
