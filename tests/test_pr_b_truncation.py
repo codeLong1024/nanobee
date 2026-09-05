@@ -19,7 +19,7 @@ from nanobee.agent.hook import AgentHook
 from nanobee.agent.runner import AgentRunner, AgentRunSpec
 from nanobee.agent.tools.base import Tool
 from nanobee.agent.tools.registry import ToolRegistry
-from nanobee.providers.base import LLMResponse, ToolCallRequest, map_finish_reason
+from nanobee.providers.base import LLMResponse, ToolCallRequest, classify_finish_reason
 from nanobee.utils.runtime import (
     TRUNCATED_ARGS_ERROR_MESSAGE,
     build_length_recovery_message,
@@ -348,7 +348,7 @@ def test_tool_call_arguments_raw_round_trip():
 
 def test_max_tokens_maps_to_truncated():
     """max_tokens → truncated（与 length 同档）。"""
-    assert map_finish_reason("max_tokens") == "truncated"
+    assert classify_finish_reason("max_tokens") == "truncated"
 
 
 # ── 流式 path: SSE chunks 截断 ────────────────────────────────────────────
