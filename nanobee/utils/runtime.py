@@ -16,8 +16,11 @@ _MAX_REPEAT_EXTERNAL_LOOKUPS = 2
 # Third same-target workspace violation in a turn escalates to "stop retrying".
 _MAX_REPEAT_WORKSPACE_VIOLATIONS = 2
 
+# 兜底出站文案：仅在 final_content 为空时交付给用户。原文案
+# "I completed the tool steps..." 自带"工具步骤已完成"的编造口吻——工具可能并未
+# 执行或结果未汇聚。改为不含完成声明的诚实文案，交由用户重试或收窄任务。
 EMPTY_FINAL_RESPONSE_MESSAGE = (
-    "I completed the tool steps but couldn't produce a final answer. "
+    "I couldn't produce a final answer in this turn. "
     "Please try again or narrow the task."
 )
 
@@ -36,6 +39,23 @@ LENGTH_RECOVERY_PROMPT = (
 TRUNCATED_ARGS_ERROR_MESSAGE = (
     "参数被截断未执行 — 此工具调用的参数在生成过程中被输出长度限制截断。"
     "请勿以文本代替工具调用，请使用完整参数重新发起此工具调用。"
+)
+
+
+# 工具级收缩建议（CodeBuddy buildRetryMessage 处方）：调用参数被输出长度截断，
+# 几乎必然因为操作体量超单轮输出——原样重发大概率再次截断，两轮烧满后必然走到
+# turn_truncated 耗尽。恢复消息据此引导模型"缩小操作"而非简单重发完整参数。
+# key 为模型实际可见的工具名。
+TRUNCATED_TOOL_ADVICE: dict[str, str] = {
+    "write_file": "content 体量过大——请改用多个 edit_file 分块写入/修改，避免一次提交超长内容",
+    "edit_file": "old_text 体量过大——请缩小 old_text 匹配范围，把大块替换拆成多次小范围 edit_file",
+    "execute_shell": "命令过长——请将命令拆成多条更短的命令，逐条 execute_shell 执行",
+}
+
+# 未命中具体映射的工具的通用收缩处方。
+_TRUNCATED_GENERIC_SHRINK = (
+    "操作体量过大——请缩小本次操作范围、拆成多个更小的调用分步完成，"
+    "避免一次性提交超长参数再次触发截断"
 )
 
 
@@ -75,16 +95,30 @@ def build_length_recovery_message(tool_names: list[str] | None = None) -> dict[s
     Args:
         tool_names: When provided, lists the specific tool call(s) whose
             arguments were truncated. The recovery prompt is parameterized
-            to tell the model which tool to re-send with complete arguments.
+            to tell the model which tool's arguments were cut and, per the
+            tool-level shrink advice (``TRUNCATED_TOOL_ADVICE``), guides the
+            model to narrow the operation instead of blindly re-sending the
+            same oversized payload (which is likely to be truncated again).
             When empty, falls back to the generic continuation prompt.
     """
     if tool_names:
         names = ", ".join(tool_names)
+        lines = []
+        seen: set[str] = set()
+        for name in tool_names:
+            if name in seen:
+                continue
+            seen.add(name)
+            hint = TRUNCATED_TOOL_ADVICE.get(name)
+            if hint is not None:
+                lines.append(f"- {name}: {hint}")
+        shrink = "\n".join(lines) if lines else _TRUNCATED_GENERIC_SHRINK
         msg = (
             "Output limit reached. The following tool call argument(s) were "
-            f"truncated before completion: {names}. "
-            "Please re-send these tool call(s) with complete arguments, "
-            "and continue exactly where you left off."
+            f"truncated before completion: {names}. Re-sending the same large "
+            "arguments is likely to be truncated again, so narrow the operation:\n"
+            f"{shrink}\n"
+            "Then continue exactly where you left off."
         )
         return {"role": "user", "content": msg}
     return {"role": "user", "content": LENGTH_RECOVERY_PROMPT}
