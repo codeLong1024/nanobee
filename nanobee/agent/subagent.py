@@ -540,12 +540,14 @@ class SubagentManager:
             except Exception:
                 logger.exception("Failed to build skills summary for subagent")
 
+        from nanobee.kernel.soul_guard import FINAL_GUARD_TEXT
+
         return render_template(
             "agent/subagent_system.md",
             time_ctx=time_ctx,
             workspace=str(root),
             skills_summary=skills_summary or "",
-        )
+        ) + "\n\n" + FINAL_GUARD_TEXT
 
     async def cancel_by_session(self, context_id: str) -> int:
         """取消指定上下文的所有子代理。返回已取消的数量。"""
