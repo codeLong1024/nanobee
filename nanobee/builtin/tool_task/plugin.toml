@@ -1,0 +1,9 @@
+[plugin]
+name = "tool_task"
+version = "1.0.0"
+description = "任务分解与状态跟踪工具：task_create, task_update, task_list, task_get，用户/会话隔离"
+author = "nanobee-team"
+type = "tool"
+
+[config]
+enabled = true

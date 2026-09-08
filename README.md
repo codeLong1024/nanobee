@@ -231,6 +231,7 @@ logging:
 | `tool_shell` | Tool | ✅ 完整 | Shell 命令工具（execute_shell），双层安全守卫：deny 模式拦截危险命令 + bwrap 进程级沙箱（掩藏 $HOME 仅暴露 workspace/） |
 | `tool_web` | Tool | ✅ 完整 | Web 工具（web_search, web_fetch），含 HTML 清理、SSRF 保护 |
 | `tool_cron` | Tool | ✅ 完整 | Cron 定时任务（add, list, remove），用户隔离 |
+| `tool_task` | Tool | ✅ 完整 | 任务分解与状态跟踪（task_create, task_update, task_list, task_get），状态机 pending→in_progress→completed，用户/命名空间隔离，原子写持久化 |
 | `tool_history` | Tool | ✅ 完整 | 历史消息管理（trim_history 粗暴截断 + consolidate_history 智能压缩归档）。纯机制：LLM 自主决定何时调用、保留多少 |
 | `audit_logger` | Audit | ✅ 完整 | 参考：turn/tool 两级 span 审计（JSONL + 结构化日志），预览截断带诚实标记，`preview_truncate` 开关支持全量记录 |
 
@@ -321,6 +322,7 @@ python -m pytest tests/ --cov=nanobee --cov-report=term-missing
 | `test_tool_fs.py` | `builtin/tool_fs/plugin.py` — 文件读写编辑删除 | 37 |
 | `test_tool_history.py` | `agent/tools/tool_history.py` — 历史消息管理 | 25 |
 | `test_tool_pipeline_logging.py` | `agent/tool_pipeline.py` — 工具管线日志 ctx 关联键 | 5 |
+| `test_tool_task.py` | `builtin/tool_task/plugin.py` — 任务跟踪：CRUD、状态机、用户/命名空间隔离、并发安全 | 18 |
 | `test_tool_shell_sandbox.py` | `builtin/tool_shell/sandbox.py` — bwrap 沙箱 | 39 |
 | `test_user_context.py` | `kernel/user_context.py` — 会话创建、隔离、插件注入 | 15 |
 
