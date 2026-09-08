@@ -24,7 +24,6 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from nanobee.exceptions import SandboxViolationError
 from nanobee.kernel.context_sandbox_var import current_request_context
 from nanobee.plugins import ToolPlugin
 from nanobee.security.workspace_policy import require_path_within
@@ -45,12 +44,9 @@ _NS_RE = re.compile(r"[^0-9A-Za-z_.\-@]")
 
 def _sanitize_ns(namespace: str) -> str:
     """namespace 会拼进文件名，必须净化防路径穿越。"""
-    ns = _NS_RE.sub("_", namespace)
-    ns = ns.strip("._") or "default"
-    # 阻断绝对路径 / 跳出数据目录
-    if ns.startswith("/") or ".." in ns.split("/"):
-        ns = "default"
-    return ns
+    # 正则已将 / 及其它路径字符统一替换为 _，净化结果不可能含 / 或 ..，
+    # 天然阻断绝对路径与跳出数据目录
+    return _NS_RE.sub("_", namespace).strip("._") or "default"
 
 
 class ToolTaskConfig(BaseModel):
@@ -152,15 +148,20 @@ class ToolTaskPlugin(ToolPlugin):
         - 默认（无配置覆盖）：<context_root>/task/<ns>.json，
           context_root 本身即 per-user 隔离单元，无需再拼 context_id；
         - 配置覆盖 data_dir 时：<data_dir>/<context_id>/<ns>.json；
-        - 无 per-request 上下文回退时：<data_dir>/task/<context_id>/<ns>.json。
+        - 无 per-request 上下文回退时：<data_dir>/task/<context_id>/<ns>.json
+          （<ctx>/ 由 _resolve_base_dir 拼接，此处不可重复拼接）。
 
         namespace 由 LLM 传入，净化后拼进文件名防路径穿越。
         """
         ns = _sanitize_ns(namespace)
-        if self._data_dir is not None or self.context_root is None:
-            ctx = _sanitize_ns(context_id)
-            return self._resolve_base_dir(context_id) / ctx / f"{ns}.json"
-        return self._resolve_base_dir(context_id) / f"{ns}.json"
+        base = self._resolve_base_dir(context_id)
+        if self._data_dir is not None:
+            # 配置覆盖目录本身不做用户隔离，在此显式拼 <ctx>/ 保持 per-user 独立
+            return base / _sanitize_ns(context_id) / f"{ns}.json"
+        # context_root 场景：base 即 <context_root>/task/，本身按用户隔离；
+        # 回退场景（kernel.data_dir）由 _resolve_base_dir 已拼 <ctx>/，
+        # 两种情况均无需再拼 context_id
+        return base / f"{ns}.json"
 
     @staticmethod
     def _load(path: Path) -> dict:
@@ -414,7 +415,7 @@ class ToolTaskPlugin(ToolPlugin):
         if description:
             task["description"] = description
 
-        tasks[task_id] = task
+        # task 即 tasks[task_id] 的同一引用，就地修改后无需回写
         self._save(path, tasks)
         return json.dumps({"ok": True, "task": self._public(task)}, ensure_ascii=False)
 
