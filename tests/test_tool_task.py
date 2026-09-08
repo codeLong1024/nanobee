@@ -13,11 +13,23 @@ from __future__ import annotations
 
 import asyncio
 import json
+import tempfile
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+
+import pytest as _pytest
+
+
+@_pytest.fixture(autouse=True)
+def _isolated_ctx_roots():
+    """每个用例独立的 context_root 注册表。"""
+    _clear_ctx_roots()
+    yield
+    _clear_ctx_roots()
+
 
 from nanobee.builtin.tool_task import ToolTaskPlugin
 from nanobee.builtin.tool_task.plugin import _sanitize_ns
@@ -33,35 +45,70 @@ def _run_async(coro):
     return asyncio.run(coro)
 
 
-def _create_plugin(tmp_path: Path) -> ToolTaskPlugin:
+def _clear_ctx_roots() -> None:
+    """清空共享的 context_root 注册表（每个用例独立）。"""
+    if hasattr(_bind_context, "_roots"):
+        _bind_context._roots = {}
+
+
+def _create_plugin(tmp_path: Path, *, data_dir: str = "") -> ToolTaskPlugin:
     """创建测试插件实例。
 
     Args:
-        tmp_path: 临时目录。
+        tmp_path: 临时目录，同时充当 data_dir（回退）与 context_root。
+        data_dir: 可选的配置覆盖值（模拟 plugins.tool_task.data_dir）。
 
     Returns:
         已初始化的 ToolTaskPlugin 实例。
     """
     plugin = ToolTaskPlugin(PluginMetadata(name="tool_task", plugin_type="tool"))
+    plugins_section = {"tool_task": {"data_dir": data_dir}} if data_dir else {}
     kernel = MagicMock()
     kernel.data_dir = str(tmp_path)
-    kernel.config.plugins = {}
+    kernel.config.plugins = plugins_section
     plugin.initialize(kernel)
     return plugin
 
 
+_CTX_ROOT_STACK: list[tuple[object, object]] = []
+
+
 def _bind_context(user_id: str = "test-user") -> object:
-    """绑定 RequestContext 到当前异步任务（模拟 per-turn 上下文注入）。
+    """绑定 RequestContext + context_root 到当前异步任务（模拟 per-turn 注入）。
 
     Returns:
         Token 用于后续 reset。
     """
-    return bind_request_context(RequestContext(
+    from nanobee.kernel.context_sandbox_var import (
+        bind_context_root,
+        current_context_root,
+        reset_context_root,
+    )
+
+    # 全局注册表：user_id -> context_root（tests 之间共享，便于查找）
+    roots = getattr(_bind_context, "_roots", None)
+    if roots is None:
+        roots = {}
+        _bind_context._roots = roots
+    root = roots.setdefault(user_id, Path(tempfile.mkdtemp(prefix=f"task-ctx-{user_id}-")))
+    t1 = bind_request_context(RequestContext(
         channel="test",
         chat_id=user_id,
         context_id=user_id,
         session_id="sess-1",
     ))
+    t2 = bind_context_root(root)
+    _CTX_ROOT_STACK.append((t1, t2))
+    return (t1, t2)
+
+
+def _reset_context(token) -> None:
+    from nanobee.kernel.context_sandbox_var import reset_request_context
+
+    t1, t2 = _CTX_ROOT_STACK.pop()
+    from nanobee.kernel.context_sandbox_var import reset_context_root
+    reset_context_root(t2)
+    reset_request_context(t1)
 
 
 def _call_tool(plugin: ToolTaskPlugin, tool_name: str, user_id: str = "test-user", **kwargs: Any) -> dict:
@@ -70,7 +117,7 @@ def _call_tool(plugin: ToolTaskPlugin, tool_name: str, user_id: str = "test-user
     try:
         result = _run_async(plugin.execute_tool(tool_name, **kwargs))
     finally:
-        reset_request_context(token)
+        _reset_context(token)
     return json.loads(result)
 
 
@@ -95,13 +142,24 @@ class TestTaskCreate:
         assert task["id"].startswith("T")
 
     def test_create_persists_to_file(self, tmp_path: Path) -> None:
-        """创建后数据持久化到 <data_dir>/<context_id>/<ns>.json。"""
+        """创建后数据持久化到 <context_root>/task/<ns>.json（沙箱边界内）。"""
         plugin = _create_plugin(tmp_path)
         created = _call_tool(plugin, "task_create", subject="写文档")
-        store = tmp_path / "task" / "test-user" / "default.json"
+        ctx_root = _bind_context._roots["test-user"]
+        store = ctx_root / "task" / "default.json"
         assert store.is_file()
+        # 不得逃逸到 context_root 之外（尤其不能写 kernel.data_dir）
+        assert ctx_root.resolve() in store.resolve().parents
         data = json.loads(store.read_text(encoding="utf-8"))
         assert created["task"]["id"] in data
+
+    def test_no_write_to_kernel_data_dir(self, tmp_path: Path) -> None:
+        """默认配置下不得在 kernel.data_dir 落盘（沙箱越界回归测试）。"""
+        plugin = _create_plugin(tmp_path)
+        _call_tool(plugin, "task_create", subject="越界检查")
+        kernel_side = tmp_path / "task"
+        # tmp_path 同时充当 kernel.data_dir；默认语义下它不应成为写入点
+        assert not (tmp_path / "task" / "test-user").exists()
 
     def test_create_empty_subject_rejected(self, tmp_path: Path) -> None:
         """空 subject 被拒绝。"""
@@ -254,6 +312,28 @@ class TestIsolationAndSecurity:
         assert _sanitize_ns("") == "default"
         assert _sanitize_ns("a b/c") == "a_b_c"
 
+    def test_config_data_dir_stays_within(self, tmp_path: Path) -> None:
+        """配置覆盖 data_dir 时仍写入覆盖目录（受控场景），且路径已 resolve。"""
+        override = tmp_path / "task-override"
+        plugin = _create_plugin(tmp_path, data_dir=str(override))
+        created = _call_tool(plugin, "task_create", subject="覆盖目录任务")
+        store = override / "test-user" / "default.json"
+        assert store.is_file()
+        data = json.loads(store.read_text(encoding="utf-8"))
+        assert created["task"]["id"] in data
+
+    def test_config_data_dir_resolve_blocks_escape(self, tmp_path: Path) -> None:
+        """配置覆盖路径含 .. 时被 resolve 归一，不产生目录逃逸路径。"""
+        override = (tmp_path / "sub" / ".." / "task-override")
+        plugin = _create_plugin(tmp_path, data_dir=str(override))
+        _call_tool(plugin, "task_create", subject="resolve 检查")
+        expected = (tmp_path / "task-override").resolve()
+        assert (expected / "test-user" / "default.json").is_file()
+        # ".." 未被字面保留
+        assert not (tmp_path / "sub").exists() or not any(
+            ".." in p.parts for p in (override.parent, expected.parents)
+        )
+
     def test_unknown_tool_raises(self, tmp_path: Path) -> None:
         """未知工具名抛 ValueError。"""
         plugin = _create_plugin(tmp_path)
@@ -272,12 +352,13 @@ class TestIsolationAndSecurity:
                     for i in range(10)
                 ])
             finally:
-                reset_request_context(token)
+                _reset_context(token)
             return [json.loads(r) for r in results]
 
         results = asyncio.run(_burst())
         assert all(r["ok"] for r in results)
         assert len({r["task"]["id"] for r in results}) == 10
 
-        stored = json.loads((tmp_path / "task" / "user-c" / "default.json").read_text(encoding="utf-8"))
+        ctx_root = _bind_context._roots["user-c"]
+        stored = json.loads((ctx_root / "task" / "default.json").read_text(encoding="utf-8"))
         assert len(stored) == 10

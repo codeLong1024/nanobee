@@ -24,8 +24,10 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from nanobee.exceptions import SandboxViolationError
 from nanobee.kernel.context_sandbox_var import current_request_context
 from nanobee.plugins import ToolPlugin
+from nanobee.security.workspace_policy import require_path_within
 from nanobee.utils.logger import logger
 
 # 状态机合法状态
@@ -55,8 +57,10 @@ class ToolTaskConfig(BaseModel):
     """tool_task 插件声明式配置。
 
     Attributes:
-        data_dir: 任务数据目录。相对路径基于 kernel.data_dir 解析；
-            空字符串表示使用 <kernel.data_dir>/task/。
+        data_dir: 任务数据目录。仅用于显式覆盖存储位置；
+            空字符串（默认）表示存储在用户上下文内：
+            <context_root>/task/<namespace>.json，
+            与沙箱边界（context_root）保持一致。
     """
 
     data_dir: str = ""
@@ -82,31 +86,81 @@ class ToolTaskPlugin(ToolPlugin):
     # ------------------------------------------------------------------
 
     def initialize(self, kernel: Any) -> None:
-        """初始化插件：解析数据目录。"""
+        """初始化插件：解析配置的数据目录（可选覆盖）。
+
+        默认不在此处定死存储根——运行时优先使用 per-request 的
+        context_root（沙箱边界内），见 _resolve_base_dir()。
+        仅当用户显式配置 data_dir 时，才在启动期解析该覆盖值。
+        """
         super().initialize(kernel)
         cfg = self.config.data_dir if self.config else ""
         if cfg:
             base = Path(cfg).expanduser()
             if not base.is_absolute() and self.kernel is not None:
                 base = Path(self.kernel.data_dir).expanduser() / base
+            self._data_dir = base
+            logger.info("Task 插件初始化完成，数据目录(配置覆盖): {}", base)
         else:
-            base = Path(self.kernel.data_dir).expanduser() / "task" if self.kernel else Path.cwd() / "task"
-        self._data_dir = base
-        logger.info("Task 插件初始化完成，数据目录: {}", base)
+            self._data_dir = None
+            logger.info("Task 插件初始化完成，数据目录: <context_root>/task/")
 
     # ------------------------------------------------------------------
     # 存储层
     # ------------------------------------------------------------------
 
-    def _store_path(self, context_id: str, namespace: str) -> Path:
-        """解析任务存储路径：<data_dir>/<context_id>/<ns>.json。
+    def _resolve_base_dir(self, context_id: str) -> Path:
+        """解析存储根目录，并强制落在沙箱边界内。
 
-        context_id 由框架注入（用户上下文隔离），namespace 由 LLM 传入
-        （用户/会话/聊天级隔离），两级净化后拼进文件名。
+        优先级：
+        1. 配置的 data_dir（管理员显式覆盖，视为可信）；
+        2. per-request 的 context_root（沙箱可写边界），
+           即 <context_root>/task/，与 tool_cron / audit_logger 的
+           存储约定一致，任务数据天然受沙箱管控且随用户目录清理。
+
+        注意：不能默认写 kernel.data_dir —— 那在沙箱边界之外，
+        构成沙箱越界写入。仅当 context_root 未注入（boot/测试）
+        时才回退 kernel.data_dir，并保留边界校验。
+
+        Args:
+            context_id: 用户上下文 ID（回退场景下用于目录隔离）。
+
+        Returns:
+            边界内的绝对路径。
+
+        Raises:
+            SandboxViolationError: 解析结果落在允许边界之外。
+        """
+        if self._data_dir is not None:
+            # 配置覆盖：防 symlink / .. 解析后逃逸出覆盖目录本身
+            return Path(self._data_dir).expanduser().resolve(strict=False)
+        context_root = self.context_root
+        if context_root is not None:
+            base = Path(context_root).expanduser().resolve(strict=False) / "task"
+            # 硬边界校验：resolve 后必须仍落在 context_root 内
+            return require_path_within(base, context_root, message="task 存储目录越界拦截")
+        # 回退：无 per-request 上下文（测试/boot），与 tool_cron 的回退一致
+        data_dir = (
+            Path(self.kernel.data_dir).expanduser()
+            if self.kernel and hasattr(self.kernel, "data_dir")
+            else Path.cwd()
+        )
+        return data_dir.resolve(strict=False) / "task" / _sanitize_ns(context_id)
+
+    def _store_path(self, context_id: str, namespace: str) -> Path:
+        """解析任务存储路径。
+
+        - 默认（无配置覆盖）：<context_root>/task/<ns>.json，
+          context_root 本身即 per-user 隔离单元，无需再拼 context_id；
+        - 配置覆盖 data_dir 时：<data_dir>/<context_id>/<ns>.json；
+        - 无 per-request 上下文回退时：<data_dir>/task/<context_id>/<ns>.json。
+
+        namespace 由 LLM 传入，净化后拼进文件名防路径穿越。
         """
         ns = _sanitize_ns(namespace)
-        ctx = _sanitize_ns(context_id)
-        return (self._data_dir or Path.cwd() / "task") / ctx / f"{ns}.json"
+        if self._data_dir is not None or self.context_root is None:
+            ctx = _sanitize_ns(context_id)
+            return self._resolve_base_dir(context_id) / ctx / f"{ns}.json"
+        return self._resolve_base_dir(context_id) / f"{ns}.json"
 
     @staticmethod
     def _load(path: Path) -> dict:
