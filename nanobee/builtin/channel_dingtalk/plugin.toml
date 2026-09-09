@@ -12,6 +12,9 @@ type = "channel"
 
 # ==== 流式输出 ====
 # streaming = true
+# 卡片流式推送最小间隔（秒）。间隔内增量仅累积，由流结束终态全量推送兜底。
+# 0 = 逐 delta 推送（旧行为）。
+# stream_push_min_interval = 1.0
 
 # ==== 代理 ====
 # proxy_url = ""

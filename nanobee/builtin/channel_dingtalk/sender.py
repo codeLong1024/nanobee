@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import mimetypes
+import time
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -86,6 +87,7 @@ class DingTalkSender:
 
         # Streaming state keyed by card_id (每个 card_id 天然唯一，无并发碰撞)
         self._streaming_buffers: dict[str, str] = {}  # card_id → accumulated content
+        self._last_push_ts: dict[str, float] = {}  # card_id → 上次推送时间戳（节流用）
         self._overflow_cards: set[str] = set()  # card_id set：已溢出，停止累加
         self._streamed_cards: OrderedDict[str, bool] = OrderedDict()  # LRU, bounded
         self._card_has_streamed: set[str] = set()  # card_id set
@@ -455,10 +457,13 @@ class DingTalkSender:
 
             self._streaming_buffers[card_id] = prev + delta
             accumulated = self._streaming_buffers[card_id]
-            if self._card_manager:
+            # 时间节流：间隔内的增量只累积，由 _stream_end 终态全量推送兜底。
+            # buffer 是唯一事实源，PUT 纯展示层，降低推送频率不影响内容正确性。
+            if self._card_manager and self._should_push(card_id, has_prev=bool(prev)):
                 try:
                     await self._card_manager.stream_content(card_id, accumulated)
                     self._card_has_streamed.add(card_id)
+                    self._last_push_ts[card_id] = time.monotonic()
                 except Exception:
                     self.logger.debug("[STREAM] stream_content error", exc_info=True)
             return
@@ -468,28 +473,50 @@ class DingTalkSender:
             if metadata.get("_resuming"):
                 await self._trigger_emotion(msg_id, "tool")
                 self._streaming_buffers.pop(card_id, None)
+                self._last_push_ts.pop(card_id, None)  # 下个流式段首帧立即推
                 self._overflow_cards.discard(card_id)  # 清除溢出标记，下个流式段重新开始
                 return
             await self._trigger_emotion(msg_id, "done")
+            self._last_push_ts.pop(card_id, None)
             accumulated = self._streaming_buffers.pop(card_id, "") or (msg.content or "")
             # 溢出的卡片附加截断提示
             if card_id in self._overflow_cards:
                 self._overflow_cards.discard(card_id)
                 accumulated += "\n\n---\n⚠️ 回复内容过长，已截断"
             if accumulated.strip() and self._card_manager:
+                # 第一步：内容渲染。失败 = 卡片无内容，markdown 兜底是唯一正确动作。
                 try:
                     await self._card_manager.stream_content(card_id, accumulated)
-                    await self._card_manager.finish_streaming(card_id, accumulated)
                 except Exception:
-                    self.logger.warning("[STREAM] finish failed, falling back to markdown", exc_info=True)
-                    if accumulated.strip():
-                        try:
-                            await self._send_markdown_text(token, chat_id, accumulated.strip(),
-                                                           sender_staff_id=sender_staff_id)
-                        except Exception:
-                            self.logger.exception("[STREAM] fallback markdown also failed")
+                    self.logger.warning(
+                        "[STREAM] final stream_content failed, falling back to markdown",
+                        exc_info=True,
+                    )
+                    try:
+                        await self._send_markdown_text(token, chat_id, accumulated.strip(),
+                                                       sender_staff_id=sender_staff_id)
+                    except Exception:
+                        self.logger.exception("[STREAM] fallback markdown also failed")
                     self._cleanup_chat_context(msg_id)
                     return
+                # 第二步：终态置位。失败 ≠ 内容未送达（如钉钉 500 system.busy），
+                # 绝不能回落 markdown（用户会收到两份）；降级为仅置状态一次，
+                # 再失败则保留 INPUTING 态并告警——内容已可见，不重复投递。
+                try:
+                    await self._card_manager.finish_streaming(card_id, accumulated)
+                except Exception:
+                    self.logger.warning(
+                        "[STREAM] finish_streaming failed (content already rendered), "
+                        "retrying status-only",
+                        exc_info=True,
+                    )
+                    try:
+                        await self._card_manager.finish_card_status(card_id)
+                    except Exception:
+                        self.logger.warning(
+                            "[STREAM] finish_card_status also failed, card stays "
+                            "INPUTING (content visible)",
+                        )
             else:
                 if self._card_manager:
                     try:
@@ -600,6 +627,21 @@ class DingTalkSender:
     # Streaming card tracking (bounded LRU via OrderedDict)
     # ------------------------------------------------------------------
 
+    def _should_push(self, card_id: str, *, has_prev: bool) -> bool:
+        """判断是否应立即推送卡片流式内容（时间节流）。
+
+        首帧（buffer 为空）始终立即推送，保证打字机效果及时出现；
+        其余增量按 ``stream_push_min_interval`` 节流，间隔内仅累积，
+        由 _stream_end 终态全量推送兜底。间隔 <=0 时退化为逐增量推送（旧行为）。
+        """
+        min_interval = getattr(self.config, "stream_push_min_interval", 1.0) or 0.0
+        if min_interval <= 0:
+            return True
+        if not has_prev:
+            return True
+        last = self._last_push_ts.get(card_id, 0.0)
+        return (time.monotonic() - last) >= min_interval
+
     def is_card_handled_by_streaming(self, card_id: str) -> bool:
         """检查给定 card 是否已通过流式路径处理完成。
 
@@ -625,7 +667,8 @@ class DingTalkSender:
         Returns:
             已累积的流式内容；无 buffer 或已清空时返回空串。
         """
-        return self._streaming_buffers.pop(card_id, "") or ""
+        self._last_push_ts.pop(card_id, None)
+        return self._streaming_buffers.pop(card_id, "")
 
     async def finalize_card_with_notification(
         self, card_id: str, msg_id: str, notification: str,
@@ -643,49 +686,42 @@ class DingTalkSender:
         """
         if not self._card_manager:
             return
+        self._last_push_ts.pop(card_id, None)
         remaining = self._streaming_buffers.pop(card_id, None)
         if remaining is not None and remaining.strip():
-            combined = remaining.strip() + "\n\n---\n⚠️ " + notification.strip()
-            try:
-                await self._card_manager.stream_content(card_id, combined)
-                await self._card_manager.finish_streaming(card_id, combined)
-            except Exception:
-                self.logger.warning(
-                    "[CARD] finalize_card_with_notification failed, fallback to status only",
-                    exc_info=True,
-                )
-                try:
-                    await self._card_manager.finish_card_status(card_id)
-                except Exception:
-                    self.logger.warning("[CARD] finish_card_status also failed")
-        else:
+            # 有碎片内容：追加分割线 + 通知，整段重推
+            payload = remaining.strip() + "\n\n---\n⚠️ " + notification.strip()
+        elif notification.strip():
             # 缓存区已空（on_stream_end(resuming=True) 清空后未产生新流式）。
             # 必须走 stream_content → finish_streaming 路径：
             # 仅调 finish_streaming 会通过 PUT /card/instances 设置 msgContent，
             # 但卡片内容此前是由 POST /card/streaming 推送的，丁丁后端将二者分开存储，
             # instance msgContent 不会覆盖 streaming content → 卡片仍显示旧碎片内容。
-            if notification.strip():
-                try:
-                    await self._card_manager.stream_content(card_id, notification.strip())
-                    await self._card_manager.finish_streaming(card_id, notification.strip())
-                except Exception:
-                    self.logger.warning(
-                        "[CARD] finalize_card_notification stream_content+finish failed, "
-                        "fallback to finish_card_status",
-                        exc_info=True,
-                    )
-                    try:
-                        await self._card_manager.finish_card_status(card_id)
-                    except Exception:
-                        self.logger.warning("[CARD] finish_card_status also failed")
-            else:
-                try:
-                    await self._card_manager.finish_card_status(card_id)
-                except Exception:
-                    self.logger.warning(
-                        "[CARD] finish_card_status failed in finalize_card_with_notification",
-                        exc_info=True,
-                    )
+            payload = notification.strip()
+        else:
+            # 无内容也无通知：仅置状态
+            try:
+                await self._card_manager.finish_card_status(card_id)
+            except Exception:
+                self.logger.warning(
+                    "[CARD] finish_card_status failed in finalize_card_with_notification",
+                    exc_info=True,
+                )
+            await self._trigger_emotion(msg_id, "done")
+            self._mark_card_streamed(card_id)
+            return
+        try:
+            await self._card_manager.stream_content(card_id, payload)
+            await self._card_manager.finish_streaming(card_id, payload)
+        except Exception:
+            self.logger.warning(
+                "[CARD] finalize_card_with_notification failed, fallback to status only",
+                exc_info=True,
+            )
+            try:
+                await self._card_manager.finish_card_status(card_id)
+            except Exception:
+                self.logger.warning("[CARD] finish_card_status also failed")
         await self._trigger_emotion(msg_id, "done")
         self._mark_card_streamed(card_id)
 

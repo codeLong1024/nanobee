@@ -224,6 +224,7 @@ def sender(sender_config, mock_card_manager) -> MagicMock:
     s._http = http
     s._card_manager = mock_card_manager
     s._streaming_buffers = {}
+    s._last_push_ts = {}
     s._overflow_cards = set()
     s._streamed_cards: OrderedDict[str, bool] = OrderedDict()
     s._card_has_streamed = set()

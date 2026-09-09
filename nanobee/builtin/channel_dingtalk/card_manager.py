@@ -283,7 +283,7 @@ class CardManager:
         卡片"一闪而过"。因此要让错误文案可见，卡片必须用 ``flowStatus=FINISHED``
         （与正常完成一致），仅将 msgContent 替换为错误文案。
 
-        两步式：
+        两步式，失败语义严格区分：
         1. stream_content 推错误文案（isFinalize=True，停止打字机）
         2. finish_streaming 置 flowStatus=FINISHED + 错误文案
 
@@ -292,8 +292,10 @@ class CardManager:
             error_message: 要展示的错误文案（调用方已拼好半截进度 + 失败提示）。
 
         Returns:
-            两步是否全部成功。False 表示卡片未能终态化（调用方应回落
-            markdown 文本兜底，避免卡片永久停在 INPUTING 且用户零感知）。
+            False 仅表示"渲染步失败"（错误文案未上屏），调用方应回落
+            markdown 文本兜底。渲染成功但终态置位失败时返回 True——
+            文案已可见，调用方不得重复投递 markdown（否则用户收到两份），
+            内部会降级重试一次仅置状态。
         """
         fail_content = f"处理失败: {error_message}"
 
@@ -301,14 +303,30 @@ class CardManager:
             "'[CARD] fail_card {}: msg={} final_content={!r}'",
             card_instance_id, error_message, fail_content,
         )
+        # 第一步：推错误文案到渲染管线（isFinalize=True 停止打字机）
         try:
-            # 第一步：推错误文案到渲染管线（isFinalize=True 停止打字机）
             await self.stream_content(card_instance_id, fail_content, is_final=True)
-            # 第二步：置 flowStatus=FINISHED（复用正常完成路径，仅内容为错误文案）
+        except Exception:
+            logger.exception("'[CARD] fail_card stream step failed {}'", card_instance_id)
+            return False
+        # 第二步：置 flowStatus=FINISHED（复用正常完成路径，仅内容为错误文案）。
+        # 失败 = 文案已可见但状态未终态化，降级重试一次仅置状态，不返回 False。
+        try:
             await self.finish_streaming(card_instance_id, fail_content)
         except Exception:
-            logger.exception("'[CARD] fail_card error {}'", card_instance_id)
-            return False
+            logger.warning(
+                "'[CARD] fail_card finish failed (text already rendered) {}', "
+                "retrying status-only",
+                card_instance_id,
+            )
+            try:
+                await self.finish_card_status(card_instance_id)
+            except Exception:
+                logger.warning(
+                    "'[CARD] fail_card status-only fallback also failed, card stays "
+                    "INPUTING but error text visible {}'",
+                    card_instance_id,
+                )
         return True
 
     # ------------------------------------------------------------------
@@ -318,21 +336,41 @@ class CardManager:
     async def finalize_card(self, card_instance_id: str, final_content: str) -> bool:
         """Non-streaming finalize — 通过 /card/streaming 推送内容并关闭卡片。
 
-        分两步：
+        分两步，失败语义严格区分：
         1. stream_content() → PUT /card/streaming，将内容推入卡片渲染管线
         2. finish_streaming() → PUT /card/instances，设置 FINISHED 状态
 
         不能跳过 stream_content 直接调 finish_streaming：finish_streaming 用的
         是 /card/instances 端点，虽然携带 msgContent，但钉钉卡片 UI 只渲染通过
         /card/streaming 推送的内容。
+
+        Returns:
+            False 仅表示"渲染步失败"（内容未上屏），调用方应回落 markdown。
+            渲染成功但终态置位失败时返回 True（内容已可见，调用方不得
+            重复投递），内部降级重试一次仅置状态。
         """
         try:
             await self.stream_content(card_instance_id, final_content)
-            await self.finish_streaming(card_instance_id, final_content)
-            return True
         except Exception:
-            logger.exception("'[CARD] finalize_card failed {}'", card_instance_id)
+            logger.exception("'[CARD] finalize_card stream step failed {}'", card_instance_id)
             return False
+        try:
+            await self.finish_streaming(card_instance_id, final_content)
+        except Exception:
+            logger.warning(
+                "'[CARD] finalize_card finish failed (content already rendered) {}', "
+                "retrying status-only",
+                card_instance_id,
+            )
+            try:
+                await self.finish_card_status(card_instance_id)
+            except Exception:
+                logger.warning(
+                    "'[CARD] finalize_card status-only fallback also failed, card "
+                    "stays INPUTING but content visible {}'",
+                    card_instance_id,
+                )
+        return True
 
     async def finish_card_status(self, card_instance_id: str) -> None:
         """仅将卡片状态设为 FINISHED，不修改已有内容。
