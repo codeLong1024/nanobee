@@ -1,0 +1,19 @@
+# gitleaks 配置 —— 继承官方默认规则，放行文档中的占位符密钥
+# 参考: https://github.com/gitleaks/gitleaks#configuration
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "文档与示例中的占位符（非真实密钥）"
+regexes = [
+  # 文档占位符密钥
+  '''sk-xxx''',
+  '''sk-REDACTED''',
+  '''sk-your[-_]api[-_]key''',
+  '''sk-[a-z]+xxxx''',
+  # 通用占位符
+  '''YOUR_API_KEY''',
+  '''<your[-_]api[-_]key>''',
+  '''\$\{[A-Z_]+\}''',
+]

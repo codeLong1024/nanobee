@@ -1,0 +1,12 @@
+# pre-commit 配置 —— 密钥泄露门禁（工作区规则第 16 条）
+# 启用: source .venv/bin/activate && pre-commit install
+# 全量扫描: gitleaks git --log-opts="--all" --redact -v
+repos:
+  - repo: local
+    hooks:
+      - id: gitleaks
+        name: gitleaks (secret scan on staged changes)
+        entry: .venv/bin/gitleaks git --pre-commit --staged --redact --no-banner -v
+        language: system
+        pass_filenames: false
+        always_run: true
