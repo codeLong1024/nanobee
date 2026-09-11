@@ -462,3 +462,53 @@ class TestReviewFixes:
         assert result["ok"] is False
         assert "可用 namespace" in result["error"]
         assert "chat-a" in result["error"]
+
+
+class TestToolDescriptions:
+    """工具 description 的触发语义契约（评审修正意见2 / A 方案）。
+
+    触发语义必须贴在工具调用决策点旁（description），而非 core.md。
+    断言只覆盖本次确立的语义，不锁死具体措辞：允许改写，不允许丢失。
+    """
+
+    @staticmethod
+    def _descriptions() -> dict[str, str]:
+        plugin = ToolTaskPlugin.__new__(ToolTaskPlugin)
+        return {d["function"]["name"]: d["function"]["description"] for d in plugin.get_tools()}
+
+    def test_create_has_trigger_and_anti_trigger(self) -> None:
+        """task_create 需同时写明"何时调用"与"何时不要调用"。"""
+        desc = self._descriptions()["task_create"]
+        assert "应在以下情况调用" in desc
+        assert "不要调用" in desc
+        assert "多个" in desc  # 多步骤/多文件/多项要求的归纳
+        assert "memory/" in desc  # 与记忆的职责边界
+
+    def test_create_has_no_hardcoded_threshold(self) -> None:
+        """不写死步骤数阈值，交由 LLM 自主判断（对齐 tool_history 的 n 值做法）。"""
+        desc = self._descriptions()["task_create"]
+        assert "自主判断" in desc
+        assert "≥3" not in desc and ">=3" not in desc and "3 个步骤" not in desc
+
+    def test_update_has_trigger(self) -> None:
+        """task_update 需写明状态推进的调用时机。"""
+        desc = self._descriptions()["task_update"]
+        assert "应在以下情况调用" in desc
+        assert "in_progress" in desc
+        assert "completed" in desc
+
+    def test_list_get_have_trigger(self) -> None:
+        """task_list / task_get 同样需写明调用时机与彼此分工。"""
+        descs = self._descriptions()
+        assert "应在以下情况调用" in descs["task_list"]
+        assert "汇报进度" in descs["task_list"]
+        assert "应在以下情况调用" in descs["task_get"]
+        assert "task_list" in descs["task_get"]
+
+    def test_descriptions_not_in_core_template(self) -> None:
+        """触发语义不落在 core_default.md（core.md 是用户管控文件，远离决策点）。"""
+        core = (
+            Path(__file__).resolve().parents[1] / "nanobee" / "templates" / "core_default.md"
+        ).read_text(encoding="utf-8")
+        for name in ("task_create", "task_update", "task_list", "task_get"):
+            assert name not in core

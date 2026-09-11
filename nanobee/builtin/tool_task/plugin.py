@@ -259,15 +259,29 @@ class ToolTaskPlugin(ToolPlugin):
     # ------------------------------------------------------------------
 
     def get_tools(self) -> list[dict[str, Any]]:
-        """返回 task 工具的 OpenAI function schema 列表。"""
+        """返回 task 工具的 OpenAI function schema 列表。
+
+        description 既写"是什么"，也写"何时调用/何时不要调用"——
+        触发语义必须贴在 LLM 的工具调用决策点旁（本方法每轮 LLM 调用都会
+        被现取现发），而不是写进 core.md 这类长 system prompt 或用户管控文件。
+        阈值（几个步骤算复杂）刻意不做硬编码，交由 LLM 结合情境自主判断。
+        """
         return [
             {
                 "type": "function",
                 "function": {
                     "name": "task_create",
                     "description": (
-                        "创建一条新任务（状态 pending）。"
-                        "用于将复杂请求拆解为可跟踪的步骤清单。"
+                        "创建一条新任务（状态 pending），把请求拆成可跟踪的步骤清单。"
+                        "应在以下情况调用：① 请求包含多个相互独立的步骤，需要分几轮才做完；"
+                        "② 需要改动多个文件或跨多处配置；"
+                        "③ 用户一次提出多项要求；"
+                        "④ 多轮对话中需要跨轮记住还剩什么没做。"
+                        "步骤数由你自主判断，不必凑数。"
+                        "以下情况不要调用：单步操作、一次工具调用即可完成；"
+                        "纯问答、闲聊、解释说明；只是复述或总结已有信息。"
+                        "注意：若要记住的是事实或结论而非待办步骤，"
+                        "应写入 memory/，不要建任务。"
                     ),
                     "parameters": {
                         "type": "object",
@@ -305,6 +319,10 @@ class ToolTaskPlugin(ToolPlugin):
                         "更新任务字段和/或状态。"
                         "常规流转：pending -> in_progress -> completed。"
                         "状态只允许合法迁移；空字段表示不改动。"
+                        "应在以下情况调用：① 开始动手做某项任务前，先置为 in_progress；"
+                        "② 该项任务做完后，置为 completed，不要攒着批量改；"
+                        "③ 任务被放弃或需求变更时，置为 deleted，或改标题/描述。"
+                        "同一任务仅在其状态真正变化时更新，避免无意义的重复调用。"
                     ),
                     "parameters": {
                         "type": "object",
@@ -343,7 +361,12 @@ class ToolTaskPlugin(ToolPlugin):
                 "type": "function",
                 "function": {
                     "name": "task_list",
-                    "description": "列出任务清单，可按状态过滤。",
+                    "description": (
+                        "列出任务清单，可按状态过滤。"
+                        "应在以下情况调用：① 汇报进度、总结产出前，先取实时状态，不要凭记忆口述；"
+                        "② 准备创建新任务前，先看是否已有同类任务，避免重复建单；"
+                        "③ 需要确认还剩哪些未完成时。"
+                    ),
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -365,7 +388,11 @@ class ToolTaskPlugin(ToolPlugin):
                 "type": "function",
                 "function": {
                     "name": "task_get",
-                    "description": "查看单条任务详情。",
+                    "description": (
+                        "查看单条任务详情。"
+                        "应在以下情况调用：需要某项任务的完整描述，或确认其当前状态时。"
+                        "只想知道有哪些任务请用 task_list，不必逐条 task_get。"
+                    ),
                     "parameters": {
                         "type": "object",
                         "properties": {
