@@ -20,21 +20,24 @@ from unittest.mock import MagicMock
 
 import pytest
 
-import pytest as _pytest
+from nanobee.builtin.tool_task import ToolTaskPlugin
+from nanobee.builtin.tool_task.plugin import _sanitize_ns
+from nanobee.kernel.context_sandbox_var import (
+    RequestContext,
+    bind_context_root,
+    bind_request_context,
+    reset_context_root,
+    reset_request_context,
+)
+from nanobee.plugins.base import PluginMetadata
 
 
-@_pytest.fixture(autouse=True)
+@pytest.fixture(autouse=True)
 def _isolated_ctx_roots():
     """每个用例独立的 context_root 注册表。"""
     _clear_ctx_roots()
     yield
     _clear_ctx_roots()
-
-
-from nanobee.builtin.tool_task import ToolTaskPlugin
-from nanobee.builtin.tool_task.plugin import _sanitize_ns
-from nanobee.kernel.context_sandbox_var import RequestContext, bind_request_context, reset_request_context
-from nanobee.plugins.base import PluginMetadata
 
 
 # ---- 辅助工具 ----
@@ -79,12 +82,6 @@ def _bind_context(user_id: str = "test-user") -> object:
     Returns:
         Token 用于后续 reset。
     """
-    from nanobee.kernel.context_sandbox_var import (
-        bind_context_root,
-        current_context_root,
-        reset_context_root,
-    )
-
     # 全局注册表：user_id -> context_root（tests 之间共享，便于查找）
     roots = getattr(_bind_context, "_roots", None)
     if roots is None:
@@ -103,10 +100,8 @@ def _bind_context(user_id: str = "test-user") -> object:
 
 
 def _reset_context(token) -> None:
-    from nanobee.kernel.context_sandbox_var import reset_request_context
-
+    """按 LIFO 恢复 _bind_context 绑定的两个 ContextVar。"""
     t1, t2 = _CTX_ROOT_STACK.pop()
-    from nanobee.kernel.context_sandbox_var import reset_context_root
     reset_context_root(t2)
     reset_request_context(t1)
 
@@ -157,7 +152,6 @@ class TestTaskCreate:
         """默认配置下不得在 kernel.data_dir 落盘（沙箱越界回归测试）。"""
         plugin = _create_plugin(tmp_path)
         _call_tool(plugin, "task_create", subject="越界检查")
-        kernel_side = tmp_path / "task"
         # tmp_path 同时充当 kernel.data_dir；默认语义下它不应成为写入点
         assert not (tmp_path / "task" / "test-user").exists()
 
@@ -362,3 +356,109 @@ class TestIsolationAndSecurity:
         ctx_root = _bind_context._roots["user-c"]
         stored = json.loads((ctx_root / "task" / "default.json").read_text(encoding="utf-8"))
         assert len(stored) == 10
+
+
+# =============================================================================
+# 评审修复回归测试
+# =============================================================================
+
+
+class TestReviewFixes:
+    """针对评审意见的回归测试。"""
+
+    def test_list_invalid_status_rejected(self, tmp_path: Path) -> None:
+        """task_list 非法 status 显式报错，不再静默返回空清单（评审#3）。"""
+        plugin = _create_plugin(tmp_path)
+        _call_tool(plugin, "task_create", subject="真实任务")
+
+        result = _call_tool(plugin, "task_list", status="in-progress")  # 常见笔误
+        assert result["ok"] is False
+        assert "非法状态" in result["error"]
+        # 与 task_update 的错误语义对齐
+        assert "合法集合" in result["error"]
+
+    def test_list_empty_status_still_all(self, tmp_path: Path) -> None:
+        """未传 status 仍返回全部任务。"""
+        plugin = _create_plugin(tmp_path)
+        _call_tool(plugin, "task_create", subject="任务A")
+        result = _call_tool(plugin, "task_list")
+        assert result["ok"] is True
+        assert result["count"] == 1
+
+    def test_corrupt_store_not_silently_reset(self, tmp_path: Path) -> None:
+        """损坏存储文件不得静默清空并覆盖（评审#4）。"""
+        plugin = _create_plugin(tmp_path)
+        created = _call_tool(plugin, "task_create", subject="不可丢失的任务")
+        ctx_root = _bind_context._roots["test-user"]
+        store = ctx_root / "task" / "default.json"
+
+        store.write_text("{ not valid json", encoding="utf-8")
+        listed = _call_tool(plugin, "task_list")
+        assert listed["ok"] is False
+        assert "损坏" in listed["error"] or "非法" in listed["error"]
+
+        # 关键：损坏期间不得触发生成新数据覆盖原文件
+        created_again = _call_tool(plugin, "task_create", subject="覆盖者")
+        assert created_again["ok"] is False
+        assert store.read_text(encoding="utf-8") == "{ not valid json"
+        # 修复文件后原任务仍在（未被覆盖丢失）
+        store.write_text(json.dumps({
+            created["task"]["id"]: {
+                "id": created["task"]["id"],
+                "subject": "不可丢失的任务",
+                "description": "",
+                "activeForm": "",
+                "status": "pending",
+            }
+        }, ensure_ascii=False), encoding="utf-8")
+        recovered = _call_tool(plugin, "task_get", task_id=created["task"]["id"])
+        assert recovered["ok"] is True
+
+    def test_corrupt_store_non_dict_rejected(self, tmp_path: Path) -> None:
+        """非对象结构的存储文件同样报错而非当作空字典。"""
+        plugin = _create_plugin(tmp_path)
+        _call_tool(plugin, "task_create", subject="任务A")
+        ctx_root = _bind_context._roots["test-user"]
+        (ctx_root / "task" / "default.json").write_text("[1, 2, 3]", encoding="utf-8")
+
+        result = _call_tool(plugin, "task_list")
+        assert result["ok"] is False
+        assert "结构非法" in result["error"]
+
+    def test_namespace_non_str_fallback(self, tmp_path: Path) -> None:
+        """namespace 传非字符串走 str() 兜底，不抛 TypeError（评审#5）。"""
+        plugin = _create_plugin(tmp_path)
+        result = _call_tool(plugin, "task_create", subject="数字 ns", namespace=123)
+        assert result["ok"] is True
+        ctx_root = _bind_context._roots["test-user"]
+        assert (ctx_root / "task" / "123.json").is_file()
+
+    def test_save_preserves_existing_permissions(self, tmp_path: Path) -> None:
+        """既有文件权限位在后续原子写中保持不变（评审#9）。"""
+        import stat as _stat
+
+        plugin = _create_plugin(tmp_path)
+        _call_tool(plugin, "task_create", subject="任务A")
+        ctx_root = _bind_context._roots["test-user"]
+        store = ctx_root / "task" / "default.json"
+        store.chmod(0o644)
+        assert _stat.S_IMODE(store.stat().st_mode) == 0o644
+
+        _call_tool(plugin, "task_create", subject="任务B")
+        assert _stat.S_IMODE(store.stat().st_mode) == 0o644
+
+    def test_locks_bounded(self, tmp_path: Path) -> None:
+        """_locks 不会随 namespace 增多无界增长（评审#7）。"""
+        plugin = _create_plugin(tmp_path)
+        for i in range(plugin._MAX_LOCKS + 100):
+            _call_tool(plugin, "task_list", namespace=f"ns-{i}")
+        assert len(plugin._locks) <= plugin._MAX_LOCKS
+
+    def test_get_miss_hints_namespaces(self, tmp_path: Path) -> None:
+        """task_get 未命中时提示可用 namespace（评审#10）。"""
+        plugin = _create_plugin(tmp_path)
+        _call_tool(plugin, "task_create", subject="ns 内任务", namespace="chat-a")
+        result = _call_tool(plugin, "task_get", task_id="Tnonexist", namespace="chat-b")
+        assert result["ok"] is False
+        assert "可用 namespace" in result["error"]
+        assert "chat-a" in result["error"]

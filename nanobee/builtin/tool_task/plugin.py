@@ -17,6 +17,7 @@ import asyncio
 import json
 import os
 import re
+import stat
 import tempfile
 import uuid
 from pathlib import Path
@@ -31,6 +32,16 @@ from nanobee.utils.logger import logger
 
 # 状态机合法状态
 VALID_STATUSES = {"pending", "in_progress", "completed", "deleted"}
+
+
+class TaskStoreError(Exception):
+    """任务存储不可用（文件损坏/结构非法/读取失败）。
+
+    作为工具可预期错误上抛给 execute_tool 统一转为面向 LLM 的
+    错误结果，避免静默返回空数据导致后续覆盖丢数据。
+    """
+
+
 # 允许推进的方向（简化版状态机，符合任务跟踪语义）
 ALLOWED_TRANSITIONS: dict[str, set[str]] = {
     "pending": {"in_progress", "completed", "deleted"},
@@ -42,11 +53,15 @@ ALLOWED_TRANSITIONS: dict[str, set[str]] = {
 _NS_RE = re.compile(r"[^0-9A-Za-z_.\-@]")
 
 
-def _sanitize_ns(namespace: str) -> str:
-    """namespace 会拼进文件名，必须净化防路径穿越。"""
+def _sanitize_ns(namespace: Any) -> str:
+    """namespace 会拼进文件名，必须净化防路径穿越。
+
+    LLM 可能传非字符串（如 namespace=123），统一 str() 兜底后再净化，
+    与 subject/description 的处理保持一致，避免 TypeError 直接抛给框架。
+    """
     # 正则已将 / 及其它路径字符统一替换为 _，净化结果不可能含 / 或 ..，
     # 天然阻断绝对路径与跳出数据目录
-    return _NS_RE.sub("_", namespace).strip("._") or "default"
+    return _NS_RE.sub("_", str(namespace)).strip("._") or "default"
 
 
 class ToolTaskConfig(BaseModel):
@@ -121,20 +136,25 @@ class ToolTaskPlugin(ToolPlugin):
             context_id: 用户上下文 ID（回退场景下用于目录隔离）。
 
         Returns:
-            边界内的绝对路径。
+            绝对路径。
 
         Raises:
-            SandboxViolationError: 解析结果落在允许边界之外。
+            SandboxViolationError: context_root 分支解析结果落在边界之外。
+                注意：显式配置 data_dir 的分支视为管理员可信覆盖，
+                仅做 resolve 归一（防 .. / symlink 逃逸出该目录本身），
+                不做沙箱边界校验。
         """
         if self._data_dir is not None:
-            # 配置覆盖：防 symlink / .. 解析后逃逸出覆盖目录本身
+            # 配置覆盖：管理员显式指定，视为可信；仅 resolve 归一
+            # （防 .. / symlink 逃逸出该目录本身），不做沙箱边界校验
             return Path(self._data_dir).expanduser().resolve(strict=False)
         context_root = self.context_root
         if context_root is not None:
             base = Path(context_root).expanduser().resolve(strict=False) / "task"
             # 硬边界校验：resolve 后必须仍落在 context_root 内
             return require_path_within(base, context_root, message="task 存储目录越界拦截")
-        # 回退：无 per-request 上下文（测试/boot），与 tool_cron 的回退一致
+        # 回退：无 per-request 上下文（测试/boot）。
+        # 注意 tool_cron 无此回退（它要求 context_root 或显式 <data_dir>/cron/）
         data_dir = (
             Path(self.kernel.data_dir).expanduser()
             if self.kernel and hasattr(self.kernel, "data_dir")
@@ -165,23 +185,52 @@ class ToolTaskPlugin(ToolPlugin):
 
     @staticmethod
     def _load(path: Path) -> dict:
+        """读取任务存储。
+
+        文件不存在时返回空字典（正常首次使用）。
+
+        Raises:
+            TaskStoreError: 文件存在但无法解析（损坏/非法结构）。
+                此类错误必须上抛而非静默返回空字典 —— 否则下一次
+                _save 会用空数据整体覆盖，已存任务永久丢失且 LLM
+                只看到 count: 0。
+        """
         if not path.exists():
             return {}
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-            return data if isinstance(data, dict) else {}
-        except (json.JSONDecodeError, OSError):
-            logger.warning("task store {} unreadable, starting empty", path)
-            return {}
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+            logger.warning("task store {} 解析失败: {}", path, e)
+            raise TaskStoreError(f"任务存储文件损坏，无法解析: {path.name}（{e}）") from e
+        except OSError as e:
+            logger.warning("task store {} 读取失败: {}", path, e)
+            raise TaskStoreError(f"任务存储文件读取失败: {path.name}（{e}）") from e
+        if not isinstance(data, dict):
+            logger.warning("task store {} 结构非法: {}", path, type(data).__name__)
+            raise TaskStoreError(f"任务存储文件结构非法（期望 JSON 对象）: {path.name}")
+        return data
 
     @staticmethod
     def _save(path: Path, tasks: dict) -> None:
-        """原子写：先写临时文件再 os.replace，避免并发损坏。"""
+        """原子写：先写临时文件再 os.replace，避免并发损坏。
+
+        mkstemp 默认 0600；若目标文件已存在，沿用其原权限位，
+        避免每次写入都把管理员调整过的权限重置回 0600。
+        """
         path.parent.mkdir(parents=True, exist_ok=True)
+        # 记录既有权限位（不存在则用 mkstemp 默认 0600）
+        prev_mode: int | None = None
+        try:
+            prev_mode = stat.S_IMODE(path.stat().st_mode)
+        except OSError:
+            prev_mode = None
+
         fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump(tasks, f, ensure_ascii=False, indent=2)
+            if prev_mode is not None:
+                os.chmod(tmp, prev_mode)
             os.replace(tmp, path)
         except BaseException:
             try:
@@ -190,10 +239,20 @@ class ToolTaskPlugin(ToolPlugin):
                 pass
             raise
 
+    # _locks 上界：key 为"用户 × namespace"，只增不减会在长跑 gateway 中缓慢泄漏。
+    # 超限时回收未持有的锁（锁仅在单次工具调用期间持有，回收不影响正确性）。
+    _MAX_LOCKS = 1024
+
     def _lock(self, key: str) -> asyncio.Lock:
-        if key not in self._locks:
-            self._locks[key] = asyncio.Lock()
-        return self._locks[key]
+        lock = self._locks.get(key)
+        if lock is not None:
+            return lock
+        if len(self._locks) >= self._MAX_LOCKS:
+            # 只回收未被持有的锁，避免打断正在进行的写入
+            self._locks = {k: v for k, v in self._locks.items() if v.locked()}
+        lock = asyncio.Lock()
+        self._locks[key] = lock
+        return lock
 
     # ------------------------------------------------------------------
     # 工具定义
@@ -227,7 +286,11 @@ class ToolTaskPlugin(ToolPlugin):
                             },
                             "namespace": {
                                 "type": "string",
-                                "description": '任务清单命名空间（用户/会话/聊天级隔离），默认 "default"',
+                                "description": (
+                                    "任务清单命名空间，用于隔离不同主题的清单；"
+                                    '默认 "default"（同一用户跨会话共享）。'
+                                    "如需会话级隔离，请显式传会话 ID 作为 namespace"
+                                ),
                             },
                         },
                         "required": ["subject"],
@@ -291,7 +354,7 @@ class ToolTaskPlugin(ToolPlugin):
                             },
                             "namespace": {
                                 "type": "string",
-                                "description": '任务清单命名空间，默认 "default"',
+                                "description": '任务清单命名空间，需与创建时一致，默认 "default"',
                             },
                         },
                         "required": [],
@@ -312,7 +375,7 @@ class ToolTaskPlugin(ToolPlugin):
                             },
                             "namespace": {
                                 "type": "string",
-                                "description": '任务清单命名空间，默认 "default"',
+                                "description": '任务清单命名空间，需与创建时一致，默认 "default"',
                             },
                         },
                         "required": ["task_id"],
@@ -351,13 +414,17 @@ class ToolTaskPlugin(ToolPlugin):
         lock = self._lock(str(path))
 
         async with lock:
-            if tool_name == "task_create":
-                return self._task_create(path, **kwargs)
-            if tool_name == "task_update":
-                return self._task_update(path, **kwargs)
-            if tool_name == "task_list":
-                return self._task_list(path, **kwargs)
-            return self._task_get(path, **kwargs)
+            try:
+                if tool_name == "task_create":
+                    return self._task_create(path, **kwargs)
+                if tool_name == "task_update":
+                    return self._task_update(path, **kwargs)
+                if tool_name == "task_list":
+                    return self._task_list(path, **kwargs)
+                return self._task_get(path, **kwargs)
+            except TaskStoreError as e:
+                # 存储不可用时把错误透传给 LLM，而不是让它看到空清单
+                return json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
 
     # ------------------------------------------------------------------
     # 工具实现（调用方已持锁）
@@ -421,16 +488,44 @@ class ToolTaskPlugin(ToolPlugin):
 
     def _task_list(self, path: Path, **kwargs: Any) -> str:
         status = str(kwargs.get("status", "") or "")
+        if status and status not in VALID_STATUSES:
+            # 与 task_update 保持一致：非法状态显式报错。
+            # 静默返回空清单会让 LLM 误判"没有任务"从而重复创建。
+            return json.dumps(
+                {"ok": False, "error": f"非法状态 {status!r}，合法集合: {sorted(VALID_STATUSES)}"},
+                ensure_ascii=False,
+            )
         tasks = self._load(path)
         items = [self._public(t) for t in tasks.values()]
         if status:
             items = [t for t in items if t["status"] == status]
         items.sort(key=lambda t: t["id"])
-        return json.dumps({"ok": True, "count": len(items), "tasks": items}, ensure_ascii=False)
+        result: dict[str, Any] = {"ok": True, "count": len(items), "tasks": items}
+        if not items:
+            # 空清单时附带可用 namespace，帮助 LLM 区分"真没任务"与"namespace 传错"
+            hint = self._namespace_hint(path)
+            if hint:
+                result["available_namespaces"] = hint
+        return json.dumps(result, ensure_ascii=False)
 
     def _task_get(self, path: Path, **kwargs: Any) -> str:
         task_id = str(kwargs.get("task_id", ""))
         task = self._load(path).get(task_id)
         if task is None:
-            return json.dumps({"ok": False, "error": f"task {task_id} 不存在"}, ensure_ascii=False)
+            # 未命中常见于 namespace 传错（默认 default 是同用户跨会话共享）。
+            # 提示实际可用的 namespace，避免 LLM 误判为任务不存在。
+            hint = self._namespace_hint(path)
+            error = f"task {task_id} 不存在"
+            if hint:
+                error += f"；当前 namespace 下无此任务，可用 namespace: {hint}"
+            return json.dumps({"ok": False, "error": error}, ensure_ascii=False)
         return json.dumps({"ok": True, "task": self._public(task)}, ensure_ascii=False)
+
+    @staticmethod
+    def _namespace_hint(path: Path) -> str:
+        """列出同目录下已存在的 namespace 文件名（不含 .json）。"""
+        try:
+            names = sorted(p.stem for p in path.parent.glob("*.json"))
+        except OSError:
+            return ""
+        return ", ".join(names)
