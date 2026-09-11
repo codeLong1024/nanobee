@@ -237,7 +237,7 @@ logging:
 
 ### 测试覆盖
 
-项目共有 **1141 个测试用例**，覆盖核心模块：插件系统、Hook 机制、沙箱安全、消息路由、技能注入、故障分类等。
+项目共有 **1146 个测试用例**，覆盖核心模块：插件系统、Hook 机制、沙箱安全、消息路由、技能注入、故障分类等。
 测试文件按模块组织（如 `test_xxx.py` 对应 `nanobee/xxx.py`），无分期命名的历史遗留文件。
 
 ## 插件开发
@@ -260,7 +260,7 @@ AgentRunner 底层另有 4 个 run-level Hook（`before_run`/`after_run`/`on_err
 # 安装开发依赖
 pip install -e ".[dev]"
 
-# 运行全部测试（1141 用例，零回归）
+# 运行全部测试（1146 用例，零回归）
 python -m pytest tests/ -v --tb=short
 
 # 查看覆盖率
@@ -325,7 +325,7 @@ python -m pytest tests/ --cov=nanobee --cov-report=term-missing
 | `test_tool_cron_redline.py` | `builtin/tool_cron/service.py` — 调度间隔安全红线 | 10 |
 | `test_tool_fs.py` | `builtin/tool_fs/plugin.py` — 文件读写编辑删除 | 37 |
 | `test_tool_history.py` | `agent/tools/tool_history.py` — 历史消息管理 | 25 |
-| `test_tool_task.py` | `builtin/tool_task/plugin.py` — 任务跟踪：CRUD、状态机、用户/命名空间隔离、并发安全、损坏存储防护 | 29 |
+| `test_tool_task.py` | `builtin/tool_task/plugin.py` — 任务跟踪：CRUD、状态机、用户/命名空间隔离、并发安全、损坏存储防护 | 47 |
 | `test_tool_pipeline_logging.py` | `agent/tool_pipeline.py` — 工具管线日志 ctx 关联键 | 5 |
 | `test_tool_shell_sandbox.py` | `builtin/tool_shell/sandbox.py` — bwrap 沙箱 | 39 |
 | `test_user_context.py` | `kernel/user_context.py` — 会话创建、隔离、插件注入 | 15 |
@@ -368,7 +368,7 @@ tests/
 ├── test_message_tool.py          # MessageTool、消息合并
 ├── test_notifications.py         # Notification 消息目录
 ├── test_audit_logger.py          # 审计日志
-└── ...                           # 共 58 个测试文件，1141 用例
+└── ...                           # 共 59 个测试文件，1146 用例
 ```
 
 ## LLM Provider 支持

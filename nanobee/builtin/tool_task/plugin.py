@@ -14,6 +14,7 @@ per-context asyncio.Lock 保证并发安全。状态机：
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -25,6 +26,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from nanobee.exceptions import SandboxViolationError
 from nanobee.kernel.context_sandbox_var import current_request_context
 from nanobee.plugins import ToolPlugin
 from nanobee.security.workspace_policy import require_path_within
@@ -50,18 +52,57 @@ ALLOWED_TRANSITIONS: dict[str, set[str]] = {
     "deleted": set(),
 }
 
-_NS_RE = re.compile(r"[^0-9A-Za-z_.\-@]")
+# 文件名安全字符：Unicode 字母数字（\w，含中文等）、下划线、点、连字符、@。
+# 注意不要用 [^0-9A-Za-z_.\-@] 这类 ASCII 白名单 —— 那会把中文 namespace
+# 静默改写成 default，任务被悄悄写进另一个清单且不报错（隐蔽数据错分）。
+_NS_UNSAFE_RE = re.compile(r"[^\w.\-@]", re.UNICODE)
+
+# 单段文件名上限（字节）与哈希后缀长度：超长 namespace 在 _truncate_filename
+# 里按字节截断 + 内容哈希兜底。截断只能在这一处做统一处理——若提前在
+# 净化阶段按固定字符数砍，超长输入的不同 namespace 会砍成同一个前缀，
+# 最终落到同一个文件（长度有界 / 稳定 / 不碰撞，三者必须同时成立）。
+_NAME_MAX_BYTES = 255
+_HASH_SUFFIX_LEN = 9  # "-" + sha1 前 8 位
+
+
+def _truncate_filename(name: str, suffix: str) -> str:
+    """把文件名主体压到文件系统单段上限内，且保持稳定、不碰撞。
+
+    超长 namespace（LLM 常把整段会话摘要当 namespace 传入）原样拼文件名会在
+    _save 抛 OSError(ENAMETOOLONG) 穿透 execute_tool。截断后追加内容哈希后缀，
+    保证 ① 长度有界；② 同一输入映射同一文件名；③ 不同输入不因截断而碰撞。
+
+    Args:
+        name: 文件名主体（已净化，可能含多字节字符）。
+        suffix: 扩展名（含点，如 ".json"）。
+
+    Returns:
+        长度受限的文件名（含扩展名）。
+    """
+    budget = _NAME_MAX_BYTES - len(suffix.encode("utf-8"))
+    encoded = name.encode("utf-8")
+    if len(encoded) <= budget:
+        return name + suffix
+    digest = hashlib.sha1(encoded).hexdigest()[:_HASH_SUFFIX_LEN - 1]
+    keep = budget - _HASH_SUFFIX_LEN
+    # 按字节裁剪可能切碎多字节字符，errors="ignore" 丢弃残字节后回到合法字符边界
+    truncated = encoded[:keep].decode("utf-8", errors="ignore")
+    while len(truncated.encode("utf-8")) > keep:
+        truncated = truncated[:-1]
+    return f"{truncated}-{digest}{suffix}"
 
 
 def _sanitize_ns(namespace: Any) -> str:
     """namespace 会拼进文件名，必须净化防路径穿越。
 
-    LLM 可能传非字符串（如 namespace=123），统一 str() 兜底后再净化，
-    与 subject/description 的处理保持一致，避免 TypeError 直接抛给框架。
+    - 非字符串（如 namespace=123）走 str() 兜底，不把 TypeError 抛给框架；
+    - 路径分隔符等不安全字符统一替换为 _，首尾的 . / _ 一并裁掉，
+      天然阻断绝对路径与 ".." 跳出数据目录；
+    - Unicode 字母数字（含中文）保留原样：静默改写成 default 属于隐蔽数据错分；
+    - 此处**不**做长度截断，长度统一交给 _truncate_filename 按字节处理。
     """
-    # 正则已将 / 及其它路径字符统一替换为 _，净化结果不可能含 / 或 ..，
-    # 天然阻断绝对路径与跳出数据目录
-    return _NS_RE.sub("_", str(namespace)).strip("._") or "default"
+    cleaned = _NS_UNSAFE_RE.sub("_", str(namespace)).strip("._")
+    return cleaned or "default"
 
 
 class ToolTaskConfig(BaseModel):
@@ -89,7 +130,19 @@ class ToolTaskPlugin(ToolPlugin):
 
     def __init__(self, metadata: Any = None):
         super().__init__(metadata)
-        self._locks: dict[str, asyncio.Lock] = {}
+        # 锁映射：key 是"事件循环 × 规范化存储路径"，value 是该 loop 内的互斥锁。
+        #
+        # 为什么按 loop 分桶：nanobee 每次 execute_tool 在各自的 asyncio.run()
+        # 里执行（见 tests 的 _run_async、以及部分调用点），同一 key 会跨越不同
+        # loop 复用。若共用一个 asyncio.Lock，则"第一个 loop 创建的锁"在后续
+        # （可能并发的）loop 里会因 get_loop 不一致而抛 RuntimeError。
+        # 分桶后：同 loop 内严格互斥；跨 loop 视为无并发（无共享事件循环即
+        # 无法真正并发），符合原 per-context 锁的语义。
+        #
+        # 注意"回收空闲锁"的实现：不能用 lock.locked() 判定空闲后把整张映射
+        # 重建，那会在"取锁→acquire 之间"的让出窗口里把在用的锁丢掉，导致
+        # 同一 namespace 拿到两把不同的锁、互斥失效（评审 P0-1）。
+        self._locks: dict[tuple[Any, str], asyncio.Lock] = {}
         self._data_dir: Path | None = None
 
     # ------------------------------------------------------------------
@@ -150,9 +203,16 @@ class ToolTaskPlugin(ToolPlugin):
             return Path(self._data_dir).expanduser().resolve(strict=False)
         context_root = self.context_root
         if context_root is not None:
-            base = Path(context_root).expanduser().resolve(strict=False) / "task"
-            # 硬边界校验：resolve 后必须仍落在 context_root 内
-            return require_path_within(base, context_root, message="task 存储目录越界拦截")
+            root = Path(context_root).expanduser().resolve(strict=False)
+            base = root / "task"
+            # 先 resolve 再校验：task 若被替换成指向边界外的 symlink，这里即可拦截
+            # （直接把未解析的 base 交给 require_path_within 会静默放过 symlink）
+            verified = require_path_within(
+                base.resolve(strict=False), root, message="task 存储目录越界拦截"
+            )
+            # 目录不存在时返回未解析路径：目录创建交给实际写入方，
+            # 避免"只查询"也建目录，也避免此处的 resolve 在异常场景抛错
+            return verified if verified.exists() else base
         # 回退：无 per-request 上下文（测试/boot）。
         # 注意 tool_cron 无此回退（它要求 context_root 或显式 <data_dir>/cron/）
         data_dir = (
@@ -171,17 +231,18 @@ class ToolTaskPlugin(ToolPlugin):
         - 无 per-request 上下文回退时：<data_dir>/task/<context_id>/<ns>.json
           （<ctx>/ 由 _resolve_base_dir 拼接，此处不可重复拼接）。
 
-        namespace 由 LLM 传入，净化后拼进文件名防路径穿越。
+        namespace 由 LLM 传入，净化后拼进文件名防路径穿越；
+        超长时由 _truncate_filename 截断加哈希，避免 OSError 穿透到框架层。
         """
-        ns = _sanitize_ns(namespace)
+        filename = _truncate_filename(_sanitize_ns(namespace), ".json")
         base = self._resolve_base_dir(context_id)
         if self._data_dir is not None:
             # 配置覆盖目录本身不做用户隔离，在此显式拼 <ctx>/ 保持 per-user 独立
-            return base / _sanitize_ns(context_id) / f"{ns}.json"
+            return base / _sanitize_ns(context_id) / filename
         # context_root 场景：base 即 <context_root>/task/，本身按用户隔离；
         # 回退场景（kernel.data_dir）由 _resolve_base_dir 已拼 <ctx>/，
         # 两种情况均无需再拼 context_id
-        return base / f"{ns}.json"
+        return base / filename
 
     @staticmethod
     def _load(path: Path) -> dict:
@@ -239,20 +300,50 @@ class ToolTaskPlugin(ToolPlugin):
                 pass
             raise
 
-    # _locks 上界：key 为"用户 × namespace"，只增不减会在长跑 gateway 中缓慢泄漏。
-    # 超限时回收未持有的锁（锁仅在单次工具调用期间持有，回收不影响正确性）。
+    # 锁映射上界：key 为"loop × 存储路径"，只增不减会在长跑 gateway 中缓慢泄漏。
     _MAX_LOCKS = 1024
 
+    @staticmethod
+    def _lock_key(path: Path) -> str:
+        """用解析后的路径做 key：不同写法指向同一文件时共享同一把锁。"""
+        try:
+            return str(path.resolve(strict=False))
+        except OSError:
+            return str(path)
+
     def _lock(self, key: str) -> asyncio.Lock:
-        lock = self._locks.get(key)
+        """取（必要时建）当前事件循环内该存储路径的互斥锁。
+
+        并发安全说明（评审 P0-1）：
+        - 绝不回收"在用锁"。原实现按 ``lock.locked()`` 判空闲后把整张映射
+          重建，而协程从取锁到 acquire 之间会让出控制权（execute_tool 里
+          就有 ``async with lock``），该窗口内 locked() 同为 False，
+          锁会被当作空闲丢掉 → 同一 namespace 拿到两把不同的锁、互斥失效。
+          这里改为：调用方在持有锁期间绝不再调用 _lock，因此本函数看到的
+          锁必然是空闲的，不存在"误删在用锁"的窗口。
+        - 超限时按 FIFO 淘汰最旧的条目：dict 保持插入序，直接丢掉前面
+          若干个即可。不用"挑空闲的丢"来实现——那需要判断锁是否在用，
+          而 asyncio.Lock 没有公开的等待者查询接口（_waiters 是私有属性），
+          判据一旦不完整就会连在用锁一起丢，正是原实现的坑。
+        - 淘汰 N 个而不是清空：清空会把当前正在外部持有的锁也丢掉
+          （如调用方刚取到锁、尚未进入 async with 的窗口），
+          之后同一 key 会拿到新锁 → 互斥失效。
+        - 建立新锁后重新取一次字典条目，保证返回的锁一定登记在表中，
+          避免"返回的锁已被淘汰"的错配。
+        """
+        full_key = (id(asyncio.get_running_loop()), key)
+        lock = self._locks.get(full_key)
         if lock is not None:
             return lock
-        if len(self._locks) >= self._MAX_LOCKS:
-            # 只回收未被持有的锁，避免打断正在进行的写入
-            self._locks = {k: v for k, v in self._locks.items() if v.locked()}
+        excess = len(self._locks) - self._MAX_LOCKS + 1
+        if excess > 0:
+            # 按插入序淘汰最旧的一批；被淘汰的锁即使仍被外部持有，
+            # 也只是退化为"少一段互斥"，不会像清空那样把在用锁一起丢掉
+            for stale in list(self._locks)[:excess]:
+                del self._locks[stale]
         lock = asyncio.Lock()
-        self._locks[key] = lock
-        return lock
+        self._locks[full_key] = lock
+        return self._locks[full_key]
 
     # ------------------------------------------------------------------
     # 工具定义
@@ -437,8 +528,17 @@ class ToolTaskPlugin(ToolPlugin):
             return f"错误：无法获取当前会话上下文，{tool_name} 未能执行"
 
         namespace = kwargs.get("namespace") or "default"
-        path = self._store_path(rctx.context_id, namespace)
-        lock = self._lock(str(path))
+        try:
+            path = self._store_path(rctx.context_id, namespace)
+        except SandboxViolationError as e:
+            # 存储路径越界（如 task 目录被替换成指向边界外的 symlink）：
+            # 与"存储不可用"同样收敛成 LLM 可读结果，不冒框架级异常
+            logger.warning("task 存储路径越界: {}", e)
+            return json.dumps(
+                {"ok": False, "error": f"任务存储路径越界，已拒绝访问：{e}"},
+                ensure_ascii=False,
+            )
+        lock = self._lock(self._lock_key(path))
 
         async with lock:
             try:
@@ -452,6 +552,13 @@ class ToolTaskPlugin(ToolPlugin):
             except TaskStoreError as e:
                 # 存储不可用时把错误透传给 LLM，而不是让它看到空清单
                 return json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
+            except OSError as e:
+                # 磁盘/权限/文件名等 IO 异常同样收敛为工具结果，
+                # 不让 OSError 穿透框架层（如超长文件名的 ENAMETOOLONG）
+                logger.warning("task 存储 IO 失败 {}: {}", path, e)
+                return json.dumps(
+                    {"ok": False, "error": f"任务存储访问失败：{e}"}, ensure_ascii=False
+                )
 
     # ------------------------------------------------------------------
     # 工具实现（调用方已持锁）
@@ -527,12 +634,10 @@ class ToolTaskPlugin(ToolPlugin):
         if status:
             items = [t for t in items if t["status"] == status]
         items.sort(key=lambda t: t["id"])
+        # 空清单本身即正常结果（确实没有任务），不再挂 available_namespaces：
+        # 该字段只在"疑似 namespace 传错"的未命中场景（task_get）才有信息量，
+        # 挂在常规成功路径上只会给正常场景平白增加噪音。
         result: dict[str, Any] = {"ok": True, "count": len(items), "tasks": items}
-        if not items:
-            # 空清单时附带可用 namespace，帮助 LLM 区分"真没任务"与"namespace 传错"
-            hint = self._namespace_hint(path)
-            if hint:
-                result["available_namespaces"] = hint
         return json.dumps(result, ensure_ascii=False)
 
     def _task_get(self, path: Path, **kwargs: Any) -> str:
@@ -548,11 +653,29 @@ class ToolTaskPlugin(ToolPlugin):
             return json.dumps({"ok": False, "error": error}, ensure_ascii=False)
         return json.dumps({"ok": True, "task": self._public(task)}, ensure_ascii=False)
 
-    @staticmethod
-    def _namespace_hint(path: Path) -> str:
-        """列出同目录下已存在的 namespace 文件名（不含 .json）。"""
+    # hint 最多列出的 namespace 个数：错误串整体进 LLM 上下文，必须封顶
+    _MAX_HINT_NAMESPACES = 5
+
+    @classmethod
+    def _namespace_hint(cls, path: Path) -> str:
+        """列出同目录下可作为 namespace 的清单名。
+
+        过滤与截断（评审 P1：hint 的语义与代价）：
+        - 只认严格形如 ``<ns>.json`` 的普通文件：排除 ``x.json.json``、
+          ``x.json.bak`` 这类 stem 混入，也不跟随 symlink；
+        - 列表封顶 _MAX_HINT_NAMESPACES 个，超出时只报总数。
+        """
         try:
-            names = sorted(p.stem for p in path.parent.glob("*.json"))
+            names = sorted(
+                p.name[: -len(".json")]
+                for p in path.parent.glob("*.json")
+                if p.is_file() and not p.name.endswith(".json.json")
+            )
         except OSError:
             return ""
-        return ", ".join(names)
+        if not names:
+            return ""
+        shown = names[: cls._MAX_HINT_NAMESPACES]
+        if len(names) > len(shown):
+            shown.append(f"等 {len(names)} 个")
+        return ", ".join(shown)

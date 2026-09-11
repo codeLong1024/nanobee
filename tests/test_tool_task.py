@@ -512,3 +512,240 @@ class TestToolDescriptions:
         ).read_text(encoding="utf-8")
         for name in ("task_create", "task_update", "task_list", "task_get"):
             assert name not in core
+
+
+# =============================================================================
+# 二次评审修复回归测试（P0-1 / P0-2 / P1 ×2 / P2）
+# =============================================================================
+
+
+class TestSecondReviewFixes:
+    """针对二次评审意见的回归测试。"""
+
+    # ---- P0-1 锁回收竞态 ----
+
+    def test_lock_identity_stable_after_reclaim(self, tmp_path: Path) -> None:
+        """锁映射达到上界被回收后，同一 key 仍返回同一把锁（P0-1）。
+
+        原实现按 ``lock.locked()`` 判定"空闲"并丢弃，而协程从取锁到
+        acquire() 之间会让出控制权，此窗口内 locked() 同为 False，
+        同一 namespace 会拿到两把不同的锁 → 互斥失效 → 并发丢任务。
+        """
+        plugin = _create_plugin(tmp_path)
+
+        async def _scenario() -> tuple[bool, int]:
+            for i in range(plugin._MAX_LOCKS - 1):
+                plugin._lock(f"prefill-{i}")
+            first = plugin._lock("victim")
+            plugin._lock("trigger-reclaim")  # 触发回收分支
+            second = plugin._lock("victim")
+            return second is first, len(plugin._locks)
+
+        same, size = asyncio.run(_scenario())
+        assert same is True  # 同一 key 必须是同一把锁
+        assert size <= plugin._MAX_LOCKS
+
+    def test_locks_bounded_on_stress(self, tmp_path: Path) -> None:
+        """大量不同 key 反复取锁后映射仍有界（P0-1 的泄漏面）。"""
+        plugin = _create_plugin(tmp_path)
+
+        async def _stress() -> int:
+            for i in range(plugin._MAX_LOCKS * 3):
+                plugin._lock(f"k-{i}")
+            return len(plugin._locks)
+
+        assert asyncio.run(_stress()) <= plugin._MAX_LOCKS
+
+    def test_concurrent_creates_still_serialized(self, tmp_path: Path) -> None:
+        """触达上界后并发创建仍不丢数据（互斥未失效）。"""
+        plugin = _create_plugin(tmp_path)
+        prefill = plugin._MAX_LOCKS
+
+        async def _burst() -> list[dict]:
+            token = _bind_context("user-lock")
+            try:
+                # 先用无关 namespace 把锁映射顶到上界，逼迫走回收分支
+                for i in range(prefill):
+                    await plugin.execute_tool("task_list", namespace=f"pad-{i}")
+                results = await asyncio.gather(*[
+                    plugin.execute_tool("task_create", subject=f"并发任务 {i}")
+                    for i in range(50)
+                ])
+            finally:
+                _reset_context(token)
+            return [json.loads(r) for r in results]
+
+        results = asyncio.run(_burst())
+        assert all(r["ok"] for r in results)
+        assert len({r["task"]["id"] for r in results}) == 50
+        ctx_root = _bind_context._roots["user-lock"]
+        stored = json.loads((ctx_root / "task" / "default.json").read_text(encoding="utf-8"))
+        assert len(stored) == 50
+
+    # ---- P0-2 超长 namespace ----
+
+    def test_overlong_namespace_no_oserror(self, tmp_path: Path) -> None:
+        """超长 namespace 不再让 OSError(ENAMETOOLONG) 穿透 execute_tool（P0-2）。"""
+        plugin = _create_plugin(tmp_path)
+
+        async def _call(ns_len: int) -> Any:
+            token = _bind_context("user-long")
+            try:
+                return await plugin.execute_tool(
+                    "task_create", subject="长 namespace", namespace="a" * ns_len
+                )
+            finally:
+                _reset_context(token)
+
+        result = json.loads(asyncio.run(_call(5000)))
+        assert result["ok"] is True
+        ctx_root = _bind_context._roots["user-long"]
+        stored = list((ctx_root / "task").glob("*.json"))
+        assert len(stored) == 1
+        # 单段文件名不得越过 255 字节上限
+        assert len(stored[0].name.encode("utf-8")) <= 255
+
+    def test_overlong_namespace_stable_and_distinct(self, tmp_path: Path) -> None:
+        """超长 namespace 截断后：同一输入稳定映射，不同输入不碰撞。"""
+        plugin = _create_plugin(tmp_path)
+
+        async def _paths() -> list[str]:
+            token = _bind_context("user-long2")
+            try:
+                p_same_a = plugin._store_path("u", "b" * 4000)
+                p_same_b = plugin._store_path("u", "b" * 4000)
+                p_other = plugin._store_path("u", "b" * 3999 + "c")
+            finally:
+                _reset_context(token)
+            return [str(p_same_a), str(p_same_b), str(p_other)]
+
+        same_a, same_b, other = asyncio.run(_paths())
+        assert same_a == same_b
+        assert same_a != other  # 哈希后缀防截断碰撞
+
+    def test_overlong_multibyte_namespace(self, tmp_path: Path) -> None:
+        """多字节（中文）超长 namespace 也不越界、不抛异常。"""
+        plugin = _create_plugin(tmp_path)
+
+        async def _call() -> Any:
+            token = _bind_context("user-long3")
+            try:
+                return await plugin.execute_tool(
+                    "task_create", subject="中文长 ns", namespace="中文任务清单" * 200
+                )
+            finally:
+                _reset_context(token)
+
+        assert json.loads(asyncio.run(_call()))["ok"] is True
+        ctx_root = _bind_context._roots["user-long3"]
+        names = [p.name for p in (ctx_root / "task").glob("*.json")]
+        assert len(names) == 1
+        assert len(names[0].encode("utf-8")) <= 255
+
+    # ---- P1 非 ASCII namespace ----
+
+    def test_non_ascii_namespace_preserved(self, tmp_path: Path) -> None:
+        """中文 namespace 不再静默归并为 default（P1 数据错分）。"""
+        plugin = _create_plugin(tmp_path)
+        assert _sanitize_ns("中文会话") == "中文会话"
+
+        created = _call_tool(plugin, "task_create", namespace="中文会话", subject="中文清单任务")
+        assert created["ok"] is True
+
+        ctx_root = _bind_context._roots["test-user"]
+        assert (ctx_root / "task" / "中文会话.json").is_file()
+        # default 清单必须仍然为空，未被静默写入
+        assert _call_tool(plugin, "task_list")["count"] == 0
+        assert _call_tool(plugin, "task_list", namespace="中文会话")["count"] == 1
+
+    def test_sanitize_ns_keeps_security_properties(self) -> None:
+        """放行 Unicode 后仍阻断路径穿越/绝对路径/空值。"""
+        assert "/" not in _sanitize_ns("a/../../b")
+        assert ".." not in Path(_sanitize_ns("../../etc/passwd")).parts
+        assert _sanitize_ns("/abs/path") != "/abs/path"
+        assert _sanitize_ns("") == "default"
+        assert _sanitize_ns("...") == "default"
+        assert _sanitize_ns("a b") == "a_b"
+
+    # ---- P1 hint 语义与代价 ----
+
+    def test_hint_excludes_non_namespace_files(self, tmp_path: Path) -> None:
+        """hint 只列真实 namespace 文件，排除 .bak / .json.json 等干扰项。"""
+        plugin = _create_plugin(tmp_path)
+        _call_tool(plugin, "task_create", namespace="real-ns", subject="真实清单")
+        ctx_root = _bind_context._roots["test-user"]
+        (ctx_root / "task" / "default.json.bak").write_text("{}", encoding="utf-8")
+        (ctx_root / "task" / "odd.json.json").write_text("{}", encoding="utf-8")
+
+        error = _call_tool(plugin, "task_get", namespace="wrong-ns", task_id="Tnone")["error"]
+        assert "real-ns" in error
+        assert "bak" not in error
+        assert "odd.json" not in error
+
+    def test_hint_capped(self, tmp_path: Path) -> None:
+        """hint 列出的 namespace 数量有上限，避免错误串无限膨胀。"""
+        plugin = _create_plugin(tmp_path)
+        for i in range(plugin._MAX_HINT_NAMESPACES + 5):
+            _call_tool(plugin, "task_create", namespace=f"ns-{i}", subject="x")
+
+        error = _call_tool(plugin, "task_get", namespace="nope", task_id="Tnone")["error"]
+        assert "等 10 个" in error  # 总数为 10，仅列出上限个数
+
+    def test_empty_list_has_no_hint_noise(self, tmp_path: Path) -> None:
+        """正常空清单不再附带 available_namespaces 噪音。"""
+        plugin = _create_plugin(tmp_path)
+        _call_tool(plugin, "task_create", namespace="other-ns", subject="x")
+
+        result = _call_tool(plugin, "task_list", namespace="empty-ns")
+        assert result["ok"] is True
+        assert result["count"] == 0
+        assert "available_namespaces" not in result
+
+    # ---- 额外：symlink 越界与 IO 错误收敛 ----
+
+    def test_task_dir_symlink_escape_blocked(self, tmp_path: Path) -> None:
+        """task 目录被换成指向边界外的 symlink 时拒绝写入，不抛框架异常。"""
+        plugin = _create_plugin(tmp_path)
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        ctx_root = Path(tempfile.mkdtemp(prefix="task-ctx-escape-"))
+        (ctx_root / "task").symlink_to(outside, target_is_directory=True)
+
+        # _bind_context 会把 root 写进注册表，须在绑定时就用越界 root
+        _bind_context._roots["user-escape"] = ctx_root
+        token = _bind_context("user-escape")
+        try:
+            raw = asyncio.run(plugin.execute_tool("task_create", subject="越界写入"))
+        finally:
+            _reset_context(token)
+
+        result = json.loads(raw)  # 必须是结构化结果而非抛出的异常
+        assert result["ok"] is False
+        assert "越界" in result["error"]
+        assert not any(outside.iterdir())
+
+    def test_save_oserror_converted_to_result(self, tmp_path: Path) -> None:
+        """存储 IO 失败收敛为 {"ok": false}，不让 OSError 穿透。"""
+        plugin = _create_plugin(tmp_path)
+
+        token = _bind_context("user-io")
+        try:
+            import nanobee.builtin.tool_task.plugin as mod
+
+            original = mod.ToolTaskPlugin._save
+
+            def _boom(path: Path, tasks: dict) -> None:
+                raise OSError("disk full")
+
+            mod.ToolTaskPlugin._save = staticmethod(_boom)
+            try:
+                raw = asyncio.run(plugin.execute_tool("task_create", subject="写失败"))
+            finally:
+                mod.ToolTaskPlugin._save = original
+        finally:
+            _reset_context(token)
+
+        result = json.loads(raw)
+        assert result["ok"] is False
+        assert "IO" not in result["error"]  # 面向 LLM 的措辞，不带内部标识
+        assert "disk full" in result["error"]
