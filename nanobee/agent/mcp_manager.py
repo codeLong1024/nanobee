@@ -510,10 +510,13 @@ class MCPManager:
         幂等：多次调用安全。单个 server 关闭超时不影响其它 server。
         """
         owners = list(self._owners.values())
+        # 幂等空跑（owners 为空）不打印，避免二次 close 刷噪音日志
+        if owners:
+            logger.info("MCP: 开始关闭 {count} 个服务器", count=len(owners))
         # 刻意不在此处清空登记：清空会让 close 期间到来的 connect() 建立一条
         # 逃过回收的新连接（连接与子进程泄漏）。登记在全部拆解完成后逐个摘除，
         # 期间到来的 connect() 会复用「正在关闭」的 owner，从而 fail-closed。
-        async def _close_one(owner: _ServerOwner) -> None:
+        async def _close_one(owner: _ServerOwner) -> bool:
             """关闭单个 owner：超时/异常只影响它自己，不影响其它 server。"""
             try:
                 await asyncio.wait_for(
@@ -525,12 +528,21 @@ class MCPManager:
                     name=owner.name,
                     timeout=CLOSE_WAIT_TIMEOUT_S,
                 )
+                return False
             except Exception:
                 logger.exception("MCP server '{name}' 关闭异常", name=owner.name)
+                return False
+            logger.info("MCP server '{name}': 已关闭", name=owner.name)
+            return True
 
         # 各 owner 相互独立（每 server 一个 task 正是本设计的核心收益），故并行关闭：
         # 总耗时收敛到「单 server 上限」，而不是随 server 数线性放大（N × 7s）。
-        await asyncio.gather(*(_close_one(owner) for owner in owners))
+        results = await asyncio.gather(*(_close_one(owner) for owner in owners))
+        closed_count = sum(1 for ok in results if ok)
+        if owners:
+            logger.info(
+                "MCP: 关闭完成（成功 {closed}/{total}）", closed=closed_count, total=len(owners),
+            )
 
         for owner in owners:
             # 只摘除已退出的 owner：仍存活的 owner 可能正忙于建连或重连（其内部
