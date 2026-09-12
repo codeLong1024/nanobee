@@ -1,0 +1,22 @@
+# CNB（cnb.cool）云原生构建流水线配置
+#
+# 【用途】本文件只对 CNB 平台生效。CNB 采用"配置即代码"，配置文件必须提交到仓库根目录，
+#         不能放在平台侧或本地忽略 —— 不提交就完全不触发任何流水线。
+#
+# 【多平台说明】本仓库同时推送到 GitHub / Gitee / CNB，本文件对其他平台无副作用，
+#         GitHub 读的是 .github/workflows/、Gitee 读的是 .workflow/，各自互不干扰，
+#         因此三平台同步推送时无需按平台拆分或排除了本文件。
+#
+# 【生效条件】顶层键 main 表示"监听 main 分支"，配置文件版本与代码版本一致 ——
+#         该文件本身必须随代码提交并合入 main，流水线才会在 main 上生效。
+
+main:
+  # 触发事件：向 main 发起 Pull Request 时执行代码评审
+  pull_request:
+    - stages:
+        - name: 代码评审
+          image: cnbcool/code-review:latest
+          settings:
+            comment: true # 评审结果以评论形式回写到 PR
+            max_comments: 10 # 单次评审最多回写 10 条评论，避免刷屏
+            fail_on_critical: false # 发现严重问题也不判定流水线失败，不阻断合入
