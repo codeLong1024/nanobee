@@ -273,25 +273,45 @@ class NanobeeDingTalkHandler(ChatbotHandler):
         sender_id: str,
         content: str,
     ) -> tuple[str, list[str]]:
-        """Handle richText message type."""
+        """解析 richText 消息，提取文本与媒体附件。
+
+        判据与 dingtalk_stream SDK 保持一致（见 SDK ``chatbot.py`` 的
+        ``get_text_list`` / ``get_image_list``）：文本项按 ``"text" in item``
+        识别，媒体项按 ``"downloadCode" in item`` 识别，**不依赖 item["type"]**
+        —— 钉钉实际回调的 richText 项是裸 ``{"text": ...}``，不带 type 字段，
+        按 type 判定会导致所有文本被跳过、内容为空、消息被静默丢弃。
+        两条判据彼此独立，同一项同时含文本与下载码时两者都保留。
+
+        Args:
+            chatbot_msg: SDK 解析后的消息对象（提供 rich_text_content）。
+            message: 原始回调消息（保留入参以兼容调用签名）。
+            sender_id: 发送者 ID，用于媒体文件落盘归类。
+            content: 上游已提取到的内容（richText 场景通常为空串）。
+
+        Returns:
+            拼接后的文本内容与下载到的本地文件路径列表。
+        """
         file_paths: list[str] = []
         rich_list = chatbot_msg.rich_text_content.rich_text_list or []
         for item in rich_list:
             if not isinstance(item, dict):
                 continue
-            if item.get("type") == "text":
-                t = item.get("text", "").strip()
+            # 文本项：对齐 SDK 判据 "text" in item（值可能为 None，需容错）
+            if "text" in item:
+                t = str(item["text"] or "").strip()
                 if t:
                     content = (content + " " + t).strip() if content else t
-            elif item.get("downloadCode"):
+            # 媒体项：对齐 SDK 判据 "downloadCode" in item
+            if "downloadCode" in item:
                 dc = item["downloadCode"]
-                fname = item.get("fileName") or "file"
-                fp = await self.channel.sender.download_dingtalk_file(
-                    dc, fname, sender_id,
-                )
-                if fp:
-                    file_paths.append(fp)
-                    content = content or "[File]"
+                if dc:
+                    fname = item.get("fileName") or "file"
+                    fp = await self.channel.sender.download_dingtalk_file(
+                        dc, fname, sender_id,
+                    )
+                    if fp:
+                        file_paths.append(fp)
+                        content = content or "[File]"
         return content, file_paths
 
     async def _handle_message(self, parsed: "ParsedMessage") -> None:
