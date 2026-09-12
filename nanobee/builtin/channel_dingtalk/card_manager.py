@@ -180,6 +180,31 @@ class CardManager:
         await self.client.check_response(resp, f"[{card_instance_id}] Start streaming")
         resp.raise_for_status()
 
+    def _log_stream_resp(
+        self, action: str, card_instance_id: str, resp: Any,
+    ) -> None:
+        """记录流式接口响应，按「正常走 TRACE / 异常走 DEBUG」分级。
+
+        本方法在流式回复期间会被逐帧调用，成功响应体属高频明细，放 TRACE
+        避免 DEBUG 日志刷屏；仅非 200 响应保留在 DEBUG —— 异常才是默认
+        级别下需要看到的信息。
+
+        Args:
+            action: 接口动作名（如 ``stream_content``），仅用于日志前缀。
+            card_instance_id: 卡片实例 ID。
+            resp: httpx 响应对象。
+        """
+        if resp.status_code == 200:
+            logger.trace(
+                "[CARD] {} resp card={} status=200 body={}",
+                action, card_instance_id, (resp.text or "")[:500],
+            )
+        else:
+            logger.debug(
+                "[CARD] {} resp card={} status={} body={}",
+                action, card_instance_id, resp.status_code, (resp.text or "")[:500],
+            )
+
     async def stream_content(
         self, card_instance_id: str, content: str, is_final: bool = False,
     ) -> None:
@@ -187,6 +212,11 @@ class CardManager:
 
         Sends the FULL accumulated content each time — DingTalk renders
         it progressively.
+
+        日志分级：本方法在流式回复期间逐 chunk 调用，完整内容与响应体属
+        高频明细，落在 TRACE；DEBUG 只保留一次性的状态行与异常，避免
+        「DEBUG 一开就满屏」。需要完整回放时把 ``logging.level`` 设为
+        ``TRACE``（loguru 原生级别，文件 sink 直接透传）。
 
         Args:
             card_instance_id: 卡片实例 ID。
@@ -206,9 +236,10 @@ class CardManager:
             "isError": False,
         }
 
-        logger.debug(
-            "'[CARD-DEBUG] stream_content card={} isFinalize={} content={!r}'",
-            card_instance_id, is_final, content[:200],
+        # 逐 chunk 明细：每次推送都会执行，放 TRACE
+        logger.trace(
+            "[CARD] stream_content card={} isFinalize={} len={} content={!r}",
+            card_instance_id, is_final, len(content), content[:500],
         )
         try:
             resp = await client.put(
@@ -216,10 +247,7 @@ class CardManager:
                 headers=headers,
                 json=body,
             )
-            logger.debug(
-                "'[CARD-DEBUG] stream_content resp card={} status={} body={}'",
-                card_instance_id, resp.status_code, (resp.text or "")[:500],
-            )
+            self._log_stream_resp("stream_content", card_instance_id, resp)
             await self.client.check_response(resp, f"[{card_instance_id}] Stream content")
             resp.raise_for_status()
         except httpx.HTTPStatusError as e:
@@ -258,19 +286,18 @@ class CardManager:
             "cardUpdateOptions": {"updateCardDataByKey": True},
         }
 
-        logger.debug(
-            "'[CARD] finish_streaming {} ({} chars) body={}'",
-            card_instance_id, len(final_content), json.dumps(finish_body, ensure_ascii=False)[:500],
+        logger.debug("[CARD] finish_streaming {} ({} chars)", card_instance_id, len(final_content))
+        # body 含完整 msgContent（与回复正文重复），属明细，放 TRACE
+        logger.trace(
+            "[CARD] finish_streaming body={}",
+            json.dumps(finish_body, ensure_ascii=False)[:500],
         )
         resp = await client.put(
             f"{self.client.api_url}/card/instances",
             headers=headers,
             json=finish_body,
         )
-        logger.debug(
-            "'[CARD-DEBUG] finish_streaming resp card={} status={} body={}'",
-            card_instance_id, resp.status_code, (resp.text or "")[:500],
-        )
+        self._log_stream_resp("finish_streaming", card_instance_id, resp)
         await self.client.check_response(resp, f"[{card_instance_id}] Finish streaming")
         resp.raise_for_status()
 

@@ -10,12 +10,19 @@ Covers:
 
 from __future__ import annotations
 
+import json
 from collections import OrderedDict
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from nanobee.builtin.channel_dingtalk.auth import (
+    DINGTALK_AVAILABLE,
+    AckMessage,
+    CallbackMessage,
+    ChatbotMessage,
+)
 from nanobee.builtin.channel_dingtalk.config import DingTalkConfig
 from nanobee.builtin.channel_dingtalk.emotion_hook import (
     DingTalkEmotionHook,
@@ -1032,3 +1039,192 @@ class TestOnMessageResponseDelivery:
         dingtalk_plugin.sender.finalize_card_with_notification.assert_awaited_once_with(
             "card-info-001", "msg-info-001", "会话已重置。",
         )
+
+
+# ============================================================
+# richText 入站解析（判据与 dingtalk_stream SDK 对齐）
+# ============================================================
+
+
+def _rich_text_payload(rich_text: list[dict], **overrides) -> dict:
+    """按钉钉 Stream 实际回调结构构造 richText 报文。
+
+    钉钉回调的 richText 项是裸 ``{"text": "..."}``，**不带** ``type`` 字段；
+    群聊 @ 与单聊富文本都走 ``msgtype=richText``。
+    """
+    payload: dict = {
+        "conversationId": "cid-dm-001",
+        "msgId": "msg-rt-001",
+        "senderNick": "申琼龙",
+        "senderStaffId": "shenqla",
+        "content": {"richText": rich_text},
+        "conversationType": "1",
+        "robotCode": "ding-robot-001",
+        "msgtype": "richText",
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _callback_msg(payload: dict) -> CallbackMessage:
+    """用 SDK 原生 from_dict 构造回调消息（与线上链路一致）。"""
+    return CallbackMessage.from_dict({"data": json.dumps(payload, ensure_ascii=False)})
+
+
+def _rich_text_handler(sender: MagicMock | None = None):
+    """构造只具备解析依赖的 handler（不触发网络与卡片）。"""
+    from nanobee.builtin.channel_dingtalk.message import NanobeeDingTalkHandler
+
+    channel = SimpleNamespace(
+        logger=MagicMock(),
+        sender=sender if sender is not None else MagicMock(),
+        dingtalk_config=None,
+    )
+    return NanobeeDingTalkHandler(channel)
+
+
+@pytest.mark.skipif(not DINGTALK_AVAILABLE, reason="dingtalk_stream SDK 未安装")
+class TestRichTextParsing:
+    """richText 文本/媒体提取必须与 SDK 判据一致。
+
+    回归锚点：判据曾写成 ``item["type"] == "text"``，而钉钉实际回调是裸
+    ``{"text": ...}``（无 type 字段）→ 所有文本项被跳过 → content 为空 →
+    ``process()`` 静默丢弃，agent 完全不触发（单聊与群 @ 均命中）。
+    SDK 判据见 ``dingtalk_stream/chatbot.py`` 的 ``get_text_list``
+    （``'text' in item``）与 ``get_image_list``（``'downloadCode' in item``）。
+    """
+
+    @pytest.mark.asyncio
+    async def test_bare_text_items_are_parsed(self):
+        """钉钉实际报文形态：裸 {"text": ...} 必须被拼接为 content。"""
+        handler = _rich_text_handler()
+        payload = _rich_text_payload([
+            {"text": "@贸易风控部机器人"},
+            {"text": " 这是通道入站测试，收到请回复 ok"},
+        ])
+        content, file_paths = await handler._extract_message_content(
+            ChatbotMessage.from_dict(payload), _callback_msg(payload),
+        )
+        assert content == "@贸易风控部机器人 这是通道入站测试，收到请回复 ok"
+        assert file_paths == []
+
+    @pytest.mark.asyncio
+    async def test_process_no_longer_drops_richtext(self):
+        """process() 不得再把 richText 判空丢弃，必须派发后续处理。"""
+        handler = _rich_text_handler()
+        payload = _rich_text_payload([{"text": "单聊通道入站测试"}])
+        scheduled: list = []
+
+        def _fake_create_task(coro):
+            scheduled.append(coro)
+            coro.close()  # 不回填事件循环，避免未 await 警告
+            return MagicMock()
+
+        with patch(
+            "nanobee.builtin.channel_dingtalk.message.asyncio.create_task",
+            _fake_create_task,
+        ):
+            status, _ = await handler.process(_callback_msg(payload))
+
+        assert status == AckMessage.STATUS_OK
+        assert len(scheduled) == 1, "richText 报文不应再被静默丢弃"
+
+    @pytest.mark.asyncio
+    async def test_group_at_mention_richtext_not_dropped(self):
+        """群聊 @ 报文（conversationType=2）同样必须解析出内容。"""
+        handler = _rich_text_handler()
+        payload = _rich_text_payload(
+            [{"text": "@机器人"}, {"text": " 你好"}],
+            conversationId="cid/group-001",
+            conversationType="2",
+            conversationTitle="测试群",
+            isInAtList=True,
+        )
+        chatbot_msg = ChatbotMessage.from_dict(payload)
+        content, _ = await handler._extract_message_content(
+            chatbot_msg, _callback_msg(payload),
+        )
+        assert content == "@机器人 你好"
+        assert chatbot_msg.is_in_at_list is True
+
+    @pytest.mark.asyncio
+    async def test_download_code_item_collects_media(self):
+        """媒体项判据对齐 SDK（'downloadCode' in item），且保留 fileName。"""
+        sender = MagicMock()
+        sender.download_dingtalk_file = AsyncMock(return_value="/tmp/report.png")
+        handler = _rich_text_handler(sender)
+        payload = _rich_text_payload([
+            {"downloadCode": "dc-001", "fileName": "报表.png"},
+        ])
+        content, file_paths = await handler._extract_message_content(
+            ChatbotMessage.from_dict(payload), _callback_msg(payload),
+        )
+        assert file_paths == ["/tmp/report.png"]
+        assert content == "[File]"
+        sender.download_dingtalk_file.assert_awaited_once_with(
+            "dc-001", "报表.png", "shenqla",
+        )
+
+    @pytest.mark.asyncio
+    async def test_item_with_text_and_download_code_keeps_both(self):
+        """同一项同时含文本与下载码时，两条判据彼此独立，两者都保留。"""
+        sender = MagicMock()
+        sender.download_dingtalk_file = AsyncMock(return_value="/tmp/pic.png")
+        handler = _rich_text_handler(sender)
+        payload = _rich_text_payload([
+            {"text": "看图", "downloadCode": "dc-002", "fileName": "pic.png"},
+        ])
+        content, file_paths = await handler._extract_message_content(
+            ChatbotMessage.from_dict(payload), _callback_msg(payload),
+        )
+        assert content == "看图"
+        assert file_paths == ["/tmp/pic.png"]
+
+    @pytest.mark.asyncio
+    async def test_explicit_type_field_still_parsed(self):
+        """兼容显式带 type 的形态，不得因对齐 SDK 判据而回退。"""
+        handler = _rich_text_handler()
+        payload = _rich_text_payload([{"type": "text", "text": "旧形态"}])
+        content, _ = await handler._extract_message_content(
+            ChatbotMessage.from_dict(payload), _callback_msg(payload),
+        )
+        assert content == "旧形态"
+
+    @pytest.mark.asyncio
+    async def test_none_text_value_is_tolerated(self):
+        """SDK 判据 'text' in item 允许值为 None，此处不得抛异常。"""
+        handler = _rich_text_handler()
+        payload = _rich_text_payload([{"text": None}, {"text": "有效内容"}])
+        content, _ = await handler._extract_message_content(
+            ChatbotMessage.from_dict(payload), _callback_msg(payload),
+        )
+        assert content == "有效内容"
+
+    @pytest.mark.asyncio
+    async def test_empty_rich_list_still_yields_empty_content(self):
+        """空 richText 列表仍返回空内容，保留原有丢弃语义。"""
+        handler = _rich_text_handler()
+        payload = _rich_text_payload([])
+        content, file_paths = await handler._extract_message_content(
+            ChatbotMessage.from_dict(payload), _callback_msg(payload),
+        )
+        assert content == ""
+        assert file_paths == []
+
+    @pytest.mark.asyncio
+    async def test_text_msgtype_unaffected(self):
+        """msgtype=text 的既有路径不受影响。"""
+        handler = _rich_text_handler()
+        payload = {
+            "conversationId": "cid-dm-002",
+            "senderStaffId": "shenqla",
+            "senderNick": "申琼龙",
+            "text": {"content": "收到请回复"},
+            "conversationType": "1",
+            "msgtype": "text",
+        }
+        content, file_paths = await handler._extract_message_content(
+            ChatbotMessage.from_dict(payload), _callback_msg(payload),
+        )
+        assert content == "收到请回复"
+        assert file_paths == []
