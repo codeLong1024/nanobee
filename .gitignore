@@ -42,6 +42,9 @@ htmlcov/
 .tox/
 .nox/
 
+# 任务评测产物（本地跑测生成的 case_*.out/.results/.tools，仅用于本地比对，不随仓库分发）
+_task_eval/
+
 # Environment variables
 .env
 .env.local

@@ -721,7 +721,7 @@ class AgentLoop:
                 context_id,
             )
 
-    async def _connect_mcp(self) -> None:
+    async def connect_mcp(self) -> None:
         """连接配置的 MCP 服务器（委托给 MCPManager）。"""
         await self.mcp.connect(self.tools, default_cwd=str(self.workspace))
 
@@ -907,7 +907,7 @@ class AgentLoop:
         on_stream_end: Callable[..., Awaitable[None]] | None = None,
     ) -> OutboundMessage | None:
         """直接处理消息并返回出站消息。"""
-        await self._connect_mcp()
+        await self.connect_mcp()
         msg = InboundMessage(
             channel=channel, sender_id="user", chat_id=chat_id,
             content=content, media=media or [],

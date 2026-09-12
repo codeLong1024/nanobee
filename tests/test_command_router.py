@@ -497,12 +497,12 @@ class TestKernelIntegration:
         """创建带完整 mock 的 AgentLoop。
 
         需要 mock:
-        - _connect_mcp: 异步方法（kernel._handle_message_impl 中调用）
+        - connect_mcp: 异步方法（kernel._handle_message_impl 中调用）（kernel._handle_message_impl 中调用）
         - dispatch: 公开消息入口（替代 _process_message + lock + queue）
         - try_inject: 中轮注入（替代 _pending_queues 直接访问）
         """
         mock_agent = MagicMock()
-        mock_agent._connect_mcp = AsyncMock()
+        mock_agent.connect_mcp = AsyncMock()
         mock_agent.dispatch = AsyncMock()
         mock_agent.try_inject = MagicMock(return_value=False)
         return mock_agent

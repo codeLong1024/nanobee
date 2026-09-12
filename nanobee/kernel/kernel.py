@@ -180,7 +180,7 @@ class NanobeeKernel:
 
         # 启动通道后台任务
         channels = self.plugin_manager.get_by_type("channel")
-        connect_mcp = self._agent_loop._connect_mcp if self._agent_loop else None
+        connect_mcp = self._agent_loop.connect_mcp if self._agent_loop else None
         await self.channel_manager.start_channels(channels, connect_mcp=connect_mcp)
 
         self._services_started = True
@@ -283,9 +283,6 @@ class NanobeeKernel:
                 "或通过 set_agent_loop() 设置 Agent Loop。"
             )
 
-        # 连接 MCP 服务器（此时 self._agent_loop 必然非 None）
-        await self._agent_loop._connect_mcp()
-
         msg = InboundMessage(
             channel=channel,
             sender_id=sender_id,
@@ -297,12 +294,16 @@ class NanobeeKernel:
             fresh_session=fresh_session,
         )
 
-        # ── 命令拦截（锁之前，零 token 消耗） ──
+        # ── 命令拦截（锁之前，零 token 消耗；且**先于** MCP 连接——命令不得为
+        #     挂死的 MCP server 付出最长 CONNECT_ATTEMPT_TIMEOUT_S 的等待） ──
         if getattr(self, "command_router", None) is not None:
             cmd_ctx = CommandContext(msg=msg, kernel=self)
             cmd_response = await self.command_router.dispatch(msg.content, cmd_ctx)
             if cmd_response is not None:
                 return cmd_response
+
+        # 连接 MCP 服务器（此时 self._agent_loop 必然非 None；命令已拦截完毕）
+        await self._agent_loop.connect_mcp()
 
         agent = self._agent_loop
         key = msg.context_id
@@ -522,15 +523,21 @@ class NanobeeKernel:
         # 停止 Agent Loop
         if self._agent_loop is not None:
             self._agent_loop.stop()
-            await self._agent_loop.close_mcp()
 
         # 优雅停止所有通道
         channels = self.plugin_manager.get_by_type("channel")
         for ch in channels:
             await ch.stop()
 
-        # 取消并等待通道后台任务（3s 超时兜底）
+        # 取消并等待通道后台任务（3s 超时兜底）。shutdown 内部还会先有界等待
+        # MCP 连接任务落地（不取消——取消只中断 connect() 内部的 await，各
+        # server 独立的 owner task 仍会继续建连，收不到口）。
         await self.channel_manager.shutdown()
+
+        # 关闭 MCP：必须放在通道任务收口**之后**——close 之后仍在飞行的连接请求
+        # 会新建一条无人回收的 owner（连接/子进程/task 三重泄漏）。
+        if self._agent_loop is not None:
+            await self._agent_loop.close_mcp()
 
         # 将缓存中的 session 全部刷入磁盘
         self.session_manager.flush_all()

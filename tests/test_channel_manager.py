@@ -7,16 +7,31 @@
 4. shutdown 取消所有任务
 5. active_count 计数器
 6. _make_error_cb 回调
+7. MCP 连接任务的派发与关停对齐（不阻塞启动 / 关停等待 / 异常取回 / 超时留痕）
 """
 
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Iterator
+from contextlib import contextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from nanobee.kernel.channel_manager import ChannelManager
+from nanobee.utils.logger import logger
+
+
+@contextmanager
+def _captured_errors() -> Iterator[list[str]]:
+    """捕获 ERROR 及以上级别的日志正文。"""
+    messages: list[str] = []
+    sink_id = logger.add(messages.append, level="ERROR", format="{message}")
+    try:
+        yield messages
+    finally:
+        logger.remove(sink_id)
 
 
 class TestChannelManagerStart:
@@ -82,17 +97,25 @@ class TestChannelManagerStart:
         good.start.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_connect_mcp_called(self) -> None:
-        """connect_mcp 回调被调度。"""
+    async def test_connect_mcp_dispatched_and_tracked(self) -> None:
+        """connect_mcp 被派发为受管任务：已启动且被持引用（关停时可等待）。"""
         mgr = ChannelManager()
-        connect_mcp = AsyncMock()
+        release = asyncio.Event()
+        called = False
 
-        await mgr.start_channels([], connect_mcp=connect_mcp)
-        # connect_mcp 作为 ensure_future 调度，不一定立即执行
-        # 等待一小段时间
-        await asyncio.sleep(0.05)
-        # 验证至少被调度（可能因任务已执行而完成）
-        assert True  # 不抛异常即为通过
+        async def _connect() -> None:
+            nonlocal called
+            called = True
+            await release.wait()
+
+        await mgr.start_channels([], connect_mcp=_connect)
+        await asyncio.sleep(0)
+
+        assert called
+        assert mgr._mcp_task is not None and not mgr._mcp_task.done()
+
+        release.set()
+        await mgr.shutdown()
 
     @staticmethod
     def _make_channel(name: str) -> MagicMock:
@@ -201,3 +224,135 @@ class TestChannelManagerErrorCallback:
         task.result.side_effect = RuntimeError("模拟异常")
         # 不应抛异常
         cb(task)
+
+
+class TestChannelManagerMcpDispatch:
+    """MCP 连接任务的派发与关停对齐。
+
+    MCP 连接必须由 ChannelManager 受管启动，同时满足两个相反方向的约束：
+
+    1. **不阻塞启动**——MCP 握手是串行且可能长达数十秒的，若在 gateway 的 ready
+       路径同步等待，会让 ``nanobee svc start`` 在 10s 健康检查上误判失败；
+    2. **关停可对齐**——连接仍在飞行时若直接关闭，``close_mcp()`` 可能看到空
+       ``_owners`` 直接返回，随后连接建成却无人回收（连接/子进程/task 泄漏）。
+    """
+
+    @pytest.mark.asyncio
+    async def test_shutdown_waits_for_in_flight_mcp_connect(self) -> None:
+        """关停时必须等在飞行中的 MCP 连接落地，而不是放手不管。"""
+        mgr = ChannelManager()
+        landed = asyncio.Event()
+
+        async def _connecting() -> None:
+            await asyncio.sleep(0.05)
+            landed.set()
+
+        await mgr.start_channels([], connect_mcp=_connecting)
+        await mgr.shutdown()
+
+        assert landed.is_set()
+
+    @pytest.mark.asyncio
+    async def test_mcp_connect_failure_is_logged(self) -> None:
+        """MCP 连接任务失败必须被取回并记 ERROR，不能静默消失。"""
+        mgr = ChannelManager()
+
+        async def _boom() -> None:
+            raise RuntimeError("连接炸了")
+
+        with _captured_errors() as messages:
+            await mgr.start_channels([], connect_mcp=_boom)
+            await mgr.shutdown()
+
+        assert any("MCP 连接" in message for message in messages)
+
+    @pytest.mark.asyncio
+    async def test_start_channels_does_not_block_on_mcp_connect(self) -> None:
+        """启动不得等待 MCP 连接完成。
+
+        MCP 握手是串行且可能长达数十秒的：若在 gateway 的 ready 路径同步等待，
+        ``nanobee svc start`` 会在 10s 健康检查上误判失败。这条用例是「不得改回
+        ``await connect_mcp()``」这个决策的保护栏。
+        """
+        mgr = ChannelManager()
+        finished = False
+
+        async def _slow_connect() -> None:
+            nonlocal finished
+            await asyncio.sleep(0.2)
+            finished = True
+
+        await mgr.start_channels([], connect_mcp=_slow_connect)
+
+        assert not finished, "start_channels 不应等待 MCP 连接完成"
+
+        await mgr.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_mcp_task_not_counted_in_active_count(self) -> None:
+        """active_count 语义仍是「通道任务数」，不含 MCP 连接任务。"""
+        mgr = ChannelManager()
+        release = asyncio.Event()
+
+        async def _blocking_connect() -> None:
+            await release.wait()
+
+        await mgr.start_channels([], connect_mcp=_blocking_connect)
+        await asyncio.sleep(0)
+
+        assert mgr.active_count == 0
+
+        release.set()
+        await mgr.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_shutdown_does_not_cancel_mcp_connect(self) -> None:
+        """关停是「等它落地」而不是「取消它」。
+
+        取消只中断 ``connect()`` 内部的 await，各 server 独立的 owner task 仍会
+        继续建连——收不到口，只会留下一批无人回收的连接。
+        """
+        mgr = ChannelManager()
+        completed = False
+        cancelled = False
+
+        async def _connecting() -> None:
+            nonlocal completed, cancelled
+            try:
+                await asyncio.sleep(0.05)
+                completed = True
+            except asyncio.CancelledError:
+                cancelled = True
+                raise
+
+        await mgr.start_channels([], connect_mcp=_connecting)
+        await mgr.shutdown()
+
+        assert completed
+        assert not cancelled
+
+    @pytest.mark.asyncio
+    async def test_wait_background_times_out_with_error_log(self) -> None:
+        """等待超上界时必须记 ERROR，且不得把关停无限拖住。
+
+        这里是本项目里少数**允许**用 ``asyncio.wait_for``/``timeout`` 包裹的调用：
+        ``wait_background`` 内部只 ``await`` 一个 future/任务，不 enter cancel scope。
+        """
+        mgr = ChannelManager()
+        release = asyncio.Event()
+
+        async def _stuck_connect() -> None:
+            await release.wait()
+
+        await mgr.start_channels([], connect_mcp=_stuck_connect)
+        await asyncio.sleep(0)
+
+        with patch("nanobee.kernel.channel_manager._MCP_CONNECT_DRAIN_TIMEOUT_S", 0.05):
+            with _captured_errors() as messages:
+                async with asyncio.timeout(1):
+                    await mgr.wait_background()
+
+        assert any("MCP" in message for message in messages), "等待超上界必须记 ERROR"
+
+        release.set()
+        await mgr.shutdown()

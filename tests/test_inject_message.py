@@ -120,7 +120,7 @@ class TestHandleInjectedMessage:
 
         # 构造 AgentLoop mock（避免真正调用 LLM）
         agent_mock = MagicMock()
-        agent_mock._connect_mcp = AsyncMock()
+        agent_mock.connect_mcp = AsyncMock()
         agent_mock.dispatch = AsyncMock(return_value=OutboundMessage(
             channel="test", chat_id="user:default",
             content="subagent done", metadata={},
@@ -152,7 +152,7 @@ class TestHandleInjectedMessage:
         event_bus.subscribe("agent.outbound", spy)
 
         agent_mock = MagicMock()
-        agent_mock._connect_mcp = AsyncMock()
+        agent_mock.connect_mcp = AsyncMock()
         agent_mock.dispatch = AsyncMock(return_value=None)
         agent_mock._pending_subagent_results = {}
 
@@ -172,7 +172,7 @@ class TestHandleInjectedMessage:
     async def test_exception_in_injected_message(self, event_bus):
         """注入消息处理异常时不崩溃（由 logger.exception 记录）。"""
         agent_mock = MagicMock()
-        agent_mock._connect_mcp = AsyncMock()
+        agent_mock.connect_mcp = AsyncMock()
         agent_mock.dispatch = AsyncMock(side_effect=RuntimeError("simulated crash"))
         agent_mock._pending_subagent_results = {}
 
@@ -191,7 +191,7 @@ class TestHandleInjectedMessage:
     async def test_concurrent_injection_single_user(self, event_bus):
         """同用户并发注入：第一条创建新 turn，后续中轮注入。"""
         agent_mock = MagicMock()
-        agent_mock._connect_mcp = AsyncMock()
+        agent_mock.connect_mcp = AsyncMock()
         # dispatch 阻塞一小段时间，模拟处理中
         agent_mock.dispatch = AsyncMock(side_effect=lambda *a, **kw: asyncio.sleep(0.05))
         agent_mock.try_inject = MagicMock(return_value=False)
