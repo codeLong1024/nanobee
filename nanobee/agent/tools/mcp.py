@@ -8,7 +8,6 @@ import urllib.parse
 from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack, suppress
 from typing import Any
-from weakref import WeakKeyDictionary
 
 import httpx
 from nanobee.utils.logger import logger
@@ -64,7 +63,13 @@ def _sanitize_name(name: str) -> str:
     """Sanitize an MCP-derived name for model API compatibility."""
     return _SANITIZE_RE.sub("_", re.sub(r"[^a-zA-Z0-9_-]", "_", name))
 
-_RELOAD_LOCKS: WeakKeyDictionary[Any, asyncio.Lock] = WeakKeyDictionary()
+
+def _redact_url(url: str | None) -> str:
+    """日志用 URL 脱敏：剥离 query 与 fragment（MCP 网关的 URL query 常携带 key）。"""
+    if not url:
+        return str(url)
+    return url.split("?", 1)[0].split("#", 1)[0]
+
 _ReconnectCallback = Callable[[str, str, Tool], Awaitable[Tool | None]]
 
 
@@ -228,6 +233,11 @@ class _MCPWrapperBase(Tool):
 
     def set_reconnect_handler(self, reconnect: _ReconnectCallback) -> None:
         self._reconnect = reconnect
+
+    @property
+    def server_name(self) -> str:
+        """该 wrapper 绑定的 MCP 服务器名（注销与重连回调按它精确归属）。"""
+        return self._server_name
 
     async def _refresh_session_after_termination(
         self,
@@ -521,9 +531,20 @@ async def connect_mcp_servers(
     """Connect to configured MCP servers and register their tools, resources, prompts.
 
     Returns a dict mapping server name -> its dedicated AsyncExitStack.
-    Each server gets its own stack to prevent cancel scope conflicts
-    when multiple MCP servers are configured.
+
+    Note:
+        一次只允许传入一个 server，且必须从「该 server 的 owner task」中调用
+        （入口处有运行时断言）：anyio 的 cancel scope 归属进入它的那个 task，
+        且同一 task 内并发持有的多个 scope 严格嵌套、只能整体逆序退出——无法
+        只关中间某一个，重连语义不成立。多 server 的编排由 ``MCPManager``
+        （每 server 一个 owner task）负责。
     """
+    if len(mcp_servers) > 1:
+        # 结构性约束的运行时断言：docstring 约定无法阻止未来的误用，误用会
+        # 直接复现「一个 task 管多个 server」的 cancel scope 结构性错误。
+        raise ValueError(
+            "connect_mcp_servers 一次只允许连接一个 server（多 server 编排归 MCPManager）"
+        )
     from mcp import ClientSession, StdioServerParameters
     from mcp.client.sse import sse_client
     from mcp.client.stdio import stdio_client
@@ -562,7 +583,9 @@ async def connect_mcp_servers(
                 read, write = await server_stack.enter_async_context(stdio_client(params))
             elif transport_type == "sse":
                 if not await _probe_http_url(cfg.url):
-                    logger.warning("MCP server '{}': {} unreachable, skipping", name, cfg.url)
+                    logger.warning(
+                        "MCP server '{}': {} unreachable, skipping", name, _redact_url(cfg.url)
+                    )
                     await server_stack.aclose()
                     return name, None
 
@@ -588,7 +611,9 @@ async def connect_mcp_servers(
                 )
             elif transport_type == "streamableHttp":
                 if not await _probe_http_url(cfg.url):
-                    logger.warning("MCP server '{}': {} unreachable, skipping", name, cfg.url)
+                    logger.warning(
+                        "MCP server '{}': {} unreachable, skipping", name, _redact_url(cfg.url)
+                    )
                     await server_stack.aclose()
                     return name, None
 
@@ -666,7 +691,11 @@ async def connect_mcp_servers(
                         "MCP: registered resource '{}' from server '{}'", wrapper.name, name
                     )
             except Exception as e:
-                logger.debug("MCP server '{}': resources not supported or failed: {}", name, e)
+                logger.debug(
+                    "MCP server '{}': resources not supported or failed: {}",
+                    name,
+                    type(e).__name__,
+                )
 
             try:
                 prompts_result = await session.list_prompts()
@@ -678,13 +707,24 @@ async def connect_mcp_servers(
                     registered_count += 1
                     logger.debug("MCP: registered prompt '{}' from server '{}'", wrapper.name, name)
             except Exception as e:
-                logger.debug("MCP server '{}': prompts not supported or failed: {}", name, e)
+                logger.debug(
+                    "MCP server '{}': prompts not supported or failed: {}",
+                    name,
+                    type(e).__name__,
+                )
 
             logger.info(
                 "MCP server '{}': connected, {} capabilities registered", name, registered_count
             )
             return name, server_stack
 
+        except asyncio.CancelledError:
+            # 取消（连接超时/关闭）路径同样要回收半成品 stack：transport 与
+            # ClientSession 的 task group 已经 enter，不关闭会留下活跃 scope
+            # 以及未回收的子进程、子任务。
+            with suppress(asyncio.CancelledError, Exception):
+                await server_stack.aclose()
+            raise
         except Exception as e:
             hint = ""
             text = str(e).lower()
@@ -702,7 +742,18 @@ async def connect_mcp_servers(
                     " Hint: this looks like stdio protocol pollution. Make sure the MCP server writes "
                     "only JSON-RPC to stdout and sends logs/debug output to stderr instead."
                 )
-            logger.exception("MCP server '{}': failed to connect: {}", name, hint)
+            # 脱敏责任归本层：第三方（httpx/anyio）的异常消息内嵌完整请求 URL
+            # （query 携带网关 key），而 logger.exception 会把 traceback 连同
+            # str(exc) 一起写进日志。往下的第三方文案改不了，这里是第一个
+            # nanobee 自有边界，必须在此收口——故不用 exception，只记异常类名
+            # 与脱敏后的 URL。
+            logger.error(
+                "MCP server '{}': failed to connect: {} url={}{}",
+                name,
+                type(e).__name__,
+                _redact_url(cfg.url),
+                hint,
+            )
             with suppress(Exception):
                 await server_stack.aclose()
             return name, None
@@ -716,7 +767,13 @@ async def connect_mcp_servers(
         try:
             result = await connect_single_server(name, cfg)
         except Exception as e:
-            logger.exception("MCP server '{}' connection failed: {}", name, e)
+            # 同上：不输出原始异常，避免 traceback 带出含 key 的完整 URL。
+            logger.error(
+                "MCP server '{}' connection failed: {} url={}",
+                name,
+                type(e).__name__,
+                _redact_url(cfg.url),
+            )
             continue
         if result is not None and result[1] is not None:
             server_stacks[result[0]] = result[1]
@@ -724,114 +781,47 @@ async def connect_mcp_servers(
     return server_stacks
 
 
-def _tool_prefix(server_name: str) -> str:
-    """生成 MCP 工具名称前缀，用于按服务器匹配工具。"""
-    return _sanitize_name(f"mcp_{server_name}_")
+def unregister_server_tools(registry: ToolRegistry, server_name: str) -> int:
+    """从注册表中注销指定 MCP 服务器注册的全部工具。
 
+    按 wrapper 的归属（``server_name`` 精确匹配）而不是名称前缀：前缀匹配在
+    server 名互为前缀（如 ``a`` 与 ``a_b``）时会误删对方的工具。
 
-def _unregister_server_tools(manager, registry: ToolRegistry, server_name: str) -> int:
-    """从注册表中注销指定 MCP 服务器的所有工具。"""
-    prefix = _tool_prefix(server_name)
+    Args:
+        registry: 工具注册表。
+        server_name: 服务器名。
+
+    Returns:
+        注销的工具数量。
+    """
     removed = 0
     for tool_name in list(registry.tool_names):
-        if tool_name.startswith(prefix):
+        tool = registry.get(tool_name)
+        if isinstance(tool, _MCPWrapperBase) and tool.server_name == server_name:
             registry.unregister(tool_name)
             removed += 1
     return removed
 
 
-def _close_server(manager, server_name: str) -> None:
-    """关闭指定 MCP 服务器的连接栈。"""
-    stack = manager._stacks.pop(server_name, None)
-    if stack is not None:
-        try:
-            loop = asyncio.get_running_loop()
-            loop.create_task(stack.aclose())
-        except RuntimeError:
-            # 没有运行中的事件循环，同步关闭
-            try:
-                import anyio
-                anyio.run(stack.aclose)
-            except ImportError:
-                pass
-        except Exception:
-            logger.debug("MCP server '{}' cleanup error (ignored)", server_name)
-
-
-def _reload_lock(manager) -> asyncio.Lock:
-    """获取 MCP 管理器的重载锁，防止并发重连。"""
-    try:
-        return _RELOAD_LOCKS[manager]
-    except KeyError:
-        lock = asyncio.Lock()
-        _RELOAD_LOCKS[manager] = lock
-        return lock
-
-
-async def _refresh_terminated_server(
-    manager,
+def attach_reconnect_handlers(
     registry: ToolRegistry,
-    server_name: str,
-    tool_name: str,
-    stale_tool: Tool,
-    *,
-    default_cwd: str | None = None,
-) -> Tool | None:
-    """重新连接已终止的 MCP 服务器，返回刷新后的工具（或 None）。"""
-    async with _reload_lock(manager):
-        cfg = manager._servers.get(server_name)
-        if cfg is None:
-            logger.warning(
-                "MCP server '{}' session terminated but is no longer configured",
-                server_name,
-            )
-            return None
-
-        current_tool = registry.get(tool_name)
-        if (
-            current_tool is not None
-            and current_tool is not stale_tool
-            and server_name in manager._stacks
-        ):
-            return current_tool
-
-        logger.warning("MCP server '{}' session terminated; refreshing connection", server_name)
-        _unregister_server_tools(manager, registry, server_name)
-        _close_server(manager, server_name)
-
-        connected = await connect_mcp_servers({server_name: cfg}, registry, default_cwd=default_cwd)
-        manager._stacks.update(connected)
-        _attach_reconnect_handlers(manager, registry, connected)
-        manager._connected = bool(manager._stacks)
-        if server_name not in connected:
-            logger.warning("MCP server '{}' reconnect failed after session termination", server_name)
-            return None
-        return registry.get(tool_name)
-
-
-def _attach_reconnect_handlers(
-    manager,
-    registry: ToolRegistry,
-    server_names,
-    *,
-    default_cwd: str | None = None,
+    server_names: list[str],
+    reconnect: _ReconnectCallback,
 ) -> None:
-    """为指定服务器的所有 MCP Wrapper 注入重连回调。"""
-    async def reconnect(server_name: str, tool_name: str, stale_tool: Tool) -> Tool | None:
-        return await _refresh_terminated_server(
-            manager,
-            registry,
-            server_name,
-            tool_name,
-            stale_tool,
-            default_cwd=default_cwd,
-        )
+    """为指定服务器的所有 MCP Wrapper 注入重连回调。
 
-    for server_name in server_names:
-        prefix = _tool_prefix(server_name)
-        for tool_name in list(registry.tool_names):
-            if not tool_name.startswith(prefix):
-                continue
-            tool = registry.get(tool_name)
-            if isinstance(tool, _MCPWrapperBase):
-                tool.set_reconnect_handler(reconnect)
+    回调由调用方提供：MCP 连接的重连必须在「进入该连接的同一个 task」里执行
+    （anyio 的 cancel scope 归属宿主 task），因此本函数只负责把回调挂到工具
+    上，不决定由谁重连。匹配同样按 wrapper 归属而非名称前缀（理由同
+    unregister_server_tools）。
+
+    Args:
+        registry: 工具注册表。
+        server_names: 要挂接回调的服务器名列表。
+        reconnect: 重连回调（由对应 server 的 owner task 提供）。
+    """
+    wanted = set(server_names)
+    for tool_name in list(registry.tool_names):
+        tool = registry.get(tool_name)
+        if isinstance(tool, _MCPWrapperBase) and tool.server_name in wanted:
+            tool.set_reconnect_handler(reconnect)
