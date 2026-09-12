@@ -84,6 +84,9 @@ class TestStreamRespLogLevel:
             mgr.client.check_response = AsyncMock(side_effect=AssertionError("500"))
             with pytest.raises(AssertionError):
                 await mgr.stream_content("card-1", "内容")
+            # 加固（评审建议）：确认非 200 分支确实由一次真实的 put 调用触发，
+            # 防止未来重构导致 put 未被调用、用例空转
+            mgr.client.put.assert_awaited_once()
             logged = buf.getvalue()
             assert "status=500" in logged, "非 200 响应必须在 DEBUG 可见"
             assert "system.busy" in logged, "DEBUG 日志需携带响应 body 便于定位"
