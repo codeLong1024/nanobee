@@ -14,8 +14,26 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from nanobee.exceptions import ContextError
 from nanobee.session.session import Session
 from nanobee.utils.logger import logger
+from nanobee.utils.user_id import is_safe_user_id
+
+
+def _assert_safe_user_id(user_id: str) -> None:
+    """落点断言：user_id 必须通过存储键白名单，否则拒绝拼路径（评审 F1）。
+
+    Args:
+        user_id: 待校验的用户标识。
+
+    Raises:
+        ContextError: user_id 含路径分隔符 / 相对路径语义 / 白名单外字符。
+    """
+    if not is_safe_user_id(user_id):
+        raise ContextError(
+            f"SessionStore 拒绝非法 user_id"
+            f"（仅允许 [A-Za-z0-9._-]，长度 1-64）: {user_id!r}",
+        )
 
 # 文件名安全字符正则：匹配所有文件系统非法字符，统一替换为下划线。
 # 包含 Windows (<>:"/\\|?*) 和 Linux (\0/ 中 / 已覆盖)，与 nanobot 上游保持一致。
@@ -58,12 +76,20 @@ class SessionStore:
         """返回 session 文件的完整路径。
 
         Args:
-            user_id: 用户 ID。
+            user_id: 用户 ID。必须通过存储键白名单（出生点归一 + 落点
+                断言双层防线，见 :mod:`nanobee.utils.user_id`）——
+                ``_safe_key`` 只净化 session_id（文件名），user_id 作为
+                目录名参与拼接，非法值在此拒绝落盘（评审 F1 落点断言）。
+
             session_id: 会话 ID（可能含 ``:``、``/`` 等特殊字符）。
 
         Returns:
             文件的绝对路径。
+
+        Raises:
+            ContextError: user_id 未通过存储键白名单校验。
         """
+        _assert_safe_user_id(user_id)
         safe = _safe_key(session_id)
         return self.sessions_base_dir / user_id / "sessions" / f"{safe}.jsonl"
 
@@ -73,12 +99,17 @@ class SessionStore:
         与 session .jsonl 同目录，后缀为 .consolidation.jsonl。
 
         Args:
-            user_id: 用户 ID。
+            user_id: 用户 ID。必须通过存储键白名单（同 ``_session_path``）。
+
             session_id: 会话 ID（可能含 ``:``、``/`` 等特殊字符）。
 
         Returns:
             归档文件的绝对路径。
+
+        Raises:
+            ContextError: user_id 未通过存储键白名单校验。
         """
+        _assert_safe_user_id(user_id)
         safe = _safe_key(session_id)
         return self.sessions_base_dir / user_id / "sessions" / f"{safe}.consolidation.jsonl"
 

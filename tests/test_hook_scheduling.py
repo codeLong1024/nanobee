@@ -47,7 +47,7 @@ class _SlowPlugin(NanobeePlugin):
         self._delay = delay
         self.call_count = 0
 
-    async def on_message_completed(self, context, messages):
+    async def on_message_completed(self, context, report):
         self.call_count += 1
         await asyncio.sleep(self._delay)
 
@@ -57,7 +57,7 @@ class _FailingPlugin(NanobeePlugin):
     name = "failing_plugin"
     plugin_type = "audit"
 
-    async def on_message_completed(self, context, messages):
+    async def on_message_completed(self, context, report):
         raise RuntimeError("模拟插件异常")
 
     @property
@@ -76,9 +76,9 @@ class _PriorityPlugin(NanobeePlugin):
         super().__init__(metadata)
         self._on_message_completed = None  # 由测试注入
 
-    async def on_message_completed(self, context, messages):
+    async def on_message_completed(self, context, report):
         if self._on_message_completed:
-            await self._on_message_completed(context, messages)
+            await self._on_message_completed(context, report)
 
 
 # =============================================================================
@@ -400,6 +400,7 @@ class TestHookSchedulingFIP:
         loop.plugin_manager = pm
         loop.context_manager = _FakeContextManager()
         loop._pending_blockers = {}
+        loop._hook_tasks = set()
 
         t0 = asyncio.get_event_loop().time()
         await loop._notify_plugins_message_completed("ctx-1", [{"role": "user", "content": "hi"}])
@@ -431,6 +432,7 @@ class TestHookSchedulingFIP:
         loop.plugin_manager = pm
         loop.context_manager = _FakeContextManager()
         loop._pending_blockers = {}
+        loop._hook_tasks = set()
 
         await loop._notify_plugins_message_completed("ctx-1", [{"role": "user", "content": "hi"}])
 
@@ -468,6 +470,7 @@ class TestHookSchedulingFIP:
         loop.plugin_manager = pm
         loop.context_manager = _FakeContextManager()
         loop._pending_blockers = {}
+        loop._hook_tasks = set()
 
         await loop._notify_plugins_message_completed("ctx-1", [{"role": "user", "content": "hi"}])
         await asyncio.sleep(0.05)
@@ -504,6 +507,7 @@ class TestHookSchedulingFIP:
         loop.plugin_manager = pm
         loop.context_manager = _FakeContextManager()
         loop._pending_blockers = {}
+        loop._hook_tasks = set()
 
         await loop._notify_plugins_message_completed("ctx-1", [{"role": "user", "content": "hi"}])
 
@@ -519,6 +523,7 @@ class TestHookSchedulingFIP:
         loop = object.__new__(AgentLoop)
         loop.plugin_manager = None  # 无插件
         loop._pending_blockers = {}
+        loop._hook_tasks = set()
 
         await loop._notify_plugins_message_completed("ctx-1", [{"role": "user", "content": "hi"}])
         assert loop._pending_blockers.get("ctx-1") is None
@@ -546,6 +551,7 @@ class TestHookSchedulingFIP:
         loop.plugin_manager = pm
         loop.context_manager = _FailingCtxMgr()
         loop._pending_blockers = {}
+        loop._hook_tasks = set()
 
         # 不应抛异常
         await loop._notify_plugins_message_completed("ctx-1", [{"role": "user", "content": "hi"}])
@@ -573,7 +579,7 @@ class _TimeoutPlugin(NanobeePlugin):
         self.hang_forever = hang_forever
         self.call_count = 0
 
-    async def on_message_completed(self, context, messages):
+    async def on_message_completed(self, context, report):
         self.call_count += 1
         if self.hang_forever:
             await asyncio.Event().wait()  # 永久阻塞
@@ -602,6 +608,7 @@ class TestHookTimeout:
         loop.plugin_manager = pm
         loop.context_manager = _FakeContextManager()
         loop._pending_blockers = {}
+        loop._hook_tasks = set()
 
         await loop._notify_plugins_message_completed("ctx-1", [{"role": "user", "content": "hi"}])
 
@@ -631,6 +638,7 @@ class TestHookTimeout:
         loop.plugin_manager = pm
         loop.context_manager = _FakeContextManager()
         loop._pending_blockers = {}
+        loop._hook_tasks = set()
 
         await loop._notify_plugins_message_completed("ctx-1", [{"role": "user", "content": "hi"}])
 
@@ -659,6 +667,7 @@ class TestHookTimeout:
         loop.plugin_manager = pm
         loop.context_manager = _FakeContextManager()
         loop._pending_blockers = {}
+        loop._hook_tasks = set()
 
         await loop._notify_plugins_message_completed("ctx-1", [{"role": "user", "content": "hi"}])
         await asyncio.sleep(0.08)
@@ -691,6 +700,7 @@ class TestHookTimeout:
         loop.plugin_manager = pm
         loop.context_manager = _FakeContextManager()
         loop._pending_blockers = {}
+        loop._hook_tasks = set()
 
         await loop._notify_plugins_message_completed("ctx-1", [{"role": "user", "content": "hi"}])
 
@@ -720,6 +730,7 @@ class TestHookTimeout:
         loop.plugin_manager = pm
         loop.context_manager = _FakeContextManager()
         loop._pending_blockers = {}
+        loop._hook_tasks = set()
         loop._pending_queues = {}
 
         # 第一轮：触发阻塞 hook 并超时
@@ -799,6 +810,7 @@ class TestDispatchAwaitsBlockers:
         from nanobee.agent.loop import AgentLoop
         loop = object.__new__(AgentLoop)
         loop._pending_blockers = {}
+        loop._hook_tasks = set()
         loop._pending_queues = {}
 
         class _MockLock:
@@ -1063,3 +1075,141 @@ class TestPostInvokePriority:
         assert pre_order == ["p1"]
         # post: p3(90) → p2(50) → p1(10)
         assert post_order == ["p3", "p2", "p1"]
+
+
+# =============================================================================
+# Layer 5: AgentLoop._notify_plugins_message_started FIP 调度
+# =============================================================================
+
+
+class _StartedPlugin(NanobeePlugin):
+    """记录 on_message_started 调用的插件。"""
+    name = "started_plugin"
+    plugin_type = "audit"
+
+    def __init__(self, metadata=None, order: list | None = None, tag: str = ""):
+        if metadata is None:
+            metadata = PluginMetadata(name="started_plugin", plugin_type="audit")
+        super().__init__(metadata)
+        self.started_count = 0
+        self.started_messages: list[str] = []
+        self.started_turn_ids: list[str] = []
+        self._order = order
+        self._tag = tag
+
+    async def on_message_started(self, context, message, turn_id):
+        self.started_count += 1
+        self.started_messages.append(message)
+        self.started_turn_ids.append(turn_id)
+        if self._order is not None:
+            self._order.append(self._tag)
+
+
+class _StartedFailingPlugin(NanobeePlugin):
+    """模拟 on_message_started 出错的插件，用于验证异常隔离。"""
+    name = "started_failing"
+    plugin_type = "audit"
+
+    async def on_message_started(self, context, message, turn_id):
+        raise RuntimeError("模拟 started Hook 异常")
+
+
+class TestMessageStartedScheduling:
+    """验证 on_message_started 的 fire-and-forget 调度、priority 排序与异常隔离。"""
+
+    def _make_loop(self, *plugins):
+        from nanobee.agent.loop import AgentLoop
+
+        pm = _FakePluginManager()
+        for p in plugins:
+            pm.add(p)
+        loop = object.__new__(AgentLoop)
+        loop.plugin_manager = pm
+        loop.context_manager = _FakeContextManager()
+        loop._hook_tasks = set()
+        return loop
+
+    @pytest.mark.asyncio
+    async def test_started_hook_called_with_message(self):
+        """started Hook 被调用且收到用户原始输入文本。"""
+        from nanobee.plugins.base import HookConfig
+
+        plugin = _StartedPlugin()
+        plugin._metadata = PluginMetadata(
+            name="started", plugin_type="audit",
+            hooks={"on_message_started": HookConfig(priority=10)},
+        )
+        loop = self._make_loop(plugin)
+
+        await loop._notify_plugins_message_started("ctx-1", "你好", "turn-1")
+        await asyncio.sleep(0.05)
+
+        assert plugin.started_count == 1
+        assert plugin.started_messages == ["你好"]
+        assert plugin.started_turn_ids == ["turn-1"]
+
+    @pytest.mark.asyncio
+    async def test_started_hook_priority_order(self):
+        """priority 降序执行：高优先级插件先入队。"""
+        from nanobee.plugins.base import HookConfig
+
+        order: list[str] = []
+        low = _StartedPlugin(order=order, tag="low")
+        low._metadata = PluginMetadata(
+            name="low", plugin_type="audit",
+            hooks={"on_message_started": HookConfig(priority=10)},
+        )
+        high = _StartedPlugin(order=order, tag="high")
+        high._metadata = PluginMetadata(
+            name="high", plugin_type="audit",
+            hooks={"on_message_started": HookConfig(priority=100)},
+        )
+        loop = self._make_loop(low, high)
+
+        await loop._notify_plugins_message_started("ctx-1", "hi", "turn-1")
+        await asyncio.sleep(0.05)
+
+        assert order == ["high", "low"]
+
+    @pytest.mark.asyncio
+    async def test_started_hook_error_isolation(self):
+        """单个插件 started 异常不影响其他插件执行。"""
+        from nanobee.plugins.base import HookConfig
+
+        plugin = _StartedPlugin()
+        plugin._metadata = PluginMetadata(
+            name="ok", plugin_type="audit",
+            hooks={"on_message_started": HookConfig(priority=10)},
+        )
+        failing = _StartedFailingPlugin(PluginMetadata(name="failing", plugin_type="audit"))
+        failing._metadata = PluginMetadata(
+            name="failing", plugin_type="audit",
+            hooks={"on_message_started": HookConfig(priority=10)},
+        )
+        loop = self._make_loop(failing, plugin)
+
+        await loop._notify_plugins_message_started("ctx-1", "hi", "turn-1")
+        await asyncio.sleep(0.05)
+
+        assert plugin.started_count == 1
+
+    @pytest.mark.asyncio
+    async def test_started_hook_no_plugins(self):
+        """无插件时静默返回，不报错。"""
+        loop = self._make_loop()
+        await loop._notify_plugins_message_started("ctx-1", "hi", "turn-1")
+
+    @pytest.mark.asyncio
+    async def test_started_hook_skips_undeclared_plugins(self):
+        """声明才调度（评审 #6 拍板）：未声明 [hooks.on_message_started]
+        的插件不被调度——payload 携带用户原始输入，声明即能力。"""
+        plugin = _StartedPlugin()
+        plugin._metadata = PluginMetadata(
+            name="no_declare", plugin_type="tool",
+        )  # metadata 无 hooks 段
+        loop = self._make_loop(plugin)
+
+        await loop._notify_plugins_message_started("ctx-1", "hi", "turn-1")
+        await asyncio.sleep(0.05)
+
+        assert plugin.started_count == 0

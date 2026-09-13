@@ -15,11 +15,19 @@ Use the `cron` tool to schedule reminders or recurring tasks.
 
 ## Minimum Interval (Safety)
 
-Recurring (`every_seconds`) and `at` schedules have a hard safety floor:
-`every_seconds` must be **at least 30** (30 seconds), and one-time `at`
-times must be **at least 30 seconds in the future**. Frequencies below this
-are rejected by the system. Prefer comfortable intervals like **60+ seconds**
-or longer for recurring tasks.
+All schedules have a hard safety floor: **the gap between two consecutive
+occurrences must be at least 30 seconds**.
+
+- `every_seconds` must be **at least 30**.
+- `cron_expr` is checked on the **smallest interval between consecutive
+  occurrences**, independent of when the job is created. Minute-level
+  expressions (e.g. `*/2 * * * *`) always pass; sub-minute expressions are
+  rejected (e.g. `* * * * * 0,45` fires at second 0 and 45 of every minute —
+  15s apart — and is refused). In the 6-field form the seconds field goes
+  **last**.
+- one-time `at` must be **at least 30 seconds in the future**.
+
+Prefer comfortable intervals like **60+ seconds** or longer for recurring tasks.
 
 ## Examples
 

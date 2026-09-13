@@ -94,6 +94,12 @@ _CATALOG: dict[str, Notification] = {
         kind="subagent_spawned",
         content="已启动子代理 **{label}**（ID: `{task_id}`）\n\n> {task_preview}",
     ),
+    # ── 关停闸门（评审 #3）：内核正在关停，拒绝新 turn ──
+    "kernel_shutting_down": Notification(
+        kind="kernel_shutting_down",
+        content="服务正在关停，当前消息未能处理，请稍后重试。",
+        severity="warning",
+    ),
 }
 
 

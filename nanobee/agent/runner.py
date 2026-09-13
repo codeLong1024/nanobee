@@ -24,7 +24,10 @@ from nanobee.agent.specs import (
     AgentRunResult,
     AgentRunSpec,
     ExitReason,
+    InjectionFact,
+    IterationFact,
     PluginHooks,
+    TurnLedger,
     _DEFAULT_ERROR_MESSAGE,
 )
 from nanobee.agent.tool_pipeline import ToolPipeline
@@ -53,6 +56,7 @@ from nanobee.utils.progress_events import (
     on_progress_accepts_file_edit_events,
 )
 from nanobee.utils.notifications import get_notification_content
+from nanobee.utils.redact import normalize_error
 from nanobee.utils.runtime import (
     build_finalization_retry_message,
     build_length_recovery_message,
@@ -161,8 +165,13 @@ class AgentRunner:
         *,
         phase: str = "after error",
         iteration: int | None = None,
+        ledger: TurnLedger | None = None,
     ) -> tuple[bool, int]:
-        """排空待处理的注入消息。返回 (是否继续, 更新后的周期数)。"""
+        """排空待处理的注入消息。返回 (是否继续, 更新后的周期数)。
+
+        ``ledger`` 非 None 且本次实际注入时，追加一条 InjectionFact——
+        注入条数只有本方法掌握（调用方仅拿 bool），记账必须在此收口。
+        """
         if injection_cycles >= _MAX_INJECTION_CYCLES:
             return False, injection_cycles
         injections = await self._drain_injections(spec)
@@ -184,6 +193,10 @@ class AgentRunner:
                     },
                 )
         self._append_injected_messages(messages, injections)
+        if ledger is not None:
+            ledger.injections.append(
+                InjectionFact(count=len(injections), phase=phase),
+            )
         logger.info(
             "Injected {} follow-up message(s) {} ({}/{})",
             len(injections), phase, injection_cycles, _MAX_INJECTION_CYCLES,
@@ -239,6 +252,10 @@ class AgentRunner:
         hook = spec.hook or AgentHook()
         messages = list(spec.initial_messages)
         context = AgentRunHookContext(messages=deepcopy(messages))
+        # TurnLedger 记账本：只追加事实（索引/计数/耗时/ID），不拷贝消息内容。
+        # 在 run() 入口创建并传参给 _run_core（唯一调用方），异常折叠路径复用
+        # 同一账本对象——结构上杜绝"第二个账本"导致窗口锚点漂移（评审 F2）。
+        ledger = TurnLedger(turn_input_index=max(len(messages) - 1, 0))
 
         try:
             await hook.before_run(context)
@@ -251,7 +268,7 @@ class AgentRunner:
                 "[RUNNER] 进入 _run_core (messages={}, before_run耗时={:.0f}ms)",
                 len(messages), (_t_before_run - _t_run) * 1000,
             )
-            result = await self._run_core(spec, hook, messages)
+            result = await self._run_core(spec, hook, messages, ledger)
         except asyncio.CancelledError:
             context.messages = deepcopy(messages)
             context.exit_reason = ExitReason.CANCELLED
@@ -263,9 +280,14 @@ class AgentRunner:
             # 调用方（loop/subagent）无需再兜底异常，错误统一由 result.error 承载。
             context.messages = deepcopy(messages)
             context.exit_reason = ExitReason.COMPLETED
-            context.error = f"Error: {type(exc).__name__}: {exc}"
+            # normalize_error：统一形态（无 Error: 前缀）+ 脱敏，见 utils/redact.py
+            context.error = normalize_error(exc)
             context.exception = exc
             await hook.on_error(context)
+            # 记账：异常路径复用同一账本——turn_input_index 已在 run() 入口锚定
+            # 本轮输入，无迭代/注入事实 + error 兜底，消息窗口不会退化为全量历史。
+            ledger.exit_reason = ExitReason.COMPLETED.value
+            ledger.error = context.error
             return AgentRunResult(
                 final_content=None,
                 messages=context.messages,
@@ -275,6 +297,7 @@ class AgentRunner:
                 error=context.error,
                 tool_events=[],
                 had_injections=False,
+                ledger=ledger,
             )
         else:
             context.messages = deepcopy(result.messages)
@@ -304,10 +327,18 @@ class AgentRunner:
         spec: AgentRunSpec,
         hook: AgentHook,
         messages: list[dict[str, Any]],
+        ledger: TurnLedger,
     ) -> AgentRunResult:
         """迭代循环核心（LLM 调用 + 工具执行），由 run() 包裹。
 
         核心流程：上下文治理 → LLM 调用 → 工具执行 → 结果处理 → 循环/终止。
+
+        Args:
+            spec: 运行规格。
+            hook: run 级 hook。
+            messages: 对话消息列表（run() 已建副本，本方法只 append 不删改，
+                这是 ``ledger.turn_input_index`` 窗口锚点有效性的前提契约）。
+            ledger: run() 入口创建的记账本（单一账本贯穿整个 turn）。
         """
         _t_core = time.perf_counter()
         final_content: str | None = None
@@ -391,6 +422,15 @@ class AgentRunner:
             context.usage = dict(raw_usage)
             context.tool_calls = list(response.tool_calls)
             self._accumulate_usage(usage, raw_usage)
+            # 记账：本轮迭代事实（耗时/finish_reason 原值/usage/工具调用 ID）。
+            # 后续 finalization 重试会原位更新本条事实，保持真值。
+            ledger.iterations.append(IterationFact(
+                no=iteration,
+                llm_call_ms=_elapsed_llm_call,
+                finish_reason=response.finish_reason,
+                usage=dict(raw_usage),
+                tool_call_ids=[tc.id for tc in (response.tool_calls or [])],
+            ))
 
             reasoning_text, cleaned_content = extract_reasoning(
                 response.reasoning_content,
@@ -463,7 +503,7 @@ class AgentRunner:
                     messages.append(tool_message)
                     completed_tool_results.append(tool_message)
                 if fatal_error is not None:
-                    error = f"Error: {type(fatal_error).__name__}: {fatal_error}"
+                    error = normalize_error(fatal_error)
                     # 失败无"回复"，错误语义由 error 字段承载，不伪装成 assistant 回复
                     final_content = None
                     exit_reason = ExitReason.COMPLETED
@@ -474,6 +514,7 @@ class AgentRunner:
                     should_continue, injection_cycles = await self._try_drain_injections(
                         spec, messages, None, injection_cycles,
                         phase="after tool error",
+                        ledger=ledger,
                     )
                     if should_continue:
                         had_injections = True
@@ -496,6 +537,7 @@ class AgentRunner:
                 _drained, injection_cycles = await self._try_drain_injections(
                     spec, messages, None, injection_cycles,
                     phase="after tool execution",
+                    ledger=ledger,
                 )
                 if _drained:
                     had_injections = True
@@ -544,6 +586,14 @@ class AgentRunner:
                 context.response = response
                 context.usage = dict(raw_usage)
                 context.tool_calls = list(response.tool_calls)
+                # 记账：finalization 替换了本轮 response，原位更新最后一条迭代事实。
+                if ledger.iterations:
+                    _last_fact = ledger.iterations[-1]
+                    _last_fact.finish_reason = response.finish_reason
+                    _last_fact.usage = dict(raw_usage)
+                    _last_fact.tool_call_ids = [
+                        tc.id for tc in (response.tool_calls or [])
+                    ]
                 # 泄漏口（PR-A 场景）：finalization 也可能带正常工具调用返回，但
                 # should_execute_tools 检查点已在本轮执行分支之前过去——若在此内联交付，
                 # 调用不会执行、正文照常送出，连 506 行的 warning 都不触发。
@@ -619,7 +669,7 @@ class AgentRunner:
                             )
                             tool_events.extend(new_events)
                             if fatal_error is not None:
-                                error = f"Error: {type(fatal_error).__name__}: {fatal_error}"
+                                error = normalize_error(fatal_error)
                                 # 失败无"回复"，错误语义由 error 字段承载，不伪装成 assistant 回复
                                 final_content = None
                                 exit_reason = ExitReason.COMPLETED
@@ -632,6 +682,7 @@ class AgentRunner:
                                 should_continue, injection_cycles = await self._try_drain_injections(
                                     spec, messages, None, injection_cycles,
                                     phase="after tool error",
+                                    ledger=ledger,
                                 )
                                 if should_continue:
                                     had_injections = True
@@ -737,6 +788,7 @@ class AgentRunner:
                 spec, messages, assistant_message, injection_cycles,
                 phase="after final response",
                 iteration=iteration,
+                ledger=ledger,
             )
             if should_continue:
                 had_injections = True
@@ -746,7 +798,9 @@ class AgentRunner:
             # 错误时流并未真正"结束"而是"中止"，跳过 on_stream_end，卡片停在 INPUTING，
             # 由 loop 的 fail_card 一步拉到 FAILED + 渲染错误文案，避免空 FINISHED 残留与二次终态化。
             if is_error:
-                error = clean or spec.error_message or _DEFAULT_ERROR_MESSAGE
+                # 归一化（含脱敏）：provider 以 content 承载错误时自带 "Error: " 前缀，
+                # 统一由 normalize_error 剥离重建，保证与 runner 兜底串同形。
+                error = normalize_error(clean or spec.error_message or _DEFAULT_ERROR_MESSAGE)
             elif hook.wants_streaming():
                 await hook.on_stream_end(context, resuming=should_continue)
 
@@ -765,6 +819,7 @@ class AgentRunner:
                 should_continue, injection_cycles = await self._try_drain_injections(
                     spec, messages, None, injection_cycles,
                     phase="after LLM error",
+                    ledger=ledger,
                 )
                 if should_continue:
                     had_injections = True
@@ -782,6 +837,7 @@ class AgentRunner:
                 should_continue, injection_cycles = await self._try_drain_injections(
                     spec, messages, None, injection_cycles,
                     phase="after empty response",
+                    ledger=ledger,
                 )
                 if should_continue:
                     had_injections = True
@@ -825,10 +881,14 @@ class AgentRunner:
             drained_after_max_iterations, injection_cycles = await self._try_drain_injections(
                 spec, messages, None, injection_cycles,
                 phase="after max_iterations",
+                ledger=ledger,
             )
             if drained_after_max_iterations:
                 had_injections = True
 
+        # 记账：所有退出路径汇合于本 return，在此盖 exit_reason / error 章。
+        ledger.exit_reason = exit_reason.value
+        ledger.error = error
         return AgentRunResult(
             final_content=final_content,
             messages=messages,
@@ -838,6 +898,7 @@ class AgentRunner:
             error=error,
             tool_events=tool_events,
             had_injections=had_injections,
+            ledger=ledger,
         )
 
     def _build_request_kwargs(

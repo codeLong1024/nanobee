@@ -6,6 +6,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from nanobee.utils.user_id import resolve_storage_key
+
 
 @dataclass
 class InboundMessage:
@@ -31,7 +33,10 @@ class InboundMessage:
         """获取用户上下文隔离键（决定 UserContext 目录归属）。
 
         注意：此属性与 ``handle_message`` 的 ``context_id`` 参数同名但不同义——
-        参数只落到 ``chat_id`` 槽位，不参与隔离；真正的隔离键是本属性。
+        参数只落到 ``chat_id`` 槽位（消息路由），不参与隔离；真正的隔离键
+        是本属性，**出生点即归一**（评审 #1/#4）：经
+        :func:`nanobee.utils.user_id.resolve_storage_key` 保证可安全落盘——
+        合法 id 原样返回，白名单外 id（如钉钉加密形态）确定性哈希降级。
 
         优先级:
         1. context_id_override 显式指定
@@ -42,10 +47,10 @@ class InboundMessage:
         避免创建重复的用户目录。
         """
         if self.context_id_override:
-            return self.context_id_override
+            return resolve_storage_key(self.context_id_override)
         if self.sender_id:
-            return self.sender_id
-        return f"{self.channel}:{self.chat_id}"
+            return resolve_storage_key(self.sender_id)
+        return resolve_storage_key(f"{self.channel}:{self.chat_id}")
 
     @property
     def session_id(self) -> str:

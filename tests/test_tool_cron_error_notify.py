@@ -70,7 +70,7 @@ def _make_error_response() -> MagicMock:
         "notification_type": "system",
         "notification_kind": "turn_internal_error",
         "severity": "error",
-        "error_detail": "Error: RuntimeError: LLM 调用失败",
+        "error_detail": "RuntimeError: LLM 调用失败",
     }
     return resp
 
@@ -234,7 +234,7 @@ class TestServiceRecordsError:
         """CronJobError 被 _execute_job 捕获，last_status/last_error 如实记录。"""
 
         async def failing_on_job(job: CronJob) -> str | None:
-            raise CronJobError("Error: RuntimeError: LLM 调用失败")
+            raise CronJobError("RuntimeError: LLM 调用失败")
 
         cron = CronService(store_path=tmp_path / "jobs.json", on_job=failing_on_job)
         schedule = CronSchedule(kind="every", every_ms=60_000)

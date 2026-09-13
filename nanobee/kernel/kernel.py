@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -11,7 +12,7 @@ if TYPE_CHECKING:
     from nanobee.agent.loop import AgentLoop
     from nanobee.agent.messages import OutboundMessage
 
-from nanobee.config.schema import Config
+from nanobee.config.schema import Config, ShutdownConfig
 from nanobee.exceptions import ContextError
 from nanobee.kernel.command_router import CommandContext, CommandRouter
 from nanobee.kernel.context_manager import ContextManager
@@ -27,11 +28,15 @@ from nanobee.utils.logger import logger
 
 from nanobee.utils.notifications import build_notification
 from nanobee.utils.observability import MetricsCollector
+from nanobee.utils.redact import normalize_error
 
 
 from nanobee.kernel.channel_manager import ChannelManager
 from nanobee.kernel.plugin_dirs import resolve_plugin_dirs
 from nanobee.kernel.skill_manager import SkillsLoader
+
+# ── 关停排空上界已配置化（评审 #10，规则 18）：见 config.schema.ShutdownConfig
+# 与 nanobee.yaml 的 shutdown 段；代码内不再持有策略性数值。 ──────────────────
 
 
 class NanobeeKernel:
@@ -42,6 +47,11 @@ class NanobeeKernel:
     2. 路由消息到正确的上下文
     3. 保护灵魂文件（core.md）不被篡改
     """
+
+    # 关停闸门（评审 #3 修复）：True 后拒绝新 turn，保证排空阶段
+    # _active_turns / _hook_tasks 不再有新增，静默循环排空才可收敛。
+    # 类属性默认 False：object.__new__ 影子装配（测试桩）无需显式初始化。
+    _closing: bool = False
 
     def __init__(
         self,
@@ -277,6 +287,17 @@ class NanobeeKernel:
         if not self._booted:
             raise ContextError("内核未启动，请先调用 boot()")
 
+        # 关停闸门（评审 #3）：排空阶段拒绝新 turn——fail-visible 返回系统
+        # 通知而非静默丢弃，通道可直接把原因送达用户；同时保证排空期间
+        # _active_turns / _hook_tasks 不再有新增，静默排空才可收敛。
+        if self._closing:
+            logger.info("内核正在关停，拒绝新消息 (context={})", context_id)
+            return build_notification(
+                "kernel_shutting_down",
+                channel=channel,
+                chat_id=context_id,
+            )
+
         if self._agent_loop is None:
             raise ContextError(
                 "Agent Loop 未初始化。请先调用 boot_with_provider() "
@@ -328,15 +349,18 @@ class NanobeeKernel:
             )
         except Exception as exc:
             logger.exception("处理上下文 {} 的消息出错", key)
-            # 透传真实异常详情（而非笼统的"内部错误"）
+            # 透传真实异常详情（而非笼统的"内部错误"）。归一化 + 脱敏在此收口：
+            # 该串经 content 与 metadata 两条路径到达用户（metadata 由下游插件如
+            # tool_cron 直接投递），故必须在写入时已是安全形态（utils/redact.py）。
+            detail = normalize_error(exc)
             response = build_notification(
                 "turn_internal_error",
                 channel=msg.channel,
                 chat_id=msg.chat_id,
-                detail=f"{type(exc).__name__}: {exc}",
+                detail=detail,
             )
             # 对齐 loop._state_respond 契约：error_detail 写入 metadata，供下游（如 cron 错误透传）取用
-            response.metadata["error_detail"] = f"{type(exc).__name__}: {exc}"
+            response.metadata["error_detail"] = detail
         finally:
             self._active_turns.pop(key, None)
 
@@ -516,9 +540,74 @@ class NanobeeKernel:
         """获取 Agent Loop 实例"""
         return self._agent_loop
 
+    def _shutdown_config(self) -> ShutdownConfig:
+        """读取关停排空配置。
+
+        config 缺失或为字典桩（测试影子装配）时回退默认值——上界是
+        机制而非策略，缺省即 ShutdownConfig 的字段默认值。
+
+        Returns:
+            关停排空配置对象。
+        """
+        cfg = getattr(getattr(self, "config", None), "shutdown", None)
+        return cfg if isinstance(cfg, ShutdownConfig) else ShutdownConfig()
+
+    async def _drain_active_turns(self) -> None:
+        """静默排空在途 turn（Phase 2 终态保证，评审 #3 修复）。
+
+        排空语义 = 「等到集合为空或超时」，而非单次快照等待：以 deadline
+        为界反复 wait 并重算 pending。先等在途 turn 跑完（回复可正常送达）；
+        超时的 turn 取消——取消沿 ``dispatch → _process_message`` 的 finally
+        落 ABANDONED 终态，审计不丢账。等待用 ``asyncio.wait``（纯 task
+        等待，无 cancel scope 陷阱）。
+        """
+        cfg = self._shutdown_config()
+        tasks = [t for t in self._active_turns.values() if not t.done()]
+        if not tasks:
+            return
+        logger.info(
+            "等待 {} 个在途 turn 落账（上界 {}s）...",
+            len(tasks), cfg.drain_inflight_s,
+        )
+        deadline = time.monotonic() + cfg.drain_inflight_s
+        while tasks:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            await asyncio.wait(tasks, timeout=remaining)
+            tasks = [t for t in self._active_turns.values() if not t.done()]
+        if not tasks:
+            return
+        logger.warning("{} 个在途 turn 超时，取消并落 ABANDONED 终态", len(tasks))
+        for task in tasks:
+            task.cancel()
+        # 取消后给兜底结账一个短暂收口窗口：仅覆盖取消传播与结账任务
+        # 登记（落盘由 drain_hook_tasks 的 drain_hooks_s 覆盖）。
+        deadline = time.monotonic() + cfg.drain_cancelled_s
+        while tasks:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            await asyncio.wait(tasks, timeout=remaining)
+            tasks = [t for t in tasks if not t.done()]
+
     async def shutdown(self) -> None:
         """关闭内核"""
         logger.info("正在关闭 Nanobee 内核...")
+
+        # 关停闸门先行置位：此后新消息被拒收（fail-visible 通知），保证
+        # 下方排空期间不会有新 turn / 新 Hook 任务进入（评审 #3）。
+        self._closing = True
+
+        # Phase 2 排空：先给在途 turn 有界时间跑完，超时取消落 ABANDONED；
+        # 随后静默排空 fire-and-forget Hook 任务（审计落盘）——必须先于
+        # plugin_manager.unload_all()，否则 turn span 永久丢失。
+        await self._drain_active_turns()
+        if self._agent_loop is not None:
+            cfg = self._shutdown_config()
+            pending = await self._agent_loop.drain_hook_tasks(cfg.drain_hooks_s)
+            if pending:
+                logger.warning("关停时尚有 {} 个 Hook 任务未落账", pending)
 
         # 停止 Agent Loop
         if self._agent_loop is not None:

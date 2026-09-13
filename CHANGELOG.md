@@ -7,7 +7,145 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **可观测性**：turn 真值改为框架一级事实「TurnLedger 记账本 + TurnReport 结账单」，
+  Hook 契约 `on_message_completed(context, messages)` 硬切为
+  `on_message_completed(context, report)`，`on_message_started` 新增 `turn_id` 参数（破坏性变更，无向后兼容）。
+  此前 runner 已算出完整 turn 事实（provider 精确 usage、逐轮 finish_reason、LLM 耗时、注入次数、退出原因），
+  但只把 `result.messages`（有损的 LLM 上下文重建物）传给 completed Hook，其余全部丢弃，
+  迫使插件启发式反推——"取最后一条 user 消息"导致排空（drain）注入后输入归因错位，
+  "从全量历史数 tool_calls"导致历史轮次污染计数与二次刷写，"字符÷4 估 token"在
+  provider 精确 usage 存在时完全失真。现 runner 在已计算事实的现成代码行旁 O(1) 追加
+  `TurnLedger`（逐轮 `IterationFact`、逐次 `InjectionFact`、唯一 return 出口盖章），
+  随 `AgentRunResult.ledger` 发布；loop 在 turn 边界盖章 `turn_id`（W3C trace id）
+  与 `turn_started_at` 合成 `TurnReport`。机制归框架（只记账发布），策略归插件（决定记什么）。
+  `audit_logger` 插件随之退化为账本→契约的纯映射（净删 5 个启发式函数），契约升
+  `nanobee.audit/3`：`trace_id` 从 `turn_{uuid12}` 变为 W3C trace id（与日志流同源可串联）、
+  token 变 provider 实测、`finish_reasons` 变账本原值（保序去重）、input/output messages
+  记录本轮全部 user 输入（含注入）与 assistant 回复、新增 `nanobee.injections` /
+  `nanobee.injected_messages` / `nanobee.exit_reason` / `nanobee.error`。
+  turn 级时间三值（`start_time` / `end_time` / `duration_ms`）全部由 loop 盖章
+  （`turn_started_at` / `turn_ended_at`），插件不再持有第二时钟；JSONL 契约
+  维持「一行 = 一个终态 turn」，`record_type` 字段为未来 span 树中间层预留。
+  新增 `tests/test_turn_ledger.py`（14 用例）与 `tests/test_runner_ledger.py`（12 用例）；
+  `test_audit_logger.py` 全量改造为 v3 契约（52 用例）。
+
+### Added
+
+- **错误串统一收口 `utils/redact.py`（用户可见侧脱敏 + 形态归一）**：
+  此前错误诊断串的 `Error:` 前缀时有时无（runner 兜底自拼 `f"Error: {type}: {exc}"`、
+  provider 以 `content="Error: ..."` 承载错误、loop/kernel 兜底不带前缀，同一错误在三个
+  出口三种形态），且脱敏只落在审计侧——`_state_respond` / `handle_message` 的 `detail`
+  与 `metadata["error_detail"]` 仍把第三方异常原文裸传给用户（httpx 的 `HTTPStatusError`
+  str 实测含 `for url '...?key=...'`，且该 metadata 会被 `tool_cron` 读走直接投递回原会话，
+  构成第二条绕开通知模板的用户可见路径）。现新增叶子模块 `nanobee/utils/redact.py`：
+  `normalize_error()` 把异常对象或已有文本归一为统一无前缀形态（`<异常类型>: <正文>`，
+  `Error:` / `Exception:` 前缀统一剥离，provider content 与 runner/loop/kernel 兜底同形）
+  并同时脱敏；`redact_secrets()` 供审计侧复用。runner 4 处、loop 1 处、kernel 2 处产生点
+  全部改调，下游出口（通知 content、`metadata.error_detail`、审计 JSONL、运行日志）自动继承，
+  未来新增出口无需再补——脱敏绑数据而非绑出口。正则顺带修正两处漏掩码缺陷：`\b` 前置边界
+  在 `_` 两侧不成立致 `client_secret=` / `db_password=` 等 snake_case 键失配、JSON 形态
+  `"api_key": "sk-x"` 因引号包裹失配。`audit_logger` 删除私有 `_ERROR_REDACT_PATTERN` /
+  `_redact_error` 改复用公共实现，消除两侧规则漂移；新增 `tests/test_redact.py`（20 用例）。
+
+- **评审修复批次（TurnLedger/观测体系 4 阻断项 + 2 建议项落地）**：
+  ① **user_id 存储键双层防线（安全修复补全）**——原「`ContextManager.get_or_create`
+  唯一守卫点」存在缺口：`_state_build` 先把未校验 user_id 缓存进
+  `SessionManager._cache`，守卫后置触发，关停 `flush_all()` 经
+  `SessionStore._session_path`（user_id 未净化）越界 `mkdir` + 写盘；HTTP 通道
+  `conversation_id`（请求体可控）即攻击入口。现改为「出生点归一 + 落点断言」：
+  新增叶子模块 `nanobee/utils/user_id.py`（`is_safe_user_id` / `resolve_storage_key`），
+  `InboundMessage.context_id` 属性与 `_process_message` key 派生（存储键出生点）
+  统一归一——合法 id 原样返回（既有用户目录零迁移），白名单外 id（钉钉加密形态
+  `$:LWCP_v1:$...`、通道前缀 `dingtalk:cid...` 等）确定性降级为 `u-<sha256[:32]>`
+  （同 raw 恒同 key，可用性优先于拒绝，替代原拒绝式校验对合法 id 的可用性破坏），
+  `.`/`..`/非字符串仍拒绝；`SessionStore` / `audit_logger._jsonl_path` 拼路径前
+  落点断言，恶意 id 连 `SessionManager` 缓存都进不去，越界写在读盘前即被拦截；
+  ② **ABANDONED 审计落点修正**——`bind_context_root` 原仅在 `_state_run` 内绑定，
+  兜底结账任务（`_process_message` finally）创建时 ContextVar 已复位，审计错误回退
+  `/tmp/nanobee-audit`（可预测、跨实例共享、不防符号链接）。现把绑定提升到
+  `_process_message` 外层（`ContextVar.reset(token)` 语义保证 `_state_run` 内层
+  bind/reset 零改动兼容），取消/异常/关停路径的审计与正常路径落同一用户目录；
+  兜底 `abandon_error` 优先采用 `ctx.error` 真实诊断而非通用文案；③ **关停排空
+  静默化 + 关停闸门**——`drain_hook_tasks` 原为单次快照等待，漏掉等待期内派生的
+  落盘子任务（审计仍可丢账），现改 deadline 内循环排空到静默；`kernel` 新增
+  `_closing` 闸门，`shutdown` 先置位再排空，`handle_message` 对在途关停返回
+  `kernel_shutting_down` 系统通知（fail-visible），排空期间不再有新 turn 竞争；
+  ④ **关停超时配置化**——`_INFLIGHT_TURN_DRAIN_TIMEOUT_S` 等三个硬编码常量
+  挪进 `nanobee.yaml`（`shutdown.drain_inflight_s / drain_cancelled_s / drain_hooks_s`，
+  默认值即原常量），并修正与实现不符的注释；⑤ audit `nanobee.error` 落盘前
+  **先脱敏再截断**（`_redact_error`：URL `?key=`、`Authorization: Bearer` 等凭证值
+  → `<redacted>`，键名保留），第三方异常文案中的密钥不再进入审计文件与
+  `[audit-json]` 日志；⑥ `on_message_started` 改「声明才调度」（payload 携带
+  用户原始输入，声明即能力，数据最小化）；completed 维持全量调度并修正注释。
+  新增 `tests/test_context_security.py` 归一化/落点断言用例、
+  `test_runner_ledger.py` 外层 context_root 与静默排空用例、
+  `test_kernel_shutdown_drain.py` 关停闸门用例、`test_audit_logger.py` 脱敏用例、
+  `test_hook_scheduling.py` 声明过滤用例。
+
+- **turn 终态保证（Phase 2）**：使「每 turn 恰好一份终态 report」成为框架不变量。
+  ① `ExitReason` 新增 `ABANDONED`——turn 未产出 runner 结果（状态机异常 / 被
+  取消 / 关停排空超时）时，`_process_message` 的 finally 经幂等出口
+  `_emit_turn_report` 兜底补发 `exit_reason="abandoned"` 的 report（账本仅含
+  窗口锚点，`error` 恒非 None，消息窗口仅含输入侧），审计不再有"凭空消失"的
+  turn；② 取消安全：兜底在取消路径内用 `create_task` 登记而非 await，
+  `CancelledError` 原样传播，`turn_report_emitted` 标志防止双发；③
+  `AgentLoop.drain_hook_tasks(timeout_s)`：fire-and-forget Hook 任务统一登记
+  （`_track_hook_task`，完成自清），`kernel.shutdown` 在 turn 排空后有界等待
+  审计落盘收口，插件任务不再随关停被取消导致 turn span 丢失；④
+  `kernel.shutdown` 对在途 turn 有界排空（`_INFLIGHT_TURN_DRAIN_TIMEOUT_S=10s`，
+  机制上界）——接近完成的 turn 优先跑完并正常回复，超时 turn 取消落
+  ABANDONED；⑤ audit_logger 的 `on_message_completed` 增加 turn_id 所有权
+  校验：单槽状态属于更新一轮时（started 覆盖竞态窗口）不 pop 不覆盖，用独立
+  兜底状态落盘，防跨 turn 归并。
+
 ### Fixed
+
+- **tool_cron 间隔红线判据修正**：cron 调度的安全红线此前以「首触发距现在 ≥ 30 秒」
+  （插入时刻属性）为判据，与「防止任务刷屏」真正需要的「相邻两次触发间隔 ≥ 30 秒」
+  （调度表达式属性）错配，造成双向缺陷：① **误伤**——周期完全合法的 `*/2 * * * *`
+  在每 2 分钟周期的最后 30 秒被拒（相位窗口 30s/120s，即 25% 的墙钟时间必被拒），
+  表现为测试 `test_tool_cron_redline.py::test_cron_two_minutes_accepted` 随运行时刻
+  间歇性失败（standalone 复跑通过）；② **漏防**——`* * * * * 0,45`（每分第 0/45 秒
+  各触发一次，最小间隔 15 秒，真会刷屏）因"此刻首触发还有 45 秒"在约 75% 的相位
+  被放行。现改为按「最小相邻触发间隔」判定：自当前时刻连续探测 60 次触发取最小间隔
+  （分钟级表达式间隔恒 ≥ 60 秒必然合规，只有秒级表达式可能出现亚分钟间隔），
+  判据与墙钟相位彻底解耦——合法周期在任何时刻都被接受，亚 30 秒间隔在任何时刻都被拒绝。
+  `every` / `at` 分支行为不变（两者判据本就正确，`every` 的首触发即周期、`at` 只有
+  首触发一个含义）。有意不保留"首触发下界"检查：它不构成"间隔"、对防刷屏无贡献，
+  保留会重新引入"同一句指令时而成功时而失败"的非确定性；若日后需抑制"创建即触发"，
+  应改为把 `next_run_at_ms` 顺延而非拒绝。测试改为多相位扫描 + 冻结时钟，
+  两个方向的缺陷各有专属回归用例（10 → 13 用例）。
+
+
+- **安全**：`ContextManager` 对 `user_id` 增加白名单拒绝式校验（仅允许
+  `[A-Za-z0-9._-]`，长度 1-64，不得为 `.` / `..`，违规 raise `ContextError`）。
+  此前 `user_id` 未净化直接用于拼接磁盘目录与审计文件名
+  （`users/<user_id>/`、`audit_logger/<user_id>.jsonl`），HTTP 通道的
+  `conversation_id` 由请求体控制（`api_key` 未配置时无鉴权），可构造
+  路径遍历向预期目录外写入任意 `*.jsonl`。现 `ContextManager.get_or_create`
+  是全框架唯一的 user_id 守卫点（`switch` 经其委托同样收口）；拒绝而非净化，
+  避免别名碰撞导致跨租户数据串写。**部署注意**：历史遗留的非法 user 目录
+  不做自动迁移，若有需人工改名。
+- **正确性**：turn 异常折叠路径的消息窗口不再退化为全量历史。
+  此前 `run()` 的 except 分支新建的账本未设 `turn_input_index`（默认 0），
+  loop 侧 `messages[0:]` 会把 system + 全量历史记为本轮窗口——审计归因
+  错位在失败 turn 复活。现账本在 `run()` 入口创建并以参数贯穿
+  `_run_core` 与异常折叠路径（单一账本，结构上杜绝第二个账本）。
+- **正确性**：触达迭代上限后的排空注入补记账。第 7 处排空点
+  （`after max_iterations`）此前未传账本，注入消息写入了历史且
+  `had_injections=True`，但没有 `InjectionFact`——账本与 `had_injections`
+  自相矛盾、注入次数少记。
+- **audit_logger 健壮性**：① `nanobee.error` 落盘前截断（新配置
+  `error_max_chars`，默认 500）并折叠空白——异常串常含 URL / 内部路径 /
+  上游响应体，直接落 JSONL 与结构化日志扩大泄敏面，且 U+2028 等行分隔符
+  会破坏 JSONL 行判别；② 落盘序列化从两份合为一份（文件写与
+  `[audit-json]` 日志共用同一字符串）；③ 回退 tool span 独立落行（同数据
+  此前落 2~4 份、每 turn 写盘 1→N+1 次），恢复「一行 = 一个 turn」；④
+  `_completed` 测试辅助列表改有界 deque（64），长驻实例内存不再无界增长；
+  ⑤ `tool_calls` 计数单一来源（completed 的 `len(tool_spans)`），删除
+  pre_invoke 的冗余累加。
 
 - **钉钉通道**：richText 入站消息不再被静默丢弃。
   钉钉 Stream 回调的 richText 项是裸 `{"text": ...}`（不带 `type` 字段），

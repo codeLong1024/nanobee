@@ -15,6 +15,7 @@ Nanobee 的插件体系遵循**框架无知论**（Framework Ignorance Principle
   - [Prompt 注入（contribute_to_prompt）](#prompt-注入contribute_to_prompt)
   - [工具过滤（contribute_to_tools）](#工具过滤contribute_to_tools)
   - [工具前后拦截（on_pre_invoke / on_post_invoke）](#工具前后拦截on_pre_invoke--on_post_invoke)
+  - [消息开始回调（on_message_started）](#消息开始回调on_message_started)
   - [消息完成回调（on_message_completed）](#消息完成回调on_message_completed)
   - [事件系统（EventBus）与迁移指南](#事件系统eventbus与迁移指南)
 - [开发 Tool 插件](#开发-tool-插件)
@@ -51,6 +52,7 @@ Nanobee 的插件体系遵循**框架无知论**（Framework Ignorance Principle
 │    ├── contribute_to_tools               │
 │    ├── on_pre_invoke                     │
 │    ├── on_post_invoke                    │
+│    ├── on_message_started                │
 │    └── on_message_completed              │
 └──────────────────────────────────────────┘
 ```
@@ -407,14 +409,26 @@ async def on_post_invoke(
 
 ### 消息完成回调（on_message_completed）
 
-对话轮次结束后调用（后台执行，不阻塞 LLM 响应）。插件的调度行为由 ``plugin.toml`` 中的
-``[hooks.on_message_completed]`` 段控制（参见 [Hook 调度元数据](#hook-调度元数据声明)）。
+对话轮次结束后调用（后台执行，不阻塞 LLM 响应），payload 为
+``TurnReport``（``nanobee.agent.specs``）——**turn 真值唯一来源**：runner
+账本（逐轮 usage / finish_reason / LLM 耗时 / 注入事实 / 退出原因）+ loop
+盖章（``turn_id`` / ``turn_started_at`` / ``turn_ended_at``）+ 本轮消息窗口切片。
+插件的调度行为由 ``plugin.toml`` 中的 ``[hooks.on_message_completed]`` 段控制
+（参见 [Hook 调度元数据](#hook-调度元数据声明)）。
+
+> **终态保证（框架不变量）**：每个进入状态机的 turn 恰好收到**一份**终态
+> report。turn 未产出 runner 结果时（状态机异常 / 被取消 / 关停排空超时），
+> loop 会兜底补发 `exit_reason="abandoned"` 的 report（账本仅含窗口锚点，
+> `error` 恒非 None，消息窗口仅含输入侧）——插件不会收到"凭空消失"的
+> turn，也不需要自己处理孤儿状态。
 
 ```python
+from nanobee.agent.specs import TurnReport
+
 async def on_message_completed(
     self,
     context: PromptBuildContext,
-    messages: list[dict[str, Any]],
+    report: TurnReport,
 ) -> None:
     """一轮对话结束后调用。
 
@@ -422,7 +436,39 @@ async def on_message_completed(
     此 Hook 的执行不会阻塞 LLM 响应返回给用户。
     是否需要阻塞下一轮 dispatch 由 plugin.toml 中的 block_next 声明控制。
     """
-    logger.info("对话轮次结束, 消息数: {len(messages)}")
+    logger.info(
+        "对话轮次结束, turn={} 迭代={} 注入={} exit={}",
+        report.turn_id,
+        len(report.ledger.iterations),
+        len(report.ledger.injections),
+        report.ledger.exit_reason,
+    )
+```
+
+> **FIP 提示**：应从 ``report`` 读取事实，禁止从 ``report.messages_window``
+> 启发式反推（如"数消息里的 tool_calls"、"字符数估算 token"）——消息窗口
+> 是 LLM 上下文重建物，聚合真值由框架账本承载。
+
+### 消息开始回调（on_message_started）
+
+对话轮次开始时调用（后台 fire-and-forget，恒不阻塞消息处理），与 ``on_message_completed``
+配对，为插件提供**真实 turn 起点**（如审计 span 计时、开始时间戳）。用户输入原文与
+turn 身份（``turn_id``，与 ``TurnReport.turn_id`` 同源的 W3C trace id）通过
+第二、三个参数传入。
+
+```python
+async def on_message_started(
+    self,
+    context: PromptBuildContext,
+    message: str,
+    turn_id: str,
+) -> None:
+    """一轮对话开始时调用。
+
+    适用于需要真实 turn 起点的场景。``block_next`` 对本 Hook 无意义
+    （turn 开始不应被任何插件阻塞），仅 ``priority`` 参与排序。
+    """
+    logger.info("对话轮次开始 turn={turn_id}, 输入长度: {len(message)}")
 ```
 
 ---
@@ -432,7 +478,7 @@ async def on_message_completed(
 插件可通过 ``plugin.toml`` 的 ``[hooks.<hook_name>]`` 段声明各 Hook 的调度策略。
 框架只读标记、不懂含义（FIP），按声明驱动调度。
 
-支持的 Hook 名：``on_message_completed``、``on_pre_invoke``、``on_post_invoke``。
+支持的 Hook 名：``on_message_started``、``on_message_completed``、``on_pre_invoke``、``on_post_invoke``。
 
 #### 字段说明
 
@@ -543,9 +589,9 @@ priority = 100
 | 旧方案（已移除） | 新方案（推荐） |
 |---|---|
 | ``event_bus.subscribe("agent.turn_completed", handler)`` | 实现 ``on_message_completed()`` Hook + 在 ``plugin.toml`` 声明 ``[hooks.on_message_completed]`` |
-| 事件载荷 ``final_content`` / ``stop_reason`` | 通过 ``messages`` 参数自行提取最后一轮 assistant 消息 |
-| 事件载荷 ``tools_used`` | 统计 ``messages`` 中 ``role=tool`` 的消息 |
-| 事件载荷 ``usage``（token 用量） | 当前 Hook 未传递 usage（如需，在 Hook 签名中扩展） |
+| 事件载荷 ``final_content`` / ``stop_reason`` | 通过 ``report.messages_window`` 自行提取 assistant 消息 |
+| 事件载荷 ``tools_used`` | 通过 ``report.ledger.iterations`` 的 ``tool_call_ids`` 获取 |
+| 事件载荷 ``usage``（token 用量） | ``report.ledger.iterations`` 逐轮携带 provider 实测 usage |
 
 **迁移示例：**
 
@@ -566,12 +612,12 @@ class MyNewPlugin(NanobeePlugin):
     name = "audit_logger"
     plugin_type = "audit"
 
-    async def on_message_completed(self, context, messages):
+    async def on_message_completed(self, context, report):
         ctx_id = context.context_id
         tools = [
-            m.get("name") or m.get("function", {}).get("name", "?")
-            for m in messages
-            if m.get("role") == "tool"
+            call_id
+            for fact in report.ledger.iterations
+            for call_id in fact.tool_call_ids
         ]
         # ...
 ```
@@ -583,7 +629,7 @@ block_next = false
 priority = 10
 ```
 
-> 如需获取 token 用量统计，请通过 ``AgentRunner`` 的返回结果自行跟踪，或在 Hook 层面扩展载荷字段。
+> token 用量统计从 ``report.ledger.iterations`` 的逐轮实测 usage 累加获取。
 > ``agent.turn_saved`` 事件仍然可用（在 SAVE 状态触发），但其载荷不含 ``final_content`` 和 ``usage``。
 
 ---
@@ -799,11 +845,16 @@ class MyChannelPlugin(NanobeePlugin):
 
 ## 开发 Audit 插件
 
-Audit 是纯监听型插件，不贡献 prompt、不注册工具，仅通过 `on_message_completed` Hook 在对话结束时执行后台操作。
+Audit 是纯监听型插件，不贡献 prompt、不注册工具，通过多个生命周期 Hook 在对话前后执行后台操作。参考 `nanobee/builtin/audit_logger/plugin.py`，它实际使用了 4 个 Hook：
 
-参考 `nanobee/builtin/audit_logger/plugin.py`：
+- `on_message_started`：记录本轮 turn 的真实起点与 turn 身份（修复纯聊天 turn 计时不失真）
+- `on_pre_invoke` / `on_post_invoke`：配对记录工具调用 span
+- `on_message_completed`：从 `TurnReport` 纯映射产出整轮 span（provider 实测 token、注入事实、退出原因等；时间三值 `start_time`/`end_time`/`duration_ms` 全部来自 loop 盖章，单行 = 一个终态 turn，`record_type` 字段为未来 span 树中间层预留）
+
+`audit_logger` 的实现较完整，下面给出最小示意（仅用 `on_message_started` 取真实起点、`on_message_completed` 收尾）：
 
 ```python
+from nanobee.agent.specs import TurnReport
 from nanobee.plugins.base import NanobeePlugin
 
 
@@ -811,19 +862,28 @@ class AuditLoggerPlugin(NanobeePlugin):
     name = "audit_logger"
     plugin_type = "audit"
 
+    async def on_message_started(
+        self,
+        context: PromptBuildContext,
+        message: str,
+        turn_id: str,
+    ) -> None:
+        """记录本轮对话的真实起点与身份（纯后台计时，不阻塞 LLM）。"""
+        self._start = _now()  # 进程内计时起点
+        self._turn_id = turn_id
+
     async def on_message_completed(
         self,
         context: PromptBuildContext,
-        messages: list[dict[str, Any]],
+        report: TurnReport,
     ) -> None:
-        """记录每轮对话的审计日志。"""
-        # 统计工具调用次数
-        tool_calls = sum(1 for m in messages if m.get("role") == "assistant"
-                         and "tool_calls" in m)
-        # 写入日志
+        """记录每轮对话的审计日志（从结账单纯映射，零启发式）。"""
         logger.info(
-            "Audit [{}]: {} 条消息, {} 次工具调用",
-            context.context_id, len(messages), tool_calls,
+            "Audit [{}] turn={} {} 条消息, {} 次工具调用, exit={}",
+            context.context_id, report.turn_id,
+            len(report.messages_window),
+            sum(len(f.tool_call_ids) for f in report.ledger.iterations),
+            report.ledger.exit_reason,
         )
 ```
 

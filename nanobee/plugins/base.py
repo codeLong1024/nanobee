@@ -76,7 +76,7 @@ class NanobeePlugin(PluginHookMixin, ABC):
     """插件基类
 
     所有插件必须继承此类，并实现必要的生命周期方法。
-    继承 PluginHookMixin 以获得 5 个生命周期 Hook 的默认实现。
+    继承 PluginHookMixin 以获得 6 个生命周期 Hook 的默认实现。
 
     元数据由 PluginManager 从 plugin.toml 解析后强制传入，
     不存在类级兜底——plugin.toml 是唯一真实源。

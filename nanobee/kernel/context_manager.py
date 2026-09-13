@@ -6,9 +6,41 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+from nanobee.exceptions import ContextError
 from nanobee.kernel.user_context import UserContext
 
 from nanobee.utils.logger import logger
+from nanobee.utils.user_id import is_safe_user_id
+
+
+def _validate_user_id(user_id: str) -> str:
+    """校验 user_id 合法性，非法值直接拒绝（不净化替换）。
+
+    白名单判定收敛到 :mod:`nanobee.utils.user_id` 单一来源——出生点归一
+    （``InboundMessage.context_id`` 属性 / ``_process_message`` key 派生）
+    与本落点断言共用同一判定，防两处漂移。正常链路的 id 已在出生点完成
+    归一（合法原样 / 非法哈希降级），本函数是直接调用方（测试、脚本、
+    未来新入口）的安全网。
+
+    拒绝而非净化：净化会产生别名碰撞（如 ``a/b`` 与 ``a_b`` 映射到同一
+    目录），导致跨租户数据串写；fail-visible 优于静默写错位置。
+
+    Args:
+        user_id: 待校验的用户标识。
+
+    Returns:
+        校验通过时原样返回 user_id。
+
+    Raises:
+        ContextError: user_id 非字符串、为空、超过长度上界、含白名单外
+            字符，或为 ``.`` / ``..``。
+    """
+    if not is_safe_user_id(user_id):
+        raise ContextError(
+            f"非法 user_id（仅允许 [A-Za-z0-9._-]，长度 1-64，"
+            f"不得为 '.' 或 '..'）: {user_id!r}",
+        )
+    return user_id
 
 
 
@@ -40,11 +72,18 @@ class ContextManager:
         不加载历史消息（懒加载），仅加载元数据。
 
         Args:
-            user_id: 用户唯一标识
+            user_id: 用户唯一标识。必须通过白名单校验（``[A-Za-z0-9._-]``，
+                长度 1-64，不得为 ``.`` / ``..``）——本方法是全框架唯一的
+                user_id 守卫点，所有以 user_id 拼接路径的下游（用户目录、
+                审计文件、会话文件等）依赖本契约。
 
         Returns:
             用户上下文实例
+
+        Raises:
+            ContextError: user_id 未通过白名单校验。
         """
+        _validate_user_id(user_id)
         if user_id not in self._contexts:
             base_dir = self.users_base_dir / user_id
             base_dir.mkdir(parents=True, exist_ok=True)

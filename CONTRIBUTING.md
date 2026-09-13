@@ -371,7 +371,8 @@ nanobee plugin create my_plugin
 | `contribute_to_tools(context, tools)` | 工具列表构建时 | 动态增删工具 |
 | `on_pre_invoke(context, name, args)` | 工具执行前 | 参数修改、鉴权 |
 | `on_post_invoke(context, name, result)` | 工具执行后 | 结果修改、副作用（写入记忆） |
-| `on_message_completed(context, messages)` | 对话轮次结束 | 审计日志、后台整理 |
+| `on_message_started(context, message, turn_id)` | 对话轮次开始 | turn 起点记录（恒非阻塞） |
+| `on_message_completed(context, report)` | 对话轮次结束 | 从 TurnReport 结账单读取真值（审计日志、后台整理），禁止从消息历史启发式反推 |
 
 Run-level Hook（`before_run`/`after_run`/`on_error`/`on_finally`）包裹整个 LLM 迭代循环，与迭代级 Hook 完全分离。
 
@@ -382,7 +383,7 @@ Run-level Hook（`before_run`/`after_run`/`on_error`/`on_finally`）包裹整个
 | ChannelPlugin | `NanobeePlugin`（`plugin_type="channel"`） | 通信渠道（CLI、HTTP、Telegram 等） |
 | ToolPlugin | `nanobee.plugins.tool.ToolPlugin` | 工具调用（文件、Shell、Web 等） |
 | MemoryPlugin | `nanobee.plugins.memory.MemoryPlugin` | 记忆存储底座接口（`store`/`retrieve`），框架无内置实现，由社区插件实现 |
-| Audit | `NanobeePlugin`（`plugin_type="audit"`） | 纯监听型插件（仅 `on_message_completed`），不贡献提示词或工具 |
+| Audit | `NanobeePlugin`（`plugin_type="audit"`） | 纯监听型插件（`on_message_started` / `on_message_completed` 等），不贡献提示词或工具 |
 
 > **注意**：记忆管理（`memory`）当前通过内置 Skill 由 LLM 自主管理 `memory/facts.md`。如果您需要更高级的记忆策略（向量检索、语义聚类等），可实现 `MemoryPlugin` 接口接入 Agent 状态机。
 

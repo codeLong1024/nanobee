@@ -16,6 +16,7 @@ from nanobee.kernel.context_sandbox_var import current_request_context
 from nanobee.plugins import ToolPlugin
 
 from nanobee.utils.logger import logger
+from nanobee.utils.redact import normalize_error
 
 # 框架系统通知契约（与 notifications.build_notification 写入的 metadata 对齐；
 # 框架侧契约变更时需同步此处，否则错误会被静默误判为成功）。
@@ -171,7 +172,7 @@ class ToolCronPlugin(ToolPlugin):
                             },
                             "cron_expr": {
                                 "type": "string",
-                                "description": "Cron expression like '0 9 * * *' (for scheduled tasks). Use tz parameter for timezone.",
+                                "description": "Cron expression like '0 9 * * *' (for scheduled tasks). Use tz parameter for timezone. The interval between two consecutive occurrences must be at least 30 seconds.",
                             },
                             "tz": {
                                 "type": "string",
@@ -334,11 +335,13 @@ class ToolCronPlugin(ToolPlugin):
                 user_id=user_id or None,
             )
         except ValueError as e:
-            # ValueError 只可能来自安全不变量校验（如间隔低于硬编码红线）
+            # ValueError 只可能来自安全不变量校验（如相邻触发间隔低于硬编码红线）
             return (
                 f"错误：{e}\n"
-                "这是系统的安全下限保护。请将 every_seconds 调大（建议至少 60 秒），"
-                "或把 cron_expr / at 改到更远的未来后重试。"
+                "这是系统的安全下限保护（防止任务刷屏）：任何调度的相邻两次触发间隔"
+                "都不得低于 30 秒。请降低触发频率后重试：every_seconds 至少 30；"
+                "cron_expr 避免秒级高频写法（如每分 0 秒与 45 秒各触发一次，间隔仅 15 秒）；"
+                "at 需晚于当前时间至少 30 秒。"
             )
         return f"已创建任务 '{job.name}' (id: {job.id})"
 
@@ -485,7 +488,8 @@ class ToolCronPlugin(ToolPlugin):
             logger.exception("Cron: 任务 {} 执行异常", job.id)
             await self._deliver(
                 job,
-                self._build_error_notice(job, f"{type(exc).__name__}: {exc}"),
+                # 该文案直接投递给用户，归一化 + 脱敏与 agent 侧同源（utils/redact.py）
+                self._build_error_notice(job, normalize_error(exc)),
                 severity="error",
             )
             raise

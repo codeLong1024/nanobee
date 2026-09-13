@@ -27,6 +27,7 @@ from nanobee.providers.base import LLMProvider
 from nanobee.utils.helpers import build_runtime_context
 from nanobee.utils.logger import logger
 from nanobee.utils.prompt_templates import render_template
+from nanobee.utils.redact import normalize_error
 
 
 @dataclass(slots=True)
@@ -424,7 +425,7 @@ class SubagentManager:
             status.error = str(e)
             logger.exception("Subagent [{}] failed", task_id)
             await self._announce_result(
-                task_id, label, task, f"Error: {e}",
+                task_id, label, task, normalize_error(e),
                 origin, "error", origin_message_id,
             )
 

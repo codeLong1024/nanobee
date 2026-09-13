@@ -442,7 +442,8 @@ pip install -e .
           <tr><td><span class="name">contribute_to_tools(context, tools)</span></td><td><span class="badge hk">构建时</span> 工具列表构建时</td><td>动态增删工具</td></tr>
           <tr><td><span class="name">on_pre_invoke(context, name, args)</span></td><td><span class="badge hk">执行前</span> 工具执行前</td><td>参数修改、鉴权</td></tr>
           <tr><td><span class="name">on_post_invoke(context, name, result)</span></td><td><span class="badge hk">执行后</span> 工具执行后</td><td>结果修改、副作用</td></tr>
-          <tr><td><span class="name">on_message_completed(context, messages)</span></td><td><span class="badge hk">轮次末</span> 对话轮次结束</td><td>审计日志、后台整理</td></tr>
+          <tr><td><span class="name">on_message_started(context, message, turn_id)</span></td><td><span class="badge hk">轮次始</span> 对话轮次开始</td><td>turn 起点记录（恒非阻塞）</td></tr>
+          <tr><td><span class="name">on_message_completed(context, report)</span></td><td><span class="badge hk">轮次末</span> 对话轮次结束</td><td>从 TurnReport 结账单读取真值（审计、后台整理）</td></tr>
         </tbody>
       </table>
     </div>

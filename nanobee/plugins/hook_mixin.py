@@ -1,7 +1,7 @@
 """
 PluginHookMixin - 插件 Hook 混入类
 
-定义 5 个核心 Hook 接口,插件可以通过混入此类并覆盖方法,
+定义 6 个核心 Hook 接口,插件可以通过混入此类并覆盖方法,
 在 Agent 生命周期的关键切面注入逻辑。
 
 所有方法都有默认空实现,插件只需覆盖需要的。
@@ -9,13 +9,17 @@ PluginHookMixin - 插件 Hook 混入类
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    # 仅类型标注用：运行时导入会造成 plugins → agent.specs → kernel → plugins 循环
+    from nanobee.agent.specs import TurnReport
 
 
 class PluginHookMixin:
     """插件 Hook 混入类。
 
-    提供 5 个生命周期 Hook 的默认实现,消除代码重复。
+    提供 6 个生命周期 Hook 的默认实现,消除代码重复。
     ``NanobeePlugin`` 默认继承此类,所有插件自动拥有这些 Hook 方法。
 
     使用示例::
@@ -24,11 +28,11 @@ class PluginHookMixin:
             def contribute_to_prompt(self, context):
                 return f\"# Memory\\n{context.user_id} 的记忆内容\"
 
-            async def on_message_completed(self, context, messages):
-                await self.store_latest_memory(messages)
+            async def on_message_completed(self, context, report):
+                await self.store_latest_memory(report.messages_window)
 
     注意:即使不显式继承此类,所有 ``NanobeePlugin`` 子类也自动拥有
-    这 5 个 Hook 方法(通过继承链获得)。
+    这 6 个 Hook 方法(通过继承链获得)。
     """
 
     def contribute_to_prompt(self, context: Any) -> str | None:
@@ -103,10 +107,33 @@ class PluginHookMixin:
         """
         return result
 
+    async def on_message_started(
+        self,
+        context: Any,
+        message: str,
+        turn_id: str,
+    ) -> None:
+        """对话轮次开始时的生命周期 Hook。
+
+        在每轮 Agent 交互开始时异步调用（消息进入状态机前），与
+        :meth:`on_message_completed` 配对，适用于需要真实 turn 起点
+        的场景（如审计 span 计时、开始时间戳）。框架不阻塞消息处理，
+        恒为 fire-and-forget（``block_next`` 对本 Hook 无意义——turn
+        开始不应被任何插件阻塞）。执行顺序由 ``plugin.toml`` 的
+        ``[hooks.on_message_started]`` 段的 ``priority`` 声明，未声明时
+        默认 ``priority=10``。
+
+        Args:
+            context: 当前用户上下文(UserContext 实例)
+            message: 用户原始输入文本
+            turn_id: turn 唯一标识（与 TurnReport.turn_id 同源，均为
+                W3C trace id），供插件关联 turn 起点与结账单
+        """
+
     async def on_message_completed(
         self,
         context: Any,
-        messages: list[dict[str, Any]],
+        report: TurnReport,
     ) -> None:
         """对话轮次结束后的生命周期 Hook。
 
@@ -119,8 +146,12 @@ class PluginHookMixin:
 
         未声明时默认 ``block_next=false, priority=10``，非阻塞、无顺序保证。
 
+        payload 为 :class:`TurnReport`（turn 结账单）：turn 真值唯一来源——
+        runner 账本（逐轮 usage / finish_reason / 耗时 / 注入事实 / 退出原因）
+        + loop 盖章（turn_id / turn_started_at）+ 本轮消息窗口切片。
+        插件应从 report 读取事实，禁止从消息历史启发式反推。
+
         Args:
             context: 当前用户上下文(UserContext 实例)
-            messages: 本轮完整的消息列表
+            report: turn 结账单（nanobee.agent.specs.TurnReport）
         """
-        pass

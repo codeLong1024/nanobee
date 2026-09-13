@@ -16,6 +16,7 @@ from nanobee.agent.mcp_manager import MCPManager
 from nanobee.agent.preset_manager import ModelPresetManager
 from nanobee.agent.messages import InboundMessage, OutboundMessage
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import Enum, auto
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
@@ -27,12 +28,13 @@ from nanobee.agent.tools.subagent import ListSubagentsTool, SpawnSubagentTool
 from nanobee.exceptions import LoopStateError
 from nanobee.agent.hook import AgentHook, CompositeHook
 from nanobee.agent.runner import _MAX_INJECTIONS_PER_TURN, AgentRunner, AgentRunSpec, PluginHooks
-from nanobee.agent.specs import ExitReason
+from nanobee.agent.specs import ExitReason, TurnLedger, TurnReport
 from nanobee.agent.tools.registry import ToolRegistry, ToolPluginAdapter
 from nanobee.providers.base import LLMProvider
 from nanobee.providers.factory import ProviderSnapshot
-from nanobee.utils.observability import generate_trace_id, set_trace_id
+from nanobee.utils.observability import generate_trace_id, is_valid_trace_id, set_trace_id
 from nanobee.utils.document import extract_documents
+from nanobee.utils.user_id import resolve_storage_key
 from nanobee.utils.helpers import (
     build_assistant_message,
     build_runtime_context,
@@ -40,6 +42,7 @@ from nanobee.utils.helpers import (
 )
 from nanobee.utils.image_generation_intent import image_generation_prompt as image_gen_prompt_fn
 from nanobee.utils.runtime import EMPTY_FINAL_RESPONSE_MESSAGE
+from nanobee.utils.redact import normalize_error
 
 if TYPE_CHECKING:
     from nanobee.config.schema import AgentDefaults, Config, ModelPresetConfig
@@ -47,6 +50,7 @@ if TYPE_CHECKING:
     from nanobee.kernel.context_pipeline import ContextPipeline
     from nanobee.events.event_bus import EventBus
     from nanobee.kernel.plugin_manager import PluginManager
+    from nanobee.plugins.base import NanobeePlugin
 
 
 class TurnState(Enum):
@@ -105,6 +109,10 @@ class TurnContext:
 
     turn_wall_started_at: float = field(default_factory=time.time)
     turn_latency_ms: int | None = None
+
+    # turn 终态 report 幂等守卫：True 表示已结账（正常路径或兜底路径二选一），
+    # 保证「每 turn 恰好一份终态 report」（Phase 2 终态保证）。
+    turn_report_emitted: bool = False
 
     trace_id: str = field(default_factory=generate_trace_id)
     trace: list[StateTraceEntry] = field(default_factory=list)
@@ -229,6 +237,11 @@ class AgentLoop:
         # 阻塞型 Hook 的待完成 Task 追踪（context_id → Task）
         # 同一 context_id 的下一次 dispatch 会等待这些 Task 完成
         self._pending_blockers: dict[str, asyncio.Task] = {}
+
+        # fire-and-forget Hook 任务登记（turn 结账 / started 通知 / 兜底终态）：
+        # 完成后自清；kernel.shutdown 经 drain_hook_tasks 有界等待——审计落盘
+        # 任务若随 loop 关闭被取消，对应 turn span 将永久丢失（Phase 2）。
+        self._hook_tasks: set[asyncio.Task] = set()
 
         # 订阅子代理启动事件：立即通知用户，不经 LLM
         if self.event_bus:
@@ -632,7 +645,7 @@ class AgentLoop:
     async def _notify_plugins_message_completed(
         self,
         context_id: str,
-        messages: list[dict[str, Any]],
+        report: TurnReport,
     ) -> None:
         """FIP 合规的 Hook 调度器：按插件声明的元数据分组调度。
 
@@ -646,15 +659,22 @@ class AgentLoop:
 
         Args:
             context_id: 用户上下文 ID
-            messages: 本轮完整的消息列表
+            report: turn 结账单（runner 账本 + loop 盖章，真值唯一来源）
         """
         try:
             user_ctx = await self.context_manager.get_or_create(context_id)
         except Exception:
-            logger.debug("获取用户上下文失败，跳过 on_message_completed 通知")
+            # 升级为 warning（评审 #1 复核项）：守卫拒绝不应静默——被拒
+            # 轮次在审计中零留痕，warning 提供排障线索（只记长度不记原值）
+            logger.warning(
+                "获取用户上下文失败，跳过 on_message_completed 通知 (len={})",
+                len(context_id),
+            )
             return
 
-        # 收集所有实现了 on_message_completed 的插件及其 Hook 元数据
+        # 收集全部已启用插件及其 Hook 元数据（completed 维持全量调度，
+        # 兼容覆写了方法但未在 plugin.toml 声明的既有插件；声明仅决定
+        # priority / block_next / timeout，不影响是否被调度）
         entries: list[tuple[int, bool, float, NanobeePlugin]] = []
         for plugin in self._get_enabled_plugins():
             cfg = plugin.hook_config.get("on_message_completed")
@@ -673,13 +693,12 @@ class AgentLoop:
         blocking = [(p, timeout, plg) for p, bn, timeout, plg in entries if bn]
         non_blocking = [(p, plg) for p, bn, timeout, plg in entries if not bn]
 
-        # non-blocking 组：fire-and-forget（每个独立 create_task）
-        # add_done_callback 防止 shutdown 时 CancelledError 产生 "never retrieved" 警告
+        # non-blocking 组：fire-and-forget（每个独立 create_task，登记供关停 drain）
         for _priority, plugin in non_blocking:
             task = asyncio.create_task(
-                self._safe_notify_one(plugin, user_ctx, messages, context_id)
+                self._safe_notify_one(plugin, user_ctx, report, context_id)
             )
-            task.add_done_callback(lambda t: t.exception() if t.exception() else None)
+            self._track_hook_task(task)
 
         # blocking 组：顺序 await，超时跳过，整体放在 create_task 中不阻塞 LLM 响应
         if blocking:
@@ -688,11 +707,11 @@ class AgentLoop:
                     try:
                         if timeout > 0:
                             await asyncio.wait_for(
-                                self._safe_notify_one(plugin, user_ctx, messages, context_id),
+                                self._safe_notify_one(plugin, user_ctx, report, context_id),
                                 timeout=timeout,
                             )
                         else:
-                            await self._safe_notify_one(plugin, user_ctx, messages, context_id)
+                            await self._safe_notify_one(plugin, user_ctx, report, context_id)
                     except asyncio.TimeoutError:
                         logger.warning(
                             "阻塞型 Hook {}.on_message_completed 超时 ({:.1f}s) (context={})，跳过",
@@ -703,23 +722,212 @@ class AgentLoop:
 
             task = asyncio.create_task(_blocking_group())
             self._pending_blockers[context_id] = task
+            self._track_hook_task(task)
 
     async def _safe_notify_one(
         self,
-        plugin: "NanobeePlugin",
+        plugin: NanobeePlugin,
         user_ctx: Any,
-        messages: list[dict[str, Any]],
+        report: TurnReport,
         context_id: str,
     ) -> None:
         """安全调用单个插件的 on_message_completed，异常隔离。"""
         try:
-            await plugin.on_message_completed(user_ctx, messages)
+            await plugin.on_message_completed(user_ctx, report)
         except Exception:
             logger.exception(
                 "插件 {}.on_message_completed 出错 (context={})",
                 getattr(plugin, "name", "?"),
                 context_id,
             )
+
+    async def _notify_plugins_message_started(
+        self,
+        context_id: str,
+        message: str,
+        turn_id: str,
+    ) -> None:
+        """FIP 合规的 on_message_started Hook 调度器。
+
+        与 on_message_completed 的调度器同构，但恒为 non-blocking
+        （turn 开始不应被插件阻塞，``block_next`` 元数据对本 Hook 无意义），
+        仅按插件声明的 priority 降序入队 fire-and-forget 任务。
+
+        Args:
+            context_id: 用户上下文 ID
+            message: 用户原始输入文本
+            turn_id: turn 唯一标识（与 TurnReport.turn_id 同源，均为 trace_id）
+        """
+        try:
+            user_ctx = await self.context_manager.get_or_create(context_id)
+        except Exception:
+            # 同 on_message_completed：守卫拒绝不静默（评审 #1 复核项）
+            logger.warning(
+                "获取用户上下文失败，跳过 on_message_started 通知 (len={})",
+                len(context_id),
+            )
+            return
+
+        # 声明才调度（评审 #6 拍板）：started 是新增 Hook，无历史兼容
+        # 包袱，且 payload 携带用户原始输入——声明即能力，只投递给显式
+        # 声明了 [hooks.on_message_started] 的插件（数据最小化）。
+        # completed 维持全量调度以兼容未声明 Hook 的既有插件（见其注释）。
+        entries: list[tuple[int, NanobeePlugin]] = []
+        for plugin in self._get_enabled_plugins():
+            cfg = plugin.hook_config.get("on_message_started")
+            if cfg is None:
+                continue
+            entries.append((cfg.priority, plugin))
+
+        if not entries:
+            return
+
+        # 按 priority 降序入队（事件循环 FIFO 保证同轮 started 先于 completed 消费）
+        entries.sort(key=lambda x: -x[0])
+        for _priority, plugin in entries:
+            task = asyncio.create_task(
+                self._safe_notify_started_one(plugin, user_ctx, message, turn_id, context_id)
+            )
+            self._track_hook_task(task)
+
+    async def _safe_notify_started_one(
+        self,
+        plugin: NanobeePlugin,
+        user_ctx: Any,
+        message: str,
+        turn_id: str,
+        context_id: str,
+    ) -> None:
+        """安全调用单个插件的 on_message_started，异常隔离。"""
+        try:
+            await plugin.on_message_started(user_ctx, message, turn_id)
+        except Exception:
+            logger.exception(
+                "插件 {}.on_message_started 出错 (context={})",
+                getattr(plugin, "name", "?"),
+                context_id,
+            )
+
+    def _track_hook_task(self, task: asyncio.Task) -> None:
+        """登记 fire-and-forget Hook 任务：完成后自清，供关停 drain。
+
+        登记即接管异常回收（done callback 中取出异常，避免
+        "Task exception was never retrieved" 警告；插件内异常已由
+        _safe_notify_* 记录日志）。
+
+        Args:
+            task: 待登记的后台任务。
+        """
+        self._hook_tasks.add(task)
+        task.add_done_callback(self._on_hook_task_done)
+
+    def _on_hook_task_done(self, task: asyncio.Task) -> None:
+        """Hook 任务收口：从登记集合自清，并取走异常防警告。"""
+        self._hook_tasks.discard(task)
+        if not task.cancelled() and task.exception() is not None:
+            task.exception()
+
+    async def drain_hook_tasks(self, timeout_s: float) -> int:
+        """排空在途 Hook 任务（turn 结账 / started 通知），**等到静默或超时**。
+
+        评审 #3 修复：单次快照等待会漏掉等待期内由被等待任务派生的
+        子任务（真正的审计落盘任务），导致关停后继续 unload 丢账。
+        现改为 deadline 内循环：每轮重算登记集合中未完成任务并等待，
+        直到集合为空（返回 0）或超时（返回仍未完成的任务数）。
+        ``_track_hook_task`` 保证所有派生子任务必然进入登记集合，
+        循环即收敛。
+
+        关停链路在排空在途 turn 之后调用：审计落盘是 fire-and-forget
+        任务，若随 loop 关闭被取消，对应 turn span 将永久丢失。
+
+        Args:
+            timeout_s: 排空总预算（秒）。超时后未完成的任务不取消、不阻塞
+                关停流程，由调用方决定去留。
+
+        Returns:
+            超时后仍未完成的任务数。
+        """
+        deadline = time.monotonic() + timeout_s
+        while True:
+            pending = [t for t in self._hook_tasks if not t.done()]
+            if not pending:
+                return 0
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return len(pending)
+            await asyncio.wait(pending, timeout=remaining)
+
+    async def _emit_turn_report(
+        self,
+        *,
+        turn: TurnContext | None,
+        context_id: str,
+        trace_id: str,
+        turn_started_at: float | None,
+        result: Any = None,
+        abandon_error: str | None = None,
+    ) -> None:
+        """turn 终态 report 的唯一出口（幂等）：每 turn 恰好一份。
+
+        正常路径由 ``_run_agent_loop`` 在 runner 返回后调用；兜底路径由
+        ``_process_message`` 的 finally 在 turn 未产出 runner 结果时调用
+        （exit_reason=ABANDONED）。``turn_report_emitted`` 标志防止双发。
+
+        Args:
+            turn: 当前 TurnContext；None 表示直接调用 ``_run_agent_loop``
+                的场景（无 turn 生命周期，跳过幂等登记）。
+            context_id: 用户上下文 ID。
+            trace_id: turn 身份（turn_id，W3C trace id）。
+            turn_started_at: dispatch 墙钟（None 时退化当前时刻）。
+            result: runner 结果；None 时合成 ABANDONED 兜底终态。
+            abandon_error: 兜底终态的诊断串。
+        """
+        if turn is not None:
+            if turn.turn_report_emitted:
+                return
+            turn.turn_report_emitted = True
+
+        turn_ended_iso = datetime.now().astimezone().isoformat()
+        if result is not None:
+            turn_started_iso = (
+                datetime.fromtimestamp(turn_started_at).astimezone().isoformat()
+                if turn_started_at is not None
+                else datetime.now().astimezone().isoformat()
+            )
+            report = TurnReport(
+                turn_id=trace_id,
+                turn_started_at=turn_started_iso,
+                ledger=result.ledger,
+                turn_ended_at=turn_ended_iso,
+                messages_window=result.messages[result.ledger.turn_input_index:],
+            )
+        else:
+            # 兜底终态：runner 未返回（状态机异常/取消/关停排空）。账本仅含
+            # 窗口锚点与退出语义；error 恒非 None，避免消费者把兜底误判为
+            # 成功；消息窗口仅含输入侧（无 runner 结果侧）。
+            initial_messages = getattr(turn, "initial_messages", None) or []
+            window_start = max(len(initial_messages) - 1, 0)
+            report = TurnReport(
+                turn_id=trace_id,
+                turn_started_at=(
+                    datetime.fromtimestamp(turn.turn_wall_started_at).astimezone().isoformat()
+                    if turn is not None
+                    else turn_ended_iso
+                ),
+                ledger=TurnLedger(
+                    turn_input_index=window_start,
+                    exit_reason=ExitReason.ABANDONED.value,
+                    error=abandon_error or "turn abandoned without runner result",
+                ),
+                turn_ended_at=turn_ended_iso,
+                messages_window=list(initial_messages[window_start:]),
+            )
+
+        # 通知插件对话轮次已完成（后台执行，不阻塞主流程），并登记供关停 drain
+        task = asyncio.create_task(
+            self._notify_plugins_message_completed(context_id, report)
+        )
+        self._track_hook_task(task)
 
     async def connect_mcp(self) -> None:
         """连接配置的 MCP 服务器（委托给 MCPManager）。"""
@@ -783,6 +991,15 @@ class AgentLoop:
                 "role": "user",
                 "content": f"{current_content}\n\n{runtime_ctx}",
             })
+        else:
+            # 契约告警：TurnLedger.turn_input_index 以"末元素为本轮用户输入"为
+            # 锚点（见 specs.TurnLedger docstring），空输入不应进入 turn——
+            # 通道层应已过滤；此处兜底告警，防止锚点静默漂移到历史末条。
+            logger.warning(
+                "[TURN] 本轮未产生用户消息（content 为空），窗口锚点可能漂移 "
+                "(context={})",
+                msg.context_id,
+            )
 
         return messages
 
@@ -797,6 +1014,8 @@ class AgentLoop:
         sender_id: str = "",
         metadata: dict | None = None,
         trace_id: str | None = None,
+        turn_started_at: float | None = None,
+        turn: TurnContext | None = None,
         filtered_tool_names: list[str] | None = None,
         on_progress: Callable[..., Awaitable[None]] | None = None,
         on_stream: Callable[[str], Awaitable[None]] | None = None,
@@ -835,6 +1054,9 @@ class AgentLoop:
         user_ctx_for_hooks = await self.context_manager.get_or_create(context_id)
         plugin_hooks = self._build_plugin_hooks(enabled_plugins, user_ctx_for_hooks)
 
+        # 边界归一化：外部传入的 trace_id 非法时静默重新生成，不污染日志串联。
+        # 归一后的值同时作为 turn 身份（TurnReport.turn_id），保证全链路单一 ID。
+        effective_trace_id = trace_id if is_valid_trace_id(trace_id) else generate_trace_id()
         result = await self.runner.run(AgentRunSpec(
             initial_messages=initial_messages,
             tools=self.tools,
@@ -850,7 +1072,7 @@ class AgentLoop:
             chat_id=chat_id,
             sender_id=sender_id,
             metadata=metadata or {},
-            trace_id=trace_id or generate_trace_id(),
+            trace_id=effective_trace_id,
             context_window_tokens=self.context_window_tokens,
             context_block_limit=self.context_block_limit,
             provider_retry_mode=self.provider_retry_mode,
@@ -870,13 +1092,20 @@ class AgentLoop:
         elif result.error is not None:
             logger.error("LLM 返回错误: {error}", error=result.error[:200])
 
-        # 通知插件对话轮次已完成（后台执行，不阻塞主流程）
+        # 结账：loop 盖章（turn 身份 + dispatch 时刻）合成 TurnReport 交给插件。
+        # runner 拥有核心窗口事实（ledger），loop 拥有 turn 生命周期（started_at）。
+        # 消息窗口为切片浅拷贝（result.messages 为最终态，runner 不再修改）。
+        # 幂等出口：兜底终态（ABANDONED）由 _process_message 的 finally 走同一
+        # 方法，turn_report_emitted 标志保证每 turn 恰好一份（Phase 2 终态保证）。
         # 注：原 event_bus.publish("agent.turn_completed") 已移除（2026-06-27），
-        # 迁移到 on_message_completed Hook（详见 docs/plugin_development.md 事件系统与迁移指南）
-        task = asyncio.create_task(
-            self._notify_plugins_message_completed(context_id, result.messages)
+        # 迁移到 on_message_completed Hook（详见 docs/plugin_development.md）。
+        await self._emit_turn_report(
+            turn=turn,
+            context_id=context_id,
+            trace_id=effective_trace_id,
+            turn_started_at=turn_started_at,
+            result=result,
         )
-        task.add_done_callback(lambda t: t.exception() if t.exception() else None)
 
         return (
             result.final_content,
@@ -934,7 +1163,11 @@ class AgentLoop:
         # 刷新 provider 快照
         self._refresh_provider_snapshot()
 
-        key = context_id or msg.context_id
+        # 存储键出生点归一（评审 #1/#4）：context_id 参数是路由键（含通道
+        # 前缀如 "dingtalk:xxx"，直接落盘会被白名单拒绝或越界写），在此
+        # 归一为存储键；msg.context_id 已在 InboundMessage.context_id 属性
+        # 完成归一。出站投递仍用 msg.chat_id（原路由值），路由不受影响。
+        key = resolve_storage_key(context_id) if context_id else msg.context_id
         session_id = msg.session_id
         ctx = TurnContext(
             msg=msg,
@@ -951,58 +1184,117 @@ class AgentLoop:
         # 设置当前协程的 Trace ID，贯穿整个处理链路
         set_trace_id(ctx.trace_id)
 
-        # 状态机驱动循环
-        while ctx.state is not TurnState.DONE:
-            handler_name = f"_state_{ctx.state.name.lower()}"
-            handler = getattr(self, handler_name, None)
-            if handler is None:
-                raise LoopStateError(f"缺少状态处理器: {ctx.state}")
-
-            t0 = time.perf_counter()
-            try:
-                event = await handler(ctx)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                duration = (time.perf_counter() - t0) * 1000
-                logger.exception("状态 {} 处理器异常", ctx.state.name)
-                ctx.trace.append(StateTraceEntry(
-                    state=ctx.state, started_at=t0,
-                    duration_ms=duration, event="ok", error=str(exc),
-                ))
-                # 兜底错误恢复：runner.run() 已把内部异常折叠进 result.error 正常返回，
-                # 此分支仅覆盖 runner 之外的意外异常。填充 error 后跳到 RESPOND（绕过 SAVE，
-                # 避免异常半途状态写入历史），错误经系统通知路径（fail_card）下发。
-                # error 保持纯技术诊断串：致歉文案由通知模板统一包装，避免"双重道歉"。
-                ctx.error = f"{type(exc).__name__}: {exc}"
-                ctx.final_content = None
-                ctx.exit_reason = ExitReason.COMPLETED.value
-                ctx.tools_used = ctx.tools_used or []
-                ctx.all_messages = ctx.all_messages or []
-                ctx.had_injections = False
-                # 防止无限循环：如果已是 RESPOND 状态仍失败则无法恢复
-                if ctx.state == TurnState.RESPOND:
-                    logger.error("RESPOND 状态处理器异常，无法恢复")
-                    raise
-                ctx.state = TurnState.RESPOND
-                continue
-
-            duration = (time.perf_counter() - t0) * 1000
-            ctx.trace.append(StateTraceEntry(
-                state=ctx.state, started_at=t0,
-                duration_ms=duration, event=event,
-            ))
+        # 外层绑定 context_root（评审 #2 修复）：兜底 ABANDONED 结账任务在
+        # 最外层 finally 中创建，此时 _state_run 的内层绑定已复位——若不在
+        # 外层补绑，审计将回退 /tmp 进程级目录（可预测、跨实例共享、不防
+        # 符号链接）。ContextVar.reset(token) 恢复 set 之前的值，故 _state_run
+        # 的内层 bind/reset 与本外层绑定天然兼容（复位恢复外层值），零改动。
+        # get_or_create 失败（如 user_id 非法）时不绑定，保持 /tmp 回退——
+        # 该场景结账通知同样会被 ContextManager 守卫拦下，无有效审计可写。
+        from nanobee.kernel.context_sandbox_var import (
+            bind_context_root,
+            reset_context_root,
+        )
+        _outer_ctx_root_token: Any = None
+        try:
+            outer_user_ctx = await self.context_manager.get_or_create(key)
+            if outer_user_ctx.context_root is not None:
+                _outer_ctx_root_token = bind_context_root(outer_user_ctx.context_root)
+        except Exception:
             logger.debug(
-                "[turn {turn_id}] 状态 {state} 耗时 {duration:.1f}ms -> 事件 {event}",
-                turn_id=ctx.turn_id, state=ctx.state.name, duration=duration, event=event
+                "[turn {turn_id}] 外层绑定 context_root 失败，兜底审计走回退目录",
+                turn_id=ctx.turn_id,
             )
 
-            next_state = self._TRANSITIONS.get((ctx.state, event))
-            if next_state is None:
-                raise LoopStateError(
-                    f"[turn {ctx.turn_id}] 状态 {ctx.state} 在事件 {event!r} 下无转换"
+        # 通知插件对话轮次已开始（后台执行，不阻塞主流程）
+        # 与 on_message_completed 配对，为插件提供真实 turn 起点（如审计 span 计时）。
+        # turn_id 与 TurnReport.turn_id 同源（ctx.trace_id），供插件关联起止。
+        task = asyncio.create_task(
+            self._notify_plugins_message_started(key, msg.content, ctx.trace_id)
+        )
+        self._track_hook_task(task)
+
+        # 状态机驱动循环（Phase 2 终态保证：任何退出路径都保证恰好一份终态
+        # report——正常路径在 _run_agent_loop 内结账，取消/异常路径由 finally
+        # 兜底补发 ABANDONED；CancelledError 原样传播，兜底在取消路径内用
+        # create_task 登记，不在取消路径 await，避免二次取消打断落账）
+        abandon_reason = ""
+        try:
+            while ctx.state is not TurnState.DONE:
+                handler_name = f"_state_{ctx.state.name.lower()}"
+                handler = getattr(self, handler_name, None)
+                if handler is None:
+                    raise LoopStateError(f"缺少状态处理器: {ctx.state}")
+
+                t0 = time.perf_counter()
+                try:
+                    event = await handler(ctx)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    duration = (time.perf_counter() - t0) * 1000
+                    logger.exception("状态 {} 处理器异常", ctx.state.name)
+                    ctx.trace.append(StateTraceEntry(
+                        state=ctx.state, started_at=t0,
+                        duration_ms=duration, event="ok", error=str(exc),
+                    ))
+                    # 兜底错误恢复：runner.run() 已把内部异常折叠进 result.error 正常返回，
+                    # 此分支仅覆盖 runner 之外的意外异常。填充 error 后跳到 RESPOND（绕过 SAVE，
+                    # 避免异常半途状态写入历史），错误经系统通知路径（fail_card）下发。
+                    # error 保持纯技术诊断串：致歉文案由通知模板统一包装，避免"双重道歉"。
+                    ctx.error = normalize_error(exc)
+                    ctx.final_content = None
+                    ctx.exit_reason = ExitReason.COMPLETED.value
+                    ctx.tools_used = ctx.tools_used or []
+                    ctx.all_messages = ctx.all_messages or []
+                    ctx.had_injections = False
+                    # 防止无限循环：如果已是 RESPOND 状态仍失败则无法恢复
+                    if ctx.state == TurnState.RESPOND:
+                        logger.error("RESPOND 状态处理器异常，无法恢复")
+                        raise
+                    ctx.state = TurnState.RESPOND
+                    continue
+
+                duration = (time.perf_counter() - t0) * 1000
+                ctx.trace.append(StateTraceEntry(
+                    state=ctx.state, started_at=t0,
+                    duration_ms=duration, event=event,
+                ))
+                logger.debug(
+                    "[turn {turn_id}] 状态 {state} 耗时 {duration:.1f}ms -> 事件 {event}",
+                    turn_id=ctx.turn_id, state=ctx.state.name, duration=duration, event=event
                 )
-            ctx.state = next_state
+
+                next_state = self._TRANSITIONS.get((ctx.state, event))
+                if next_state is None:
+                    raise LoopStateError(
+                        f"[turn {ctx.turn_id}] 状态 {ctx.state} 在事件 {event!r} 下无转换"
+                    )
+                ctx.state = next_state
+        except asyncio.CancelledError:
+            abandon_reason = "turn cancelled before completion"
+            raise
+        finally:
+            if not ctx.turn_report_emitted:
+                if not abandon_reason:
+                    abandon_reason = "turn aborted by state machine failure"
+                self._track_hook_task(asyncio.create_task(
+                    self._emit_turn_report(
+                        turn=ctx,
+                        context_id=ctx.context_id,
+                        trace_id=ctx.trace_id,
+                        turn_started_at=ctx.turn_wall_started_at,
+                        result=None,
+                        # 真实诊断优先（评审 #7）：ctx.error 由状态机异常分支
+                        # 填充（含异常类名与消息），取消路径为 None 时退回
+                        # 通用 abandon_reason。
+                        abandon_error=ctx.error or abandon_reason,
+                    )
+                ))
+            # 外层复位：必须在兜底任务创建**之后**（create_task 复制创建
+            # 时刻的上下文，先复位会让 ABANDONED 结账拿到 root=None）。
+            if _outer_ctx_root_token is not None:
+                reset_context_root(_outer_ctx_root_token)
 
         logger.debug(
             "[turn {turn_id}] Turn 完成，经过 {states} 个状态",
@@ -1211,6 +1503,8 @@ class AgentLoop:
                 sender_id=msg.sender_id,
                 metadata=msg.metadata,
                 trace_id=ctx.trace_id,
+                turn_started_at=ctx.turn_wall_started_at,
+                turn=ctx,
                 filtered_tool_names=filtered_tool_names,
                 on_progress=ctx.on_progress,
                 on_stream=ctx.on_stream,

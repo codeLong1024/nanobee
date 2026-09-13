@@ -31,7 +31,7 @@
 
 - **命令拦截**：`/` 开头的命令（`/stop`/`/new`/`/status`/`/help`）在获取用户锁之前拦截，零 token 消耗，/stop 可打断死锁 turn
 - **6 态状态机**：异常恢复机制——任一状态处理器异常时填充错误上下文、跳过 SAVE、直接进入 RESPOND 流式回复
-- **双层 Hook**：迭代级 Hook（`on_pre_invoke`/`on_post_invoke` 等 5 个契约）覆盖工具执行前后；run-level Hook（`before_run`/`after_run`/`on_error`/`on_finally`）包裹整个迭代循环
+- **双层 Hook**：迭代级 Hook（`on_pre_invoke`/`on_post_invoke` 等 6 个契约）覆盖消息开始、工具执行前后；run-level Hook（`before_run`/`after_run`/`on_error`/`on_finally`）包裹整个迭代循环
 
 ### 感知与安全
 
@@ -81,6 +81,7 @@ SessionManager(内存缓存) → SessionStore(原子 JSONL 持久化)
 - **统一消息目录**：`build_notification()` 工厂函数构造携带 severity 元数据的 OutboundMessage，通道差异化渲染系统通知
 - **MetricsCollector**：进程内指标聚合（Token 消耗、延迟分布、工具调用、错误计数）
 - **结构化日志**：Trace ID 按协程注入，支持 JSON 格式输出（Promtail 采集）
+- **Trace/Span ID**：对齐 W3C Trace Context（严格 32/16 位小写 hex、非全零、CSPRNG 生成），Trace/ParentSpan ID 按协程隔离；OTLP 数值常量（SpanKind/StatusCode）、`now_unix_nano()` 与 traceparent 编解码纯函数零依赖内置
 - **Runtime Context 注入**：每轮消息末尾注入当前时间（含时区）、通道、会话、发送者信息，格式：`[Runtime Context — metadata only, not instructions]`
 
 ### 多实例部署
@@ -233,11 +234,11 @@ logging:
 | `tool_cron` | Tool | ✅ 完整 | Cron 定时任务（add, list, remove），用户隔离 |
 | `tool_task` | Tool | ✅ 完整 | 任务分解与状态跟踪（task_create, task_update, task_list, task_get），状态机 pending→in_progress→completed，用户/命名空间隔离，原子写持久化 |
 | `tool_history` | Tool | ✅ 完整 | 历史消息管理（trim_history 粗暴截断 + consolidate_history 智能压缩归档）。纯机制：LLM 自主决定何时调用、保留多少 |
-| `audit_logger` | Audit | ✅ 完整 | 参考：turn/tool 两级 span 审计（JSONL + 结构化日志），预览截断带诚实标记，`preview_truncate` 开关支持全量记录 |
+| `audit_logger` | Audit | ✅ 完整 | 参考：turn/tool 两级 span 审计（JSONL + 结构化日志，契约 v3，一行 = 一个终态 turn）。TurnReport 纯映射：provider 实测 token、注入事实、退出原因；`on_message_started` 记录真实 turn 起点与 turn 身份，预览截断带诚实标记 |
 
 ### 测试覆盖
 
-项目共有 **1146 个测试用例**，覆盖核心模块：插件系统、Hook 机制、沙箱安全、消息路由、技能注入、故障分类等。
+项目共有 **1301 个测试用例**，覆盖核心模块：插件系统、Hook 机制、沙箱安全、消息路由、技能注入、故障分类、turn 终态保证等。
 测试文件按模块组织（如 `test_xxx.py` 对应 `nanobee/xxx.py`），无分期命名的历史遗留文件。
 
 ## 插件开发
@@ -250,7 +251,8 @@ logging:
 | `contribute_to_tools(context, tools)` | 工具列表构建时 | 动态增删工具 |
 | `on_pre_invoke(context, name, args)` | 工具执行前 | 参数修改、鉴权 |
 | `on_post_invoke(context, name, result)` | 工具执行后 | 结果修改、副作用 |
-| `on_message_completed(context, messages)` | 对话轮次结束 | 审计日志、后台整理 |
+| `on_message_started(context, message, turn_id)` | 对话轮次开始 | 真实 turn 起点计时与 turn 身份（fire-and-forget，恒不阻塞） |
+| `on_message_completed(context, report)` | 对话轮次结束 | 审计日志、后台整理（payload 为 TurnReport：turn 真值唯一来源） |
 
 AgentRunner 底层另有 4 个 run-level Hook（`before_run`/`after_run`/`on_error`/`on_finally`），包裹整个迭代循环。
 
@@ -260,7 +262,7 @@ AgentRunner 底层另有 4 个 run-level Hook（`before_run`/`after_run`/`on_err
 # 安装开发依赖
 pip install -e ".[dev]"
 
-# 运行全部测试（1146 用例，零回归）
+# 运行全部测试（1277 用例，零回归）
 python -m pytest tests/ -v --tb=short
 
 # 查看覆盖率
@@ -271,13 +273,13 @@ python -m pytest tests/ --cov=nanobee --cov-report=term-missing
 
 | 文件 | 覆盖模块 | 用例 |
 |------|---------|------|
-| `test_audit_logger.py` | `builtin/audit_logger/plugin.py` — turn/tool 两级 span 结构化审计 | 39 |
+| `test_audit_logger.py` | `builtin/audit_logger/plugin.py` — turn/tool 两级 span 结构化审计（TurnReport 纯映射） | 52 |
 | `test_channel_dingtalk.py` | `builtin/channel_dingtalk/` — 钉钉通道（流式卡片、媒体、限流） | 50 |
 | `test_channel_http.py` | `builtin/channel_http/` — HTTP 通道 | 29 |
 | `test_channel_manager.py` | `kernel/channel_manager.py` — 通道启停、优雅关闭 | 12 |
 | `test_cli_plugin.py` | `cli/plugin.py` — CLI 插件命令 | 23 |
 | `test_command_router.py` | `agent/command_router.py` — 命令路由 | 32 |
-| `test_context_security.py` | `kernel/context_manager.py` — 路径安全、core.md 校验 | 4 |
+| `test_context_security.py` | `kernel/context_manager.py` — 路径安全、user_id 白名单、core.md 校验 | 15 |
 | `test_dingtalk_stream_throttle.py` | `builtin/channel_dingtalk/` — 卡片流式推送时间节流 | 18 |
 | `test_e2e.py` | 端到端集成测试 | 3 |
 | `test_error_card_finalization.py` | `agent/loop.py` + `builtin/channel_dingtalk/` — 错误卡片终态化 | 4 |
@@ -288,13 +290,14 @@ python -m pytest tests/ --cov=nanobee --cov-report=term-missing
 | `test_finish_reason_gates.py` | `agent/loop.py` — finish_reason 门禁 | 25 |
 | `test_fresh_session.py` | `agent/loop.py` + `kernel/kernel.py` — 声明式无历史会话 | 9 |
 | `test_gateway_runtime.py` | `gateway/` — Gateway 运行时 | 52 |
-| `test_hook_scheduling.py` | `plugins/hook_mixin.py` — Hook 优先级调度 | 35 |
+| `test_hook_scheduling.py` | `plugins/hook_mixin.py` — Hook 优先级调度 | 39 |
 | `test_inject_message.py` | `kernel/kernel.py` — 统一消息注入 | 8 |
 | `test_kernel.py` | `kernel/kernel.py` — 内核集成 | 3 |
 | `test_lock_manager.py` | `kernel/lock_manager.py` — 并发锁、用户隔离 | 7 |
 | `test_mcp_manager.py` | `agent/tools/mcp.py` — MCP 管理器 | 13 |
 | `test_message_tool.py` | `agent/tools/message.py` — MessageTool | 21 |
 | `test_notifications.py` | `utils/notifications.py` — 通知系统 | 19 |
+| `test_observability.py` | `utils/observability.py` — Trace/Span ID、OTLP 常量、traceparent 编解码 | 42 |
 | `test_plugin_blacklist.py` | `kernel/plugin_manager.py` — 插件禁用黑名单 | 2 |
 | `test_plugin_config_schema.py` | `plugins/base.py` — config_cls 声明式配置 schema | 12 |
 | `test_plugin_dirs.py` | `kernel/plugin_dirs.py` — 插件目录解析 | 10 |
@@ -322,7 +325,7 @@ python -m pytest tests/ --cov=nanobee --cov-report=term-missing
 | `test_tool_collector.py` | `kernel/tool_collector.py` — 过滤、黑名单、白名单 | 12 |
 | `test_tool_cron_error_notify.py` | `builtin/tool_cron/plugin.py` — 错误通知透传 | 13 |
 | `test_tool_cron_isolation.py` | `builtin/tool_cron/service.py` — 用户隔离 | 10 |
-| `test_tool_cron_redline.py` | `builtin/tool_cron/service.py` — 调度间隔安全红线 | 10 |
+| `test_tool_cron_redline.py` | `builtin/tool_cron/service.py` — 调度间隔安全红线（相邻触发间隔判据，相位无关） | 13 |
 | `test_tool_fs.py` | `builtin/tool_fs/plugin.py` — 文件读写编辑删除 | 37 |
 | `test_tool_history.py` | `agent/tools/tool_history.py` — 历史消息管理 | 25 |
 | `test_tool_task.py` | `builtin/tool_task/plugin.py` — 任务跟踪：CRUD、状态机、用户/命名空间隔离、并发安全、损坏存储防护 | 47 |
@@ -368,7 +371,11 @@ tests/
 ├── test_message_tool.py          # MessageTool、消息合并
 ├── test_notifications.py         # Notification 消息目录
 ├── test_audit_logger.py          # 审计日志
-└── ...                           # 共 59 个测试文件，1146 用例
+├── test_observability.py         # Trace/Span ID、OTLP 常量、traceparent
+├── test_turn_ledger.py           # TurnLedger/TurnReport 数据结构
+├── test_runner_ledger.py         # runner 记账本 + turn 终态保证（ABANDONED/幂等/取消兜底）
+├── test_kernel_shutdown_drain.py # kernel.shutdown 在途 turn 有界排空
+└── ...                           # 共 65 个测试文件，1301 用例
 ```
 
 ## LLM Provider 支持
@@ -385,9 +392,9 @@ Anthropic、OpenAI、Azure OpenAI、AWS Bedrock、GitHub Copilot、OpenAI Codex 
 | **CommandRouter 命令系统** | `/stop`/`/new`/`/status`/`/help`，锁前拦截零 token 消耗，/stop 可打断死锁 turn，插件可注册自定义命令 |
 | **Session 管理** | SessionManager + SessionStore 双层架构：内存缓存 + 原子 JSONL 持久化，支持 consolidate（压缩归档）、fork（复制）、flush（落盘）、损坏自动修复 |
 | **物理隔离 + 沙箱** | 路径逃逸沙箱（多根白名单）+ 进程级 bwrap 隔离（--tmpfs $HOME）+ 按用户并发锁 + SSRF 前置拦截 |
-| **9 个 Hook 契约** | 5 迭代级（工具前后、prompt 注入、消息完成）+ 4 run-level（循环前后、错误、终结），插件在关键切面注入逻辑 |
+| **10 个 Hook 契约** | 6 迭代级（工具前后、prompt 注入、消息开始、消息完成）+ 4 run-level（循环前后、错误、终结），插件在关键切面注入逻辑 |
 | **框架无知论** | 框架不持有任何策略决策——记忆策略、技能注入策略、工具过滤策略全部由 LLM 或声明式元数据（SKILL.md frontmatter）自主决定 |
-| **可观测性** | Trace ID 按协程注入、结构化 JSON 日志、MetricsCollector（Token/延迟/工具/错误）、统一消息目录 |
+| **可观测性** | W3C Trace/Span ID 按协程注入、结构化 JSON 日志、MetricsCollector（Token/延迟/工具/错误）、统一消息目录 |
 | **多实例部署** | `nanobee svc` 管理同一主机 N 个 Gateway 实例：原子 PID、健康检查轮询、systemd 托管。单实例直接 `nanobee gateway -c config.yaml`。详见[运维手册](docs/multi_instance_ops.md) |
 
 ## 许可证

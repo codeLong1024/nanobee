@@ -8,13 +8,13 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from nanobee.kernel.context_pipeline import ContextPipeline, _map_plugin_stage
-from nanobee.kernel.plugin_manager import PluginManager, PluginDescriptor
-from nanobee.kernel.skill_manager import SkillsLoader
-from nanobee.plugins.base import NanobeePlugin, PluginMetadata
-from nanobee.plugins import ToolPlugin
+from nanobee.agent.specs import TurnLedger, TurnReport
 from nanobee.channel.base import ChannelPlugin
-from nanobee.plugins.memory import MemoryPlugin
+from nanobee.kernel.context_pipeline import ContextPipeline, _map_plugin_stage
+from nanobee.kernel.plugin_manager import PluginManager
+from nanobee.kernel.skill_manager import SkillsLoader
+from nanobee.plugins import ToolPlugin
+from nanobee.plugins.base import NanobeePlugin, PluginMetadata
 
 
 class MockToolPlugin(ToolPlugin):
@@ -264,19 +264,6 @@ class _TestPostInvokePlugin(NanobeePlugin):
         return result
 
 
-class _TestMessageCompletedPlugin(NanobeePlugin):
-    """模拟插件，记录消息完成事件。"""
-
-    def __init__(self, metadata=None):
-        if metadata is None:
-            metadata = PluginMetadata(name="test_msg_completed", plugin_type="tool")
-        super().__init__(metadata)
-        self.completed_messages = []
-
-    async def on_message_completed(self, context, messages):
-        self.completed_messages = list(messages)
-
-
 # ---- 辅助工具 ----
 
 def _make_context_pipeline(tmp_path: Path) -> ContextPipeline:
@@ -321,19 +308,24 @@ class TestPluginHookMixin:
         assert result == {"k": "v"}
         result = await plugin.on_post_invoke(None, "call_1", "test", "ok")
         assert result == "ok"
-        await plugin.on_message_completed(None, [])
+        await plugin.on_message_completed(None, TurnReport(
+            turn_id="a" * 32,
+            turn_started_at="2026-09-13T10:00:00+08:00",
+            ledger=TurnLedger(),
+        ))
 
 
 class TestNanobeePluginHookMethods:
     """验证 NanobeePlugin 基类的默认 Hook 方法。"""
 
     def test_base_has_hook_methods(self):
-        """NanobeePlugin 包含 5 个 Hook 默认方法。"""
+        """NanobeePlugin 包含 6 个 Hook 默认方法。"""
         plugin = NanobeePlugin.__new__(NanobeePlugin)
         assert hasattr(plugin, "contribute_to_prompt")
         assert hasattr(plugin, "contribute_to_tools")
         assert hasattr(plugin, "on_pre_invoke")
         assert hasattr(plugin, "on_post_invoke")
+        assert hasattr(plugin, "on_message_started")
         assert hasattr(plugin, "on_message_completed")
 
     def test_subclass_override(self):
@@ -409,17 +401,23 @@ class TestPluginPostInvoke:
         assert result == "其他结果"
 
 
-class TestPluginMessageCompleted:
-    """验证 on_message_completed 被调用。"""
+class TestHookContractSignatures:
+    """验证插件 Hook 默认签名与 v3 契约一致（防静默签名漂移）。
 
-    @pytest.mark.asyncio
-    async def test_message_completed_receives_messages(self):
-        """插件收到完成通知和消息列表。"""
-        plugin = _TestMessageCompletedPlugin()
-        test_messages = [{"role": "user", "content": "hi"}]
-        await plugin.on_message_completed(MagicMock(), test_messages)
-        assert len(plugin.completed_messages) > 0
-        assert plugin.completed_messages[0]["content"] == "hi"
+    completed 的真实投递链路（loop 调度器 → 插件收到 TurnReport）
+    由 tests/test_runner_ledger.py::test_loop_delivers_turn_report_to_plugin
+    端到端覆盖，此处只锁定签名契约。
+    """
+
+    def test_message_completed_takes_turn_report(self):
+        """on_message_completed 签名为 (context, report)。"""
+        sig = inspect.signature(NanobeePlugin.on_message_completed)
+        assert list(sig.parameters) == ["self", "context", "report"]
+
+    def test_message_started_takes_turn_id(self):
+        """on_message_started 签名为 (context, message, turn_id)。"""
+        sig = inspect.signature(NanobeePlugin.on_message_started)
+        assert list(sig.parameters) == ["self", "context", "message", "turn_id"]
 
 
 class TestPluginStageMapping:
@@ -454,4 +452,4 @@ class TestPluginHookMixinComposition:
         sig = inspect.signature(AgentLoop._notify_plugins_message_completed)
         params = list(sig.parameters.keys())
         assert "context_id" in params
-        assert "messages" in params
+        assert "report" in params

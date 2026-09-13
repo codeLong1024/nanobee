@@ -93,6 +93,10 @@ async def test_shutdown_drains_mcp_connect_before_closing(tmp_path):
         def stop(self) -> None:
             order.append("stop")
 
+        async def drain_hook_tasks(self, timeout_s: float) -> int:
+            order.append("drain_hook_tasks")
+            return 0
+
         async def close_mcp(self) -> None:
             order.append("close_mcp")
 

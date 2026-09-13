@@ -121,6 +121,27 @@ class ToolsConfig(Base):
     ssrf_whitelist: list[str] = []
 
 
+class ShutdownConfig(Base):
+    """关停排空配置（Phase 2 终态保证）。
+
+    上界均为机制而非策略：约束"给在途工作多久收尾时间"，默认值取
+    常规 turn 耗时的保守估计，可按实例负载覆盖。
+
+    Attributes:
+        drain_inflight_s: 在途 turn 的有界等待上界；超时的 turn 被取消，
+            经 loop 的 try/finally 落 ABANDONED 终态。
+        drain_cancelled_s: turn 被取消后，留给兜底 ABANDONED 结账任务
+            登记/执行的收口窗口（仅覆盖取消传播与结账任务登记，不含
+            JSONL 落盘——落盘由 drain_hooks_s 覆盖）。
+        drain_hooks_s: fire-and-forget Hook 任务（审计落盘 / 通知）的
+            排空上界。
+    """
+
+    drain_inflight_s: float = 10.0
+    drain_cancelled_s: float = 2.0
+    drain_hooks_s: float = 5.0
+
+
 class Config(BaseModel):
     """nanobee 顶层配置对象。
 
@@ -143,6 +164,7 @@ class Config(BaseModel):
     plugins: dict[str, dict[str, Any]] = {}
     logging: LoggingConfig = LoggingConfig()
     tools: ToolsConfig = ToolsConfig()
+    shutdown: ShutdownConfig = ShutdownConfig()
 
     def resolve_preset(self, name: str | None) -> ModelPresetConfig:
         """按名称解析模型预设，返回 None 时使用默认预设。"""

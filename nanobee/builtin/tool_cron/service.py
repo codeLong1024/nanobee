@@ -35,9 +35,14 @@ def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
-# 硬编码安全红线：任何调度距下次触发不得低于该间隔（毫秒）。
+# 硬编码安全红线：任意两次相邻触发之间的间隔不得低于该值（毫秒）。
 # 属安全兜底而非业务参数，刻意不做配置化——被刷屏时无法改配置，必须程序兜底。
 _HARD_MIN_INTERVAL_MS = 30_000  # 30 秒
+
+# 计算 cron 表达式最小相邻间隔时的探测次数上限（属机制上界，非策略阈值）。
+# 取值依据：分钟级表达式相邻间隔恒 >= 60s 必然合规，只有秒级表达式可能出现亚分钟间隔，
+# 而秒字段的完整重复周期不超过一分钟，故连续探测 60 次足以覆盖最短间隔。
+_MIN_INTERVAL_PROBE_COUNT = 60
 
 
 def _compute_next_run(schedule: CronSchedule, now_ms: int) -> int | None:
@@ -68,6 +73,39 @@ def _compute_next_run(schedule: CronSchedule, now_ms: int) -> int | None:
     return None
 
 
+def _compute_min_interval_ms(schedule: CronSchedule, now_ms: int) -> int | None:
+    """计算 now 之后相邻两次触发的最小间隔（毫秒）。
+
+    防刷屏约束的是长期触发速率，即任意两次相邻触发之间的间隔；
+    该值是调度表达式的静态属性，与插入时刻（墙钟相位）无关。
+
+    Args:
+        schedule: 调度定义。
+        now_ms: 基准时刻（毫秒时间戳，仅决定从哪个触发点开始探测）。
+
+    Returns:
+        最小相邻间隔（毫秒）；表达式无效或无法计算时返回 None。
+
+    Note:
+        必须取窗口内的最小值而非单对相邻触发：如 "* * * * * 0,45" 的间隔序列
+        为 45s/15s 交替，单对采样会随相位落在长间隔上而漏判。
+    """
+    prev_ms = _compute_next_run(schedule, now_ms)
+    if prev_ms is None:
+        return None
+
+    min_gap_ms: int | None = None
+    for _ in range(_MIN_INTERVAL_PROBE_COUNT):
+        next_ms = _compute_next_run(schedule, prev_ms)
+        if next_ms is None:
+            break
+        gap_ms = next_ms - prev_ms
+        if min_gap_ms is None or gap_ms < min_gap_ms:
+            min_gap_ms = gap_ms
+        prev_ms = next_ms
+    return min_gap_ms
+
+
 def _validate_schedule_for_add(schedule: CronSchedule) -> None:
     """校验新增任务调度参数，不满足任一安全不变量则抛出 ValueError。"""
     if schedule.tz and schedule.kind != "cron":
@@ -81,7 +119,7 @@ def _validate_schedule_for_add(schedule: CronSchedule) -> None:
         except (KeyError, ValueError):
             raise ValueError(f"unknown timezone '{schedule.tz}'") from None
 
-    # —— 安全不变量：距下次触发不得低于硬编码红线 ——
+    # —— 安全不变量：相邻两次触发间隔不得低于硬编码红线 ——
     now_ms = _now_ms()
     if schedule.kind == "every":
         if schedule.every_ms is None or schedule.every_ms <= 0:
@@ -98,11 +136,14 @@ def _validate_schedule_for_add(schedule: CronSchedule) -> None:
                 f"{_HARD_MIN_INTERVAL_MS}ms from now"
             )
     elif schedule.kind == "cron" and schedule.expr:
-        next_ms = _compute_next_run(schedule, now_ms)
-        if next_ms is not None and next_ms - now_ms < _HARD_MIN_INTERVAL_MS:
+        # 判据必须是"相邻触发间隔"（表达式属性），而非"首触发距现在"（相位属性）：
+        # 后者会误伤合法周期（如 "*/2 * * * *" 在周期末段被拒）且漏放亚 30s 秒级表达式。
+        min_gap_ms = _compute_min_interval_ms(schedule, now_ms)
+        if min_gap_ms is not None and min_gap_ms < _HARD_MIN_INTERVAL_MS:
             raise ValueError(
-                f"cron schedule fires too soon; next occurrence must be at least "
-                f"{_HARD_MIN_INTERVAL_MS}ms from now"
+                f"cron schedule fires too frequently; the smallest interval between "
+                f"two consecutive occurrences is {min_gap_ms}ms, must be at least "
+                f"{_HARD_MIN_INTERVAL_MS}ms"
             )
 
 

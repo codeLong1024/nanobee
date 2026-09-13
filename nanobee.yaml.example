@@ -58,6 +58,15 @@ agents:
     #   - read_file
     #   - execute_shell
 
+# 关停排空配置（可选）：约束"给在途工作多久收尾时间"的机制上界
+# shutdown:
+#   # 在途 turn 的有界等待上界；超时的 turn 被取消并落 ABANDONED 终态
+#   drain_inflight_s: 10.0
+#   # turn 被取消后，兜底 ABANDONED 结账任务的收口窗口
+#   drain_cancelled_s: 2.0
+#   # fire-and-forget Hook 任务（审计落盘/通知）的静默排空上界
+#   drain_hooks_s: 5.0
+
 # Provider 配置
 providers:
   # Anthropic (Claude)
