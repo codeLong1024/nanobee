@@ -45,6 +45,9 @@ htmlcov/
 # 任务评测产物（本地跑测生成的 case_*.out/.results/.tools，仅用于本地比对，不随仓库分发）
 _task_eval/
 
+# agent 级回归评测集（开发机本地维护，含实例名/本机绝对路径/跑测报告，不随仓库分发）
+agent_eval/
+
 # Environment variables
 .env
 .env.local
