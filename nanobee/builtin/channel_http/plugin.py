@@ -35,7 +35,7 @@ from aiohttp import web
 from pydantic import BaseModel, Field
 
 from nanobee.channel.base import ChannelPlugin
-from nanobee.channel.message import OutboundMessage, StreamingDelta
+from nanobee.channel.message import OutboundMessage
 
 from nanobee.utils.logger import logger
 
@@ -290,10 +290,6 @@ class HTTPChannelPlugin(ChannelPlugin):
     async def send(self, message: OutboundMessage, context_id: str = "default") -> None:
         """HTTP 通道不使用 send（响应在 handler 中直接返回）。"""
         logger.debug("HTTP 通道 send() 被调用（无操作）: {}", context_id)
-
-    async def send_delta(self, delta: StreamingDelta, context_id: str = "default") -> None:
-        """HTTP 通道不使用 send_delta（流式由 SSE 处理）。"""
-        logger.debug("HTTP 通道 send_delta() 被调用（无操作）: {}", context_id)
 
     async def _process_incoming(self, message: Any, context_manager: Any) -> list[OutboundMessage]:
         """HTTP 通道不使用 _process_incoming（由 handler 直接处理）。"""

@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from nanobee.builtin.tool_cron.service import CronService
 from nanobee.builtin.tool_cron.types import CronJob, CronJobError, CronSchedule
 from nanobee.kernel.context_sandbox_var import current_request_context
+from nanobee.outbound import OutboundMessage, publish_outbound
 from nanobee.plugins import ToolPlugin
 
 from nanobee.utils.logger import logger
@@ -503,10 +504,14 @@ class ToolCronPlugin(ToolPlugin):
             await self._deliver(job, self._build_error_notice(job, detail), severity="error")
             raise CronJobError(detail)
 
+        # 附件随正文一同投递（result 可能为 None / 无 media 属性：按空列表处理）。
+        # 不在此做 list() 预转换——预转换会把字符串 media 拆成单字符列表并穿透
+        # 契约层防线；原值透传，归一化统一由 nanobee.outbound 单点完成。
+        media = getattr(result, "media", None)
         content_text = result.content if result else ""
 
         # 投递失败 = 用户未收到结果，显式记"结果投递失败"（与"执行失败"可区分，cron list 可定位）
-        if not await self._deliver(job, content_text):
+        if not await self._deliver(job, content_text, media=media):
             raise CronJobError(f"任务已执行但结果投递失败（内容长度 {len(content_text)}）")
 
         return content_text
@@ -546,11 +551,16 @@ class ToolCronPlugin(ToolPlugin):
         return job.payload.channel, chat_id
 
     async def _deliver(
-        self, job: CronJob, content: str, severity: Literal["info", "error"] = "info"
+        self,
+        job: CronJob,
+        content: str,
+        severity: Literal["info", "error"] = "info",
+        media: list[str] | None = None,
     ) -> bool:
         """通过 agent.outbound 事件投递内容到任务的原会话。
 
         复用 agent.outbound 事件机制，由通道插件订阅后投递给用户。
+        载荷由唯一出站契约模块（``nanobee.outbound``）构造，附件随正文同源透传。
         内容为空或无有效投递目标时不投递，视为跳过（返回 True，不误报失败）。
         severity="error" 时 metadata 携带系统通知标记（notification_type/severity），
         通道可据此差异化渲染（复用 subagent_spawned 已验证的投递路径）。
@@ -561,6 +571,9 @@ class ToolCronPlugin(ToolPlugin):
             job: 触发执行的任务
             content: 要投递的消息内容
             severity: 消息严重程度（info / error），默认 info
+            media: 附件引用列表（本地绝对路径或 http(s) URL），默认无附件。
+                错误通知路径不携带附件；附件投递是否成功不影响返回值语义
+                （返回值只表示正文是否投递成功，附件失败不得触发任务重试）。
 
         Returns:
             是否投递成功（跳过视为成功）
@@ -581,12 +594,13 @@ class ToolCronPlugin(ToolPlugin):
                 "severity": _SYSTEM_NOTIFY_SEVERITY,
             })
         try:
-            await loop.event_bus.publish("agent.outbound", {
-                "channel": channel,
-                "chat_id": chat_id,
-                "content": content,
-                "metadata": metadata,
-            })
+            await publish_outbound(loop.event_bus, OutboundMessage(
+                channel=channel,
+                chat_id=chat_id,
+                content=content,
+                media=media,
+                metadata=metadata,
+            ))
         except Exception:
             # 投递失败自行留栈（含 job 标识与目标通道），供调用方与 cron list 定位根因
             logger.exception("Cron: 任务 {} 结果投递失败（channel={}）", job.id, channel)

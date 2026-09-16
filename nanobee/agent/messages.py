@@ -1,4 +1,9 @@
-"""消息数据模型 — 入站和出站消息定义。"""
+"""消息数据模型 — 入站和出站消息定义。
+
+出站模型（``OutboundMessage``）的唯一归属是 :mod:`nanobee.outbound`，
+本模块仅作 re-export 保持旧 import 路径兼容：出站契约不隶属 agent 或
+channel 任何一侧，且避免为取一个 dataclass 而拉起整个 agent 包初始化。
+"""
 
 from __future__ import annotations
 
@@ -6,7 +11,10 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from nanobee.outbound import OutboundMessage
 from nanobee.utils.user_id import resolve_storage_key
+
+__all__ = ["InboundMessage", "OutboundMessage"]
 
 
 @dataclass
@@ -68,15 +76,3 @@ class InboundMessage:
         if self.chat_id and self.chat_id != "direct":
             return f"{self.channel}:{self.chat_id}"
         return "default"
-
-
-@dataclass
-class OutboundMessage:
-    """发送到聊天通道的消息。"""
-
-    channel: str
-    chat_id: str
-    content: str
-    reply_to: str | None = None
-    media: list[str] = field(default_factory=list)
-    metadata: dict[str, Any] = field(default_factory=dict)

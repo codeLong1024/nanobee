@@ -1,13 +1,22 @@
 """
-通道消息模型 — ChannelMessage / OutboundMessage / 流式增量数据类。
+通道消息模型 — ChannelMessage 与出站模型 re-export。
 
 所有通道插件使用这些统一的模型与内核交换数据。
+出站模型（``OutboundMessage``）的唯一归属是 :mod:`nanobee.outbound`，
+本模块仅作 re-export 保持旧 import 路径兼容。
+
+注：原 ``StreamingDelta`` 与 ``send_delta`` / ``send_reasoning_delta`` /
+``send_reasoning_end`` 通道接口已删除（2026-09-16）——全仓零构造、零调用，
+流式实际走 ``on_stream`` / ``on_stream_end`` 回调。历史实现若 import
+``StreamingDelta``，需改用自身的数据结构。
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any
+
+from nanobee.outbound import OutboundMessage
 
 
 @dataclass
@@ -36,35 +45,7 @@ class ChannelMessage:
         return f"{self.channel}:{self.chat_id}"
 
 
-@dataclass
-class OutboundMessage:
-    """统一出站消息模型，包括纯文本、媒体、流式增量。"""
-
-    channel: str
-    chat_id: str
-    content: str = ""
-    reply_to: str | None = None
-    media: list[str] = field(default_factory=list)
-    metadata: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass
-class StreamingDelta:
-    """流式消息增量，由 send_delta 的生成器产生。
-
-    Attributes:
-        content:        文本增量（可能为空）
-        finish_reason:  结束原因，非空时标志着本轮流式终止
-        reasoning:      推理过程增量（model-provider 产出的 CoT 文本，选填）
-    """
-
-    content: str = ""
-    finish_reason: str | None = None
-    reasoning: str | None = None
-
-
 __all__ = [
     "ChannelMessage",
     "OutboundMessage",
-    "StreamingDelta",
 ]

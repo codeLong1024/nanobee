@@ -14,7 +14,8 @@ import os
 import time
 from nanobee.agent.mcp_manager import MCPManager
 from nanobee.agent.preset_manager import ModelPresetManager
-from nanobee.agent.messages import InboundMessage, OutboundMessage
+from nanobee.agent.messages import InboundMessage
+from nanobee.outbound import OutboundMessage, publish_outbound
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum, auto
@@ -488,16 +489,16 @@ class AgentLoop:
             task_preview=data.get("task", "")[:100],
         )
 
-        await self.event_bus.publish("agent.outbound", {
-            "channel": channel,
-            "chat_id": chat_id,
-            "content": content,
-            "metadata": {
+        await publish_outbound(self.event_bus, OutboundMessage(
+            channel=channel,
+            chat_id=chat_id,
+            content=content,
+            metadata={
                 "notification_type": "system",
                 "notification_kind": "subagent_spawned",
                 "severity": "info",
             },
-        })
+        ))
 
     def _build_subagent_manager(self) -> SubagentManager:
         """创建 SubagentManager 实例（在 __init__ 末尾调用）。"""

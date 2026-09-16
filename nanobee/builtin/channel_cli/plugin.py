@@ -8,7 +8,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from nanobee.channel.base import ChannelPlugin
-from nanobee.channel.message import ChannelMessage, OutboundMessage, StreamingDelta
+from nanobee.channel.message import ChannelMessage, OutboundMessage
 from nanobee.kernel.context_manager import ContextManager
 
 from nanobee.utils.logger import logger
@@ -70,30 +70,6 @@ class ChannelCLIPlugin(ChannelPlugin):
         prefix = self.config.prompt_prefix
         if message.content:
             print(f"\n{prefix}{message.content}")
-
-    async def send_delta(
-        self,
-        delta: StreamingDelta,
-        context_id: str = "default",
-    ) -> None:
-        """流式发送消息增量到 CLI（逐字打印）。"""
-        if delta.reasoning:
-            # 推理过程用灰色风格（终端 ANSI 转义）
-            print(f"\033[90m{delta.reasoning}\033[0m", end="", flush=True)
-        if delta.content:
-            print(delta.content, end="", flush=True)
-        if delta.finish_reason is not None:
-            print()  # 换行
-
-    async def send_reasoning_delta(
-        self, reasoning: str, context_id: str = "default"
-    ) -> None:
-        """流式发送推理过程增量（灰色显示）。"""
-        print(f"\033[90m{reasoning}\033[0m", end="", flush=True)
-
-    async def send_reasoning_end(self, context_id: str = "default") -> None:
-        """标记推理过程结束。"""
-        print("\033[0m")  # 重置颜色
 
     # ====== 消息处理 ======
 

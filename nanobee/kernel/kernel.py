@@ -8,9 +8,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    # OutboundMessage 和 AgentLoop 只在类型注解中使用，运行时通过方法内延迟导入
+    # AgentLoop 只在类型注解中使用，运行时通过方法内延迟导入
     from nanobee.agent.loop import AgentLoop
-    from nanobee.agent.messages import OutboundMessage
 
 from nanobee.config.schema import Config, ShutdownConfig
 from nanobee.exceptions import ContextError
@@ -21,6 +20,7 @@ from nanobee.events.event_bus import EventBus
 from nanobee.kernel.plugin_manager import PluginManager
 from nanobee.kernel.router import ContextRouter, UnknownRouteError
 from nanobee.events.runtime_events import KernelBooted, RuntimeEventBus
+from nanobee.outbound import OutboundMessage, publish_outbound
 from nanobee.session.session_manager import SessionManager
 from nanobee.kernel.soul_guard import SoulGuard
 from nanobee.kernel.user_context import UserContext, UserMetadata
@@ -282,7 +282,7 @@ class NanobeeKernel:
         Returns:
             Agent 回复（OutboundMessage，含 .content 和 .media）
         """
-        from nanobee.agent.messages import InboundMessage, OutboundMessage
+        from nanobee.agent.messages import InboundMessage
 
         if not self._booted:
             raise ContextError("内核未启动，请先调用 boot()")
@@ -406,12 +406,14 @@ class NanobeeKernel:
                 metadata=msg.metadata,
             )
             if response is not None and response.content:
-                await self.event_bus.publish("agent.outbound", {
-                    "channel": response.channel,
-                    "chat_id": response.chat_id,
-                    "content": response.content,
-                    "metadata": response.metadata,
-                })
+                # 出站载荷由唯一契约模块构造（media 一并透传，杜绝发布者漏字段）
+                await publish_outbound(self.event_bus, OutboundMessage(
+                    channel=response.channel,
+                    chat_id=response.chat_id,
+                    content=response.content,
+                    media=getattr(response, "media", None),
+                    metadata=response.metadata,
+                ))
         except Exception:
             logger.exception("处理注入消息时出错，上下文 {}", msg.context_id)
 

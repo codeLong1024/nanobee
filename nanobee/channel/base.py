@@ -2,19 +2,21 @@
 Channel Plugin 基类 — 所有通讯通道插件必须继承此基类。
 
 增强点：
-1. 新增消息模型 ChannelMessage / OutboundMessage / StreamingDelta
-2. 流式接口 send_delta / send_reasoning_delta / send_reasoning_end
-3. 权限校验 pairing_code 机制
-4. 配置属性 supports_streaming / display_name
-5. _handle_incoming 自动权限检查与流式标记注入
+1. 新增消息模型 ChannelMessage / OutboundMessage
+2. 权限校验 pairing_code 机制
+3. 配置属性 supports_streaming / display_name
+4. _handle_incoming 自动权限检查与流式标记注入
+
+注：原 ``send_delta`` / ``send_reasoning_delta`` / ``send_reasoning_end`` 与
+``StreamingDelta`` 已删除（2026-09-16）——全仓零调用、零构造，流式实际走
+``on_stream`` / ``on_stream_end`` 回调（见各通道 ``_make_stream_callback``）。
 """
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any, AsyncGenerator
 
-from nanobee.channel.message import ChannelMessage, OutboundMessage, StreamingDelta
+from nanobee.channel.message import ChannelMessage, OutboundMessage
 from nanobee.kernel.context_manager import ContextManager
 from nanobee.plugins.base import NanobeePlugin
 
@@ -121,39 +123,6 @@ class ChannelPlugin(NanobeePlugin, ABC):
         self, message: OutboundMessage, context_id: str = "default"
     ) -> None:
         """发送完整的出站消息（非流式）。"""
-        ...
-
-    async def send_delta(
-        self,
-        delta: StreamingDelta,
-        context_id: str = "default",
-    ) -> None:
-        """流式发送消息增量。默认回退为完整消息发送，子类应当覆盖以实现真正流式。
-
-        Arguments:
-            delta:     流式增量数据
-            context_id: 上下文 ID
-        """
-        if delta.finish_reason is not None:
-            # 流结束，发送剩余内容
-            if delta.content:
-                await self.send(
-                    OutboundMessage(
-                        channel=self.metadata.name,
-                        chat_id=context_id.split(":", 1)[-1],
-                        content=delta.content,
-                    ),
-                    context_id=context_id,
-                )
-
-    async def send_reasoning_delta(
-        self, reasoning: str, context_id: str = "default"
-    ) -> None:
-        """流式发送推理过程增量。默认 no-op，子类按需覆盖。"""
-        ...
-
-    async def send_reasoning_end(self, context_id: str = "default") -> None:
-        """标记推理过程结束。默认 no-op，子类按需覆盖。"""
         ...
 
     # ====== 公共入口（内核调用） ======

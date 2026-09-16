@@ -221,33 +221,6 @@ class DingTalkChannelPlugin(ChannelPlugin):
         # Card 不可用或失败，回退到基类裸 markdown
         await super()._on_agent_outbound(data)
 
-    async def send_delta(
-        self,
-        delta: Any,
-        context_id: str = "default",
-    ) -> None:
-        """Forward streaming deltas to DingTalkSender."""
-        if self.sender is None:
-            return
-        internal_msg = SimpleNamespace(
-            channel=self.name,
-            chat_id=context_id.split(":", 1)[-1] if ":" in context_id else context_id,
-            content=getattr(delta, "content", str(delta) if delta else ""),
-            metadata={"_stream_delta": True},
-            media=[],
-        )
-        await self.sender.send(internal_msg)
-
-    async def send_reasoning_delta(
-        self, reasoning: str, context_id: str = "default"
-    ) -> None:
-        """流式发送推理过程增量。"""
-        pass  # DingTalk card 暂不支持推理流式
-
-    async def send_reasoning_end(self, context_id: str = "default") -> None:
-        """标记推理过程结束。"""
-        pass
-
     async def _on_message(
         self,
         content: str,

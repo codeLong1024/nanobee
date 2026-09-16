@@ -563,8 +563,35 @@ priority = 100
 |------|------|------|
 | ``agent.iteration_start`` | ``context_id``, ``turn_id`` | 每个 Agent turn 开始时触发 |
 | ``agent.turn_saved`` | ``context_id``, ``turn_id``, ``latency_ms``, ``tools_used`` | SAVE 状态：对话历史持久化完成后触发 |
-| ``agent.outbound`` | ``channel``, ``chat_id``, ``content``, ``metadata`` | Agent 回复组装完成后发送到通道 |
+| ``agent.outbound`` | ``channel``, ``chat_id``, ``content``, ``media``, ``metadata`` | Agent 回复组装完成后发送到通道 |
 | ``subagent.spawned`` | ``task_id``, ``label``, ``task`` | 子代理启动时触发（通知通道立即发送用户可见消息） |
+
+#### 出站契约的唯一归属：`nanobee.outbound`
+
+``agent.outbound`` 的载荷（键集合与取值）**只由** ``nanobee.outbound`` 构造与发布：
+
+```python
+from nanobee.outbound import OutboundMessage, publish_outbound
+
+await publish_outbound(event_bus, OutboundMessage(
+    channel="channel_dingtalk", chat_id="user_a", content="周报已生成",
+    media=["/tmp/周报.md"],          # 本地绝对路径或 http(s) URL，缺省即无附件
+    metadata={"notification_type": "system"},
+))
+```
+
+- **唯一模型**：``OutboundMessage`` 定义在 ``nanobee.outbound``；``nanobee.agent.messages``
+  与 ``nanobee.channel.message`` 仅作 re-export 兼容旧 import 路径（三处指向同一个类）。
+- **唯一构造点**：载荷键集合由 ``outbound_payload()`` 单点决定——新增出站字段只需改该处，
+  所有发布者（cron 结果、子代理注入结果、子代理启动通知）自动生效，不存在
+  「某个发布者漏字段导致静默丢数据」。
+- **唯一发布原语**：``publish_outbound(event_bus, msg)``；``event_bus`` 不可用时静默跳过
+  （非错误状态，不产生噪声日志）。发布异常不在此吞掉，由调用方决定降级策略。
+- **不变量**：``media`` 恒为 ``list[str]``（非序列 → 空列表、非字符串项丢弃），
+  ``metadata`` 恒为 dict 且为浅拷贝。
+- **消费方约定**：``media`` 为**可选**字段，缺省即空列表；不带该字段的载荷按空列表处理，
+  因此契约新增字段对既有消费方向后兼容。通道是否使用 ``media``（例如钉钉卡片路径的
+  附件投递）属通道适配范畴，由各通道自行决定。
 
 #### 破坏性变更：`agent.turn_completed` 已移除（2026-06-27）
 
