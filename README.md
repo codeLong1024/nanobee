@@ -230,7 +230,6 @@ logging:
 | `tool_echo` | Tool | ✅ 完整 | 回显测试工具 |
 | `tool_fs` | Tool | ✅ 完整 | 文件系统工具（read_file, write_file, edit_file, delete_file, list_dir），L1/L2 防御纵深，Overlay 文件系统（`skills/` 前缀自动回退到内置技能目录） |
 | `tool_shell` | Tool | ✅ 完整 | Shell 命令工具（execute_shell），双层安全守卫：deny 模式拦截危险命令 + bwrap 进程级沙箱（掩藏 $HOME 仅暴露 workspace/） |
-| `tool_web` | Tool | ✅ 完整 | Web 工具（web_search, web_fetch），含 HTML 清理、SSRF 保护 |
 | `tool_cron` | Tool | ✅ 完整 | Cron 定时任务（add, list, remove），用户隔离 |
 | `tool_task` | Tool | ✅ 完整 | 任务分解与状态跟踪（task_create, task_update, task_list, task_get），状态机 pending→in_progress→completed，用户/命名空间隔离，原子写持久化 |
 | `tool_history` | Tool | ✅ 完整 | 历史消息管理（trim_history 粗暴截断 + consolidate_history 智能压缩归档）。纯机制：LLM 自主决定何时调用、保留多少 |
@@ -295,7 +294,7 @@ python -m pytest tests/ --cov=nanobee --cov-report=term-missing
 | `test_kernel.py` | `kernel/kernel.py` — 内核集成 | 3 |
 | `test_lock_manager.py` | `kernel/lock_manager.py` — 并发锁、用户隔离 | 7 |
 | `test_mcp_manager.py` | `agent/tools/mcp.py` — MCP 管理器 | 13 |
-| `test_message_tool.py` | `agent/tools/message.py` — MessageTool | 21 |
+| `test_message_tool.py` | `agent/tools/message.py` — 附件投递工具（声明契约 / 回执诚实 / 正文唯一信道） | 29 |
 | `test_notifications.py` | `utils/notifications.py` — 通知系统 | 19 |
 | `test_observability.py` | `utils/observability.py` — Trace/Span ID、OTLP 常量、traceparent 编解码 | 42 |
 | `test_plugin_blacklist.py` | `kernel/plugin_manager.py` — 插件禁用黑名单 | 2 |
@@ -368,7 +367,7 @@ tests/
 ├── test_user_context.py          # 会话创建、隔离、插件注入
 ├── test_plugin_system.py         # PluginManager、Hook 机制、ContextPipeline
 ├── test_fault_classifier.py      # 故障分类（SSRF/沙箱/网络）
-├── test_message_tool.py          # MessageTool、消息合并
+├── test_message_tool.py          # 附件投递工具、附件收集、正文唯一信道
 ├── test_notifications.py         # Notification 消息目录
 ├── test_audit_logger.py          # 审计日志
 ├── test_observability.py         # Trace/Span ID、OTLP 常量、traceparent

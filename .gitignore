@@ -4,20 +4,8 @@ __pycache__/
 *$py.class
 *.so
 build/
-develop-eggs/
 dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-devdocs/
-wheels/
 *.egg-info/
-.installed.cfg
 *.egg
 
 # Virtual environments
@@ -26,27 +14,45 @@ env/
 ENV/
 .venv
 
-# IDE
+# IDE / OS
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
 .DS_Store
+Thumbs.db
+
+# AI 工具本地文件（与 ~/.gitignore_global 双保险，换机器同样生效）
+.codebuddy/
+.rca/
+CODEBUDDY.md
 CLAUDE.md
 
 # Testing
 .pytest_cache/
 .coverage
+.coverage.*
 htmlcov/
 .tox/
 .nox/
+
+# Lint / 类型检查缓存
+.ruff_cache/
+.mypy_cache/
+
+# 合并 / rebase 残留
+*.orig
+*.rej
 
 # 任务评测产物（本地跑测生成的 case_*.out/.results/.tools，仅用于本地比对，不随仓库分发）
 _task_eval/
 
 # agent 级回归评测集（已迁至仓库外 /home/shen/workspace/nanobee-eval/；保留此规则防误提交回来）
 agent_eval/
+
+# 开发文档（本地维护，不入库）
+devdocs/
 
 # Environment variables
 .env
@@ -60,21 +66,10 @@ logs/
 # 部署脚本（系统级配置，需要修改路径后手动部署）
 deploy/
 
-# OS
-Thumbs.db
-
-# Build artifacts
-*.manifest
-*.spec
-
 # 配置文件（包含敏感信息，使用 nanobee.yaml.example 作为模板）
+# 注：contexts/ 是旧版用户上下文数据目录，仍被 skill-creator 打包示例引用，保留防线
 nanobee.yaml
 contexts/
 
-# 钉钉频道插件（包含敏感配置）
-nanobee/builtin/tool_dingtalk/
-nanobee/skills/web-tools-guide-1.0.2
-# 钉钉测试文件（包含敏感配置）
-tests/test_tool_dingtalk.py
-
+# 打包脚本（本机维护）
 package.sh

@@ -53,6 +53,15 @@ agents:
     # max_messages: 120
     # 最大并发子代理数（超出时需等待已有子代理完成后才能创建新的）
     # max_concurrent_subagents: 4
+    # 会话工具轨迹持久化：把本轮工具调用声明与结果一并落盘，回放历史保留
+    # "先调工具才宣称完成"的因果链（关闭时严格回退旧口径：只落用户原文 + 终文本）
+    # persist_tool_traces: false
+    # 是否把思维链（reasoning_content / thinking_blocks）一并落盘，默认剥离省 token
+    # persist_reasoning: false
+    # 单条工具结果落盘字符上界（与面向模型的 max_tool_result_chars 解耦）
+    # tool_result_persist_max_chars: 8192
+    # 单条工具参数落盘字符上界（write_file 类工具参数可达数十 KB）
+    # tool_args_persist_max_chars: 8192
     # 工具白名单（非空时仅列表内工具可用，优先于 blacklist）
     # whitelist:
     #   - read_file
@@ -162,6 +171,18 @@ channels:
     # client_secret: "xxx"
     # allow_from: ["*"]
     # streaming: true
+    # ==== 媒体（附件读取）====
+    # 媒体读取总开关（false = 本地与远端附件均拒绝）
+    # enable_media_upload: true
+    # 远端与本地附件共用的体积上限（MB，>= 1）
+    # media_max_mb: 20
+    # 本地附件白名单根（额外放行；相对路径按 data_dir 解析）
+    # 注：data_dir 与入站附件目录（./media/dingtalk）始终放行
+    # media_local_roots:
+    #   - "/data/shared-reports"
+    #   - "extra_media"        # 相对 data_dir
+    # 注：enable_chunk_upload / chunk_size_kb 尚未接线（分片上传已实现，
+    #     阈值/块大小当前是代码内常量）
   channel_http:
     enabled: false
     # 监听地址（默认 127.0.0.1，建议保持默认仅本地访问）
@@ -190,6 +211,7 @@ channels:
 # 安全配置
 # tools:
 #   # SSRF 白名单 CIDR（可选）：允许访问的私有/内网 CIDR 范围
+#   # 对工具与媒体下载（钉钉附件）的地址校验统一生效
 #   # 例如：Tailscale 用户可添加 "100.64.0.0/10"
 #   # 格式：CIDR 字符串列表
 #   ssrfWhitelist:

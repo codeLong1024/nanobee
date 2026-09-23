@@ -9,13 +9,14 @@ from __future__ import annotations
 import asyncio
 import os
 import random
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import httpx
 
 from nanobee.channel.base import ChannelPlugin
-from nanobee.channel.message import OutboundMessage as BeeOutboundMessage
+from nanobee.outbound import OutboundMessage as BeeOutboundMessage
 from .auth import (
     DINGTALK_AVAILABLE,
     ChatbotMessage,
@@ -25,6 +26,7 @@ from .auth import (
 from .card_client import DingTalkCardClient
 from .card_manager import CardManager
 from .config import DingTalkConfig
+from .media.download import get_download_root
 from .message import NanobeeDingTalkHandler
 from .rate_limiter import RateLimiter
 from .sender import DingTalkSender
@@ -38,7 +40,6 @@ class DingTalkChannelPlugin(ChannelPlugin):
 
     name = "channel_dingtalk"
     display_name = "钉钉机器人"
-    supports_streaming = True
 
     def __init__(self, metadata=None):
         super().__init__(metadata)
@@ -90,6 +91,59 @@ class DingTalkChannelPlugin(ChannelPlugin):
 
         return DingTalkConfig.model_validate(cfg)
 
+    def _resolve_media_local_roots(self, config: DingTalkConfig) -> list[str]:
+        """解析本地附件白名单根：``data_dir`` + ``media_local_roots`` + 入站附件目录。
+
+        白名单根必须是**静态根**：媒体读取发生在 turn 之后的事件投递路径上
+        （cron/kernel 注入/子代理通知），此时 per-request 的 ``context_root``
+        ContextVar 早已复位为 None。``data_dir`` 覆盖 ``users/<user>/workspace/**``
+        实测路径，``media_local_roots`` 供额外放行；相对路径按 ``data_dir`` 解析。
+
+        已知取舍：``data_dir`` 意味着同实例内其他用户目录也可读（用户已拍板，
+        单实例多为单用户）；若要跨用户隔离，应改为只放行当前用户的 workspace。
+        入站附件目录（``./media/dingtalk``，用户上传的文件）必须放行，否则用户
+        自己的附件在回投时会被安全策略拒绝。
+        """
+        data_dir = getattr(self.kernel, "data_dir", None)
+        base = Path(data_dir).expanduser() if isinstance(data_dir, (str, Path)) and str(data_dir).strip() else None
+
+        roots: list[str] = []
+        candidates: list[Path] = []
+        if base is not None:
+            candidates.append(base)
+        for raw in config.media_local_roots or ():
+            text = str(raw).strip()
+            if not text or text in (".", ".."):
+                continue
+            candidate = Path(text).expanduser()
+            if not candidate.is_absolute() and base is not None:
+                candidate = base / candidate
+            candidates.append(candidate)
+        candidates.append(get_download_root())
+        for candidate in candidates:
+            resolved = str(candidate.resolve(strict=False))
+            if resolved not in roots:
+                roots.append(resolved)
+        return roots
+
+    def _apply_media_policy(self, sender: DingTalkSender) -> None:
+        """把 ``DingTalkConfig`` 的媒体配置注入 sender（唯一收敛点的策略来源）。"""
+        config = self.dingtalk_config
+        if config is None:
+            return
+        max_mb = int(config.media_max_mb)
+        roots = self._resolve_media_local_roots(config)
+        sender.set_media_policy(
+            max_bytes=max_mb * 1024 * 1024,
+            local_roots=roots,
+            allow_media=bool(config.enable_media_upload),
+        )
+        # 预格式化单参数：loguru 无 %-占位，避免与 stdlib logging 规则误判
+        self.logger.info(
+            f"媒体读取策略: enabled={config.enable_media_upload} "
+            f"max_mb={max_mb} local_roots={roots}"
+        )
+
     async def start(self) -> None:
         """Start the DingTalk bot via Stream SDK."""
         self.dingtalk_config = self._load_config()
@@ -115,6 +169,7 @@ class DingTalkChannelPlugin(ChannelPlugin):
             http_client=self._http,
         )
         self.sender.setup(self._http)
+        self._apply_media_policy(self.sender)
 
         # 创建 card_client + card_manager（需要 sender 的 token 函数）
         self.card_client = DingTalkCardClient(
@@ -161,19 +216,6 @@ class DingTalkChannelPlugin(ChannelPlugin):
         if self.sender:
             await self.sender.close()
 
-    async def _process_incoming(
-        self,
-        message: Any,
-        context_manager: Any,
-    ) -> list:
-        """实现 ChannelPlugin 抽象方法。
-
-        钉钉通道不通过 handle_incoming 入口路由消息；
-        消息直接由 Stream SDK → NanobeeDingTalkHandler → _on_message → kernel。
-        此方法仅用于满足抽象基类要求。
-        """
-        return []
-
     async def send(self, message: BeeOutboundMessage, context_id: str = "default") -> None:
         """Send a message through DingTalk."""
         if self.sender is None:
@@ -189,11 +231,15 @@ class DingTalkChannelPlugin(ChannelPlugin):
         await self.sender.send(internal_msg)
 
     async def _on_agent_outbound(self, data: dict) -> None:
-        """覆盖基类：为子代理自动触发等内部消息创建 AI Card 投递。
+        """覆盖基类：为子代理/cron 等内部消息创建 AI Card 投递（含附件）。
 
         子代理完成后，_injector → enqueue_message → _dispatch → agent.outbound 事件
         到达此处。基类 `_on_agent_outbound` 走裸 markdown，本覆盖改为创建 AI Card
-        （打字效果 + Card UI），失败时回退到基类 markdown。
+        （打字效果 + Card UI）+ 附件投递；失败时回退到基类（基类已透传 media，
+        回退路径会经 `send()` → `sender.send()` 把附件一并投出）。
+
+        守卫与基类一致：正文与附件至少一个非空——**纯附件**（正文为空）不尝试
+        创建卡片（`content.strip()` 为假天然跳过），直接走回退路径投递附件。
         """
         if not isinstance(data, dict):
             return
@@ -201,16 +247,20 @@ class DingTalkChannelPlugin(ChannelPlugin):
         if channel_name != self.metadata.name:
             return
         chat_id = data.get("chat_id", "direct")
-        content = data.get("content", "")
-        if not content:
+        # ``or ""`` 归一 None：旧发布方可能不带类型归一，而下方 content.strip() 不容忍 None
+        content = data.get("content") or ""
+        media = data.get("media") or []
+        if not content and not media:
             return
 
-        # 尝试通过 AI Card 投递
+        # 尝试通过 AI Card 投递（含附件）
         if self.sender and content.strip():
             token = await self.sender.get_access_token()
             if token:
                 try:
-                    ok = await self.sender.send_via_card(token, chat_id, content.strip())
+                    ok = await self.sender.send_via_card(
+                        token, chat_id, content.strip(), media=media,
+                    )
                     if ok:
                         return  # Card 投递成功，不发送 markdown
                 except Exception:
@@ -218,7 +268,7 @@ class DingTalkChannelPlugin(ChannelPlugin):
                         "_on_agent_outbound: send_via_card failed for chat={}", chat_id,
                     )
 
-        # Card 不可用或失败，回退到基类裸 markdown
+        # Card 不可用或失败，回退到基类（media 由基类透传给 send()）
         await super()._on_agent_outbound(data)
 
     async def _on_message(

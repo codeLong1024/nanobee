@@ -17,11 +17,25 @@ import httpx
 _DINGTALK_MEDIA_DIR: Path | None = None
 
 
+def _media_root() -> Path:
+    """入站媒体根目录（相对进程工作目录）——下载路径的唯一来源。"""
+    return Path(".") / "media"
+
+
+def get_download_root() -> Path:
+    """入站附件下载根目录（绝对路径）。
+
+    所有入站附件都落在该目录下（``<root>/<sender_id>/<file>``）。媒体读取白名单
+    必须放行它，否则用户自己上传的附件在回投时会被安全策略拒绝。
+    """
+    return (_media_root() / "dingtalk").resolve(strict=False)
+
+
 def _get_media_dir(subdir: str) -> Path:
     """获取媒体文件下载目录。"""
     global _DINGTALK_MEDIA_DIR
     if _DINGTALK_MEDIA_DIR is None:
-        _DINGTALK_MEDIA_DIR = Path(".") / "media" / subdir
+        _DINGTALK_MEDIA_DIR = _media_root() / subdir
     return _DINGTALK_MEDIA_DIR
 
 
@@ -156,4 +170,5 @@ async def download_dingtalk_file(
 
 __all__ = [
     "download_dingtalk_file",
+    "get_download_root",
 ]

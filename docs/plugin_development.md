@@ -580,8 +580,12 @@ await publish_outbound(event_bus, OutboundMessage(
 ))
 ```
 
-- **唯一模型**：``OutboundMessage`` 定义在 ``nanobee.outbound``；``nanobee.agent.messages``
-  与 ``nanobee.channel.message`` 仅作 re-export 兼容旧 import 路径（三处指向同一个类）。
+- **唯一入口**：``OutboundMessage`` 定义在 ``nanobee.outbound``，且**只保留这一条 import
+  路径**。原 ``nanobee.channel.message``（整文件）与 ``nanobee.agent.messages`` 的 re-export
+  已于 2026-09-16 收敛删除（后者只承载 ``InboundMessage``）。**迁移**：通道插件若仍在写
+  ``from nanobee.channel.message import OutboundMessage``，请改为
+  ``from nanobee.outbound import OutboundMessage``。同一模型的多条 import 路径是字段/语义
+  漂移的温床，请勿再挂 re-export。
 - **唯一构造点**：载荷键集合由 ``outbound_payload()`` 单点决定——新增出站字段只需改该处，
   所有发布者（cron 结果、子代理注入结果、子代理启动通知）自动生效，不存在
   「某个发布者漏字段导致静默丢数据」。
@@ -590,8 +594,13 @@ await publish_outbound(event_bus, OutboundMessage(
 - **不变量**：``media`` 恒为 ``list[str]``（非序列 → 空列表、非字符串项丢弃），
   ``metadata`` 恒为 dict 且为浅拷贝。
 - **消费方约定**：``media`` 为**可选**字段，缺省即空列表；不带该字段的载荷按空列表处理，
-  因此契约新增字段对既有消费方向后兼容。通道是否使用 ``media``（例如钉钉卡片路径的
-  附件投递）属通道适配范畴，由各通道自行决定。
+  因此契约新增字段对既有消费方向后兼容。
+- **通道基类已透传附件**（2026-09-16）：``ChannelPlugin._on_agent_outbound`` 按契约整体
+  透传（含 ``media``），入口不丢字段；守卫为「正文与附件至少一个非空」——**纯附件
+  （正文为空）是合法形态**（如 cron 周报只产出一个 MD 附件）。
+  接入自己的通道时：push 型通道应消费 ``media``（钉钉：正文走 AI Card，卡片终态后
+  经 ``_send_msg_media_refs`` 追加附件）；pull 型通道（HTTP）必须声明
+  ``supports_push = False``，让发布侧如实判投递失败；无附件能力的通道（CLI）忽略即可。
 
 #### 破坏性变更：`agent.turn_completed` 已移除（2026-06-27）
 
@@ -838,7 +847,9 @@ class MyMemoryPlugin(MemoryPlugin):
 
 ## 开发 Channel 插件
 
-Channel 插件负责通信渠道接入，将外部消息转化为内部 `InboundMessage` 注入 Agent。
+Channel 插件负责通信渠道接入：自行接收外部消息，并直连 `kernel.handle_message()` 把内容交给 Agent（`InboundMessage` 由内核侧构造，基类不提供入站路由）。通道类只需实现生命周期（`async start()` / `async stop()`）与出站 `async send()`，无需实现任何入站抽象方法。
+
+出站模型从唯一入口取：`from nanobee.outbound import OutboundMessage`（实现 `async send(message: OutboundMessage, context_id: str = "default")` 时需要）。
 
 ```python
 from nanobee.plugins.base import NanobeePlugin
@@ -867,6 +878,15 @@ class MyChannelPlugin(NanobeePlugin):
 ```
 
 典型实现参考 `nanobee/builtin/channel_cli/`、`nanobee/builtin/channel_http/`、`nanobee/builtin/channel_dingtalk/`。
+
+### 投递能力声明（`supports_push`）
+
+`ChannelPlugin.supports_push`（默认 `True`）声明该通道能否被**主动推送**——即能否接收事件型出站（cron 结果、kernel 注入、子代理通知）：
+
+- push 模型（钉钉、CLI 等有出站连接的通道）保持默认 `True`；
+- pull 模型（如 HTTP 通道：响应在 handler 内直接返回，`send()` 为空实现）必须声明 `supports_push = False`，否则事件型出站会被静默丢弃，而发布方仍以为投递成功。
+
+发布侧（cron `_deliver`）在发布前查询目标通道的该声明：为 `False` 时如实判投递失败（任务状态变红），**未知/未加载通道按默认 `True` 处理**，因此未声明该属性的第三方通道行为不变。
 
 ---
 
@@ -1013,7 +1033,7 @@ type = "tool"                          # 插件类型: tool / memory / channel /
 permissions = { network = true }      # 可选，声明需要的权限
 
 [plugin.dependencies]
-requires = ["tool_web"]               # 可选，依赖的其他插件
+requires = ["tool_fs"]                # 可选，依赖的其他插件
 
 [config]
 enabled = true                         # 默认启用

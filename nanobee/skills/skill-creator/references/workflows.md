@@ -96,14 +96,13 @@
 ## 获取网页内容
 
 首选方案（一级 fallback）：
-- 使用 web_fetch 工具获取
+- 使用当前会话可用的抓取能力（框架工具或 MCP 工具）
 
 二级 fallback：
-- 使用 readability-lxml 提取正文
+- 在脚本内用 HTTP 客户端自行请求，再提取正文
 
 三级 fallback（最后的兜底）：
-- 使用 requests + BeautifulSoup 手动解析
-- 告知用户结果可能不完整
+- 用已有信息作答，并告知用户结果可能不完整
 ```
 
 ## 设计原则

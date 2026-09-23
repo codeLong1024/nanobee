@@ -39,11 +39,13 @@ from nanobee.utils.user_id import resolve_storage_key
 from nanobee.utils.helpers import (
     build_assistant_message,
     build_runtime_context,
+    find_legal_message_start,
+    strip_runtime_context,
     truncate_text,
 )
 from nanobee.utils.image_generation_intent import image_generation_prompt as image_gen_prompt_fn
 from nanobee.utils.runtime import EMPTY_FINAL_RESPONSE_MESSAGE
-from nanobee.utils.redact import normalize_error
+from nanobee.utils.redact import normalize_error, redact_secrets
 
 if TYPE_CHECKING:
     from nanobee.config.schema import AgentDefaults, Config, ModelPresetConfig
@@ -52,6 +54,18 @@ if TYPE_CHECKING:
     from nanobee.events.event_bus import EventBus
     from nanobee.kernel.plugin_manager import PluginManager
     from nanobee.plugins.base import NanobeePlugin
+    # 仅用于类型注解（文件已启用 future annotations），避免 agent 层对 session 层
+    # 新增运行时依赖边
+    from nanobee.session.session import Session
+
+
+# 落盘截断标记：与面向模型的 truncate_text 默认后缀区分——回看历史时要能分辨
+# "落盘时被收紧"与"模型侧被截断"（无声丢失会误导排障）。
+_PERSIST_TRUNCATED_SUFFIX = "\n(persist truncated)"
+
+# 悬尾修复占位文本：工具调用已声明但结果缺失（被守卫拦截 / turn 中断 / 崩溃恢复）
+# 时落盘的事实陈述，不含策略语义。
+_CANCELLED_TOOL_RESULT_CONTENT = "[tool call cancelled: turn interrupted before result]"
 
 
 class TurnState(Enum):
@@ -171,6 +185,10 @@ class AgentLoop:
         model_presets: dict[str, ModelPresetConfig] | None = None,
         model_preset: str | None = None,
         max_messages: int = 120,
+        persist_tool_traces: bool = False,
+        persist_reasoning: bool = False,
+        tool_result_persist_max_chars: int = 8192,
+        tool_args_persist_max_chars: int = 8192,
         preset_snapshot_loader: Callable[..., ProviderSnapshot] | None = None,
         provider_snapshot_loader: Callable[..., ProviderSnapshot] | None = None,
         _message_injector: Callable[[InboundMessage], None] | None = None,
@@ -207,6 +225,11 @@ class AgentLoop:
 
         self.tools = ToolRegistry()
         self._max_messages = max_messages
+        # 会话工具轨迹落盘（机制开关与落盘上界，策略数值全部配置化）
+        self._persist_tool_traces = persist_tool_traces
+        self._persist_reasoning = persist_reasoning
+        self._tool_result_persist_max_chars = tool_result_persist_max_chars
+        self._tool_args_persist_max_chars = tool_args_persist_max_chars
         self.runner = AgentRunner(provider)
         self._extra_hooks: list[AgentHook] = hooks or []
 
@@ -300,6 +323,15 @@ class AgentLoop:
         # 从配置中提取 context_window_tokens（如果未在 extra 中指定）
         if "context_window_tokens" not in extra:
             extra["context_window_tokens"] = defaults.context_window_tokens
+        # 从配置中提取会话工具轨迹落盘项（如果未在 extra 中指定）
+        if "persist_tool_traces" not in extra:
+            extra["persist_tool_traces"] = defaults.persist_tool_traces
+        if "persist_reasoning" not in extra:
+            extra["persist_reasoning"] = defaults.persist_reasoning
+        if "tool_result_persist_max_chars" not in extra:
+            extra["tool_result_persist_max_chars"] = defaults.tool_result_persist_max_chars
+        if "tool_args_persist_max_chars" not in extra:
+            extra["tool_args_persist_max_chars"] = defaults.tool_args_persist_max_chars
         # 传递 MCP 服务器配置
         if "mcp_servers" not in extra and hasattr(cfg, "mcp_servers"):
             extra["mcp_servers"] = cfg.mcp_servers
@@ -1339,6 +1371,8 @@ class AgentLoop:
                 msg_count, len(session.messages), ctx.context_id, ctx.session_id,
             )
 
+        self._repair_replay_window_head(ctx, session)
+
         # ctx.history 必须在截断之后赋值，确保与 session.messages 指向同一 list
         ctx.history = session.messages
 
@@ -1360,6 +1394,31 @@ class AgentLoop:
             ctx.user_persisted_early = True
 
         return "ok"
+
+    def _repair_replay_window_head(self, ctx: TurnContext, session: Session) -> None:
+        """回放合法性自愈（窗口头部）：丢弃声明已被截掉的孤儿协议消息。
+
+        截断（安全阀切片 / memory skill 的 trim_history）可能把 assistant 声明切掉
+        却留下 ``role:"tool"`` 结果，这类条目原样发给 provider 会协议报错。此处
+        对齐到合法起点并修正在内存中的回放窗口；纯文本历史（无协议消息）天然
+        no-op。
+
+        注意：本方法**只改内存**（缓存对象），磁盘上的会话文件在下一次成功
+        ``session_manager.save`` 时收敛——正常轮次由 BUILD 的 user 提前落盘随即
+        写回，异常跳过 SAVE 的轮次则留待下次。
+
+        Args:
+            ctx: 当前 turn 上下文（仅用于日志标识）。
+            session: 待自愈的会话（其 ``messages`` 可能被就地替换）。
+        """
+        legal_start = find_legal_message_start(session.messages)
+        if not legal_start:
+            return
+        logger.warning(
+            f"BUILD 回放自愈：丢弃窗口头部 {legal_start} 条孤儿协议消息"
+            f"（用户 {ctx.context_id}，会话 {ctx.session_id}）"
+        )
+        session.messages = session.messages[legal_start:]
 
     # 隔离会话命名空间前缀（机制保留名，避免与 channel:chat_id 派生值冲突）
     _FRESH_SESSION_PREFIX = "__fresh__:"
@@ -1551,8 +1610,20 @@ class AgentLoop:
         resolved_session_id = self._resolve_session_id(ctx)
         session = self.session_manager.get_or_create(ctx.context_id, resolved_session_id)
         try:
-            if ctx.final_content:
+            # 本轮执行轨迹（tool_calls 声明 / tool 结果）先落盘，再落终文本：
+            # 失败/中断轮也要留痕，否则历史里只剩"宣称完成"的终文本，
+            # 回放时看不到"先调工具才宣称完成"的因果链。
+            saved_count = 0
+            final_text_persisted = False
+            if self._persist_tool_traces:
+                persisted, final_text_persisted = self._persist_tool_trace_increment(ctx, session)
+                saved_count += persisted
+            # 终文本：开关关闭、或增量里找不到对应条目（异常形态）时由既有路径补落
+            if ctx.final_content and not final_text_persisted:
                 session.add_message("assistant", ctx.final_content)
+                saved_count += 1
+            # 有增量才写盘：无终文本且无轨迹的轮次保持"不落盘"旧语义
+            if saved_count:
                 self.session_manager.save(session)
 
             # 发射保存事件
@@ -1568,6 +1639,237 @@ class AgentLoop:
                 self.session_manager.delete(ctx.context_id, resolved_session_id)
 
         return "ok"
+
+    def _persist_tool_trace_increment(
+        self,
+        ctx: TurnContext,
+        session: Session,
+    ) -> tuple[int, bool]:
+        """落盘本轮新增的协议消息（assistant(tool_calls) 声明 / tool 结果）。
+
+        增量定义：``ctx.all_messages`` 中位于 ``ctx.initial_messages`` 之后的片段。
+        锚点与 ``TurnLedger.turn_input_index`` 同源契约（``len(initial_messages) - 1``
+        即本轮用户输入，见 specs.TurnLedger docstring），其后一位即本轮新增起点；
+        本轮用户消息已在 BUILD 提前落盘（崩溃安全），此处不重复落。
+
+        配对校验 / 悬尾占位 / 清洗 / 脱敏全部在落盘出生点完成，逐条经
+        :meth:`Session.add_protocol_message` 入账。只读取 ctx，绝不改写
+        ``ctx.final_content`` / ``ctx.all_messages``（RESPOND 独立消费二者）。
+
+        Args:
+            ctx: 当前 turn 上下文。
+            session: 目标会话。
+
+        Returns:
+            ``(实际落盘条数, 终文本是否已在本方法内落盘)``。条数为 0 表示无增量或
+            切片前提不满足（回退旧口径）；终文本标志供 :meth:`_state_save` 判断是否
+            仍需补落终文本（同一条终文本只落一次）。
+        """
+        increment = self._turn_increment(ctx)
+        if not increment:
+            return 0, False
+
+        # 配对校验种子（照抄 nanobot `_save_turn`）：以已落盘历史为基准，
+        # 兼容崩溃恢复后补落的孤儿结果与跨 turn 的重复落盘。
+        declared = self._declared_tool_call_ids(session.messages)
+        fulfilled = self._fulfilled_tool_call_ids(session.messages)
+        # 增量内已携带结果的 call id：悬尾判定必须看整段增量——结果总在声明之后
+        # 出现，逐条处理会把"还没轮到的结果"误判为缺失而多落一条占位。
+        increment_result_ids = self._fulfilled_tool_call_ids(increment)
+        # 终文本条目（内容等于 ctx.final_content 的最后一条纯文本 assistant）
+        skip_index = self._final_text_index(increment, ctx.final_content)
+
+        persisted = 0
+        final_text_persisted = False
+        for index, message in enumerate(increment):
+            if index == skip_index:
+                # 终文本**按增量原位落盘**：保持与 runner 内部真实顺序一致
+                # （max_iterations 出口会先追加终文本、再追加注入的 user 消息）
+                content = message.get("content")
+                if isinstance(content, str) and content.strip():
+                    session.add_message("assistant", content)
+                    persisted += 1
+                    final_text_persisted = True
+                continue
+            role = message.get("role")
+            if role == "tool":
+                if self._persist_tool_result(session, message, declared, fulfilled):
+                    persisted += 1
+            elif role == "assistant":
+                persisted += self._persist_assistant_trace(
+                    session, message, declared, fulfilled, increment_result_ids,
+                )
+            elif role == "user":
+                # 轮内注入的 user 条目（drain）此前从未落盘，如实入账；
+                # 防御性剥离运行时尾注（普通 user 消息在 BUILD 已按原文落盘）。
+                content = message.get("content")
+                if not isinstance(content, str):
+                    continue
+                stripped = strip_runtime_context(content)
+                if stripped.strip():
+                    session.add_message("user", stripped)
+                    persisted += 1
+        return persisted, final_text_persisted
+
+    def _persist_assistant_trace(
+        self,
+        session: Session,
+        message: dict[str, Any],
+        declared: set[str],
+        fulfilled: set[str],
+        increment_result_ids: set[str],
+    ) -> int:
+        """落盘一条 assistant 增量消息，返回落盘条数（含悬尾占位）。"""
+        entry = dict(message)
+        raw_calls = entry.get("tool_calls")
+        if not self._persist_reasoning:
+            # 思维链是临时推理内容，默认不落盘（token 大头，联调时可用开关保留）
+            entry.pop("reasoning_content", None)
+            entry.pop("thinking_blocks", None)
+
+        if not raw_calls:
+            content = entry.get("content")
+            if not isinstance(content, str) or not content.strip():
+                # 空 assistant 会污染会话上下文（与 nanobot 同规则）
+                return 0
+            session.add_message("assistant", content)
+            return 1
+
+        calls = self._clean_tool_calls(raw_calls)
+        if not calls:
+            return 0
+        entry["tool_calls"] = calls
+        session.add_protocol_message(entry)
+        persisted = 1
+        declared.update(str(call["id"]) for call in calls)
+
+        # 悬尾修复（nanobot 未覆盖的缺口）：声明已落盘、但增量与历史都没有结果的
+        # 调用，合成取消占位结果一并落盘。否则会话文件里只剩"宣称调用过"而无结果，
+        # 正是本方案要消灭的那种历史断档（工具被守卫拦截 / turn 中断 / 崩溃恢复）。
+        for call in calls:
+            call_id = str(call["id"])
+            if call_id in fulfilled or call_id in increment_result_ids:
+                continue
+            placeholder: dict[str, Any] = {
+                "role": "tool",
+                "tool_call_id": call_id,
+                "content": _CANCELLED_TOOL_RESULT_CONTENT,
+            }
+            tool_name = self._tool_name_of(call)
+            if tool_name:
+                # 部分 provider 对 tool 消息的 name 非空有隐含要求：缺失时省略该键
+                placeholder["name"] = tool_name
+            session.add_protocol_message(placeholder)
+            fulfilled.add(call_id)
+            persisted += 1
+        return persisted
+
+    def _persist_tool_result(
+        self,
+        session: Session,
+        message: dict[str, Any],
+        declared: set[str],
+        fulfilled: set[str],
+    ) -> bool:
+        """校验并落盘一条 tool 结果；非法（缺 id / 未声明 / 重复）则丢弃并告警。"""
+        entry = dict(message)
+        raw_id = entry.get("tool_call_id")
+        call_id = str(raw_id) if raw_id else ""
+        if not call_id or call_id not in declared or call_id in fulfilled:
+            # 未声明/重复的工具结果会破坏后续 provider 请求（nanobot 同规则）
+            logger.warning(
+                f"轨迹落盘丢弃非法工具结果 {call_id or '(missing id)'}"
+                f"（缺 id / 未声明 / 重复），会话 {session.session_id}"
+            )
+            return False
+        # 归一为 str 后写盘：校验值与落盘值同源（add_protocol_message 只接受非空 str）
+        entry["tool_call_id"] = call_id
+        fulfilled.add(call_id)
+        content = entry.get("content")
+        if isinstance(content, str):
+            # 先脱敏再截断：顺序颠倒会被截断切断密钥形态而漏出半截凭证
+            entry["content"] = truncate_text(
+                redact_secrets(content),
+                self._tool_result_persist_max_chars,
+                suffix=_PERSIST_TRUNCATED_SUFFIX,
+            )
+        session.add_protocol_message(entry)
+        return True
+
+    def _clean_tool_calls(self, calls: list[Any]) -> list[dict[str, Any]]:
+        """清洗待落盘的 tool_calls：丢弃无 id 项，参数脱敏 + 限长（浅拷贝，不回改入参）。"""
+        cleaned: list[dict[str, Any]] = []
+        for raw_call in calls:
+            if not isinstance(raw_call, dict) or not raw_call.get("id"):
+                continue
+            call = dict(raw_call)
+            # id 归一为 str：与 declared/fulfilled 集合的口径一致（避免 int id 半截匹配）
+            call["id"] = str(call["id"])
+            function = call.get("function")
+            if isinstance(function, dict):
+                cleaned_function = dict(function)
+                arguments = cleaned_function.get("arguments")
+                if isinstance(arguments, str):
+                    cleaned_function["arguments"] = truncate_text(
+                        redact_secrets(arguments),
+                        self._tool_args_persist_max_chars,
+                        suffix=_PERSIST_TRUNCATED_SUFFIX,
+                    )
+                call["function"] = cleaned_function
+            cleaned.append(call)
+        return cleaned
+
+    @staticmethod
+    def _declared_tool_call_ids(messages: list[dict[str, Any]]) -> set[str]:
+        """收集消息列表中 assistant 已声明的 tool call id。"""
+        declared: set[str] = set()
+        for message in messages:
+            if message.get("role") != "assistant":
+                continue
+            for raw_call in message.get("tool_calls") or []:
+                if isinstance(raw_call, dict) and raw_call.get("id"):
+                    declared.add(str(raw_call["id"]))
+        return declared
+
+    @staticmethod
+    def _fulfilled_tool_call_ids(messages: list[dict[str, Any]]) -> set[str]:
+        """收集消息列表中已有结果的 tool call id。"""
+        fulfilled: set[str] = set()
+        for message in messages:
+            if message.get("role") != "tool":
+                continue
+            call_id = message.get("tool_call_id")
+            if call_id:
+                fulfilled.add(str(call_id))
+        return fulfilled
+
+    @staticmethod
+    def _final_text_index(
+        increment: list[dict[str, Any]],
+        final_content: str | None,
+    ) -> int | None:
+        """定位增量中"已是终文本"的 assistant 条目下标（该条由既有路径落盘）。
+
+        取最后一个内容等于 ``final_content`` 的纯文本 assistant：runner 的终文本
+        必定是增量中最后一条匹配项（``_append_final_message`` 落在末尾）。
+        """
+        if not final_content:
+            return None
+        for index in range(len(increment) - 1, -1, -1):
+            message = increment[index]
+            if message.get("role") != "assistant" or message.get("tool_calls"):
+                continue
+            if message.get("content") == final_content:
+                return index
+        return None
+
+    @staticmethod
+    def _tool_name_of(call: dict[str, Any]) -> str:
+        """提取工具名（缺失时返回空串，协议只要求 tool_call_id 对应）。"""
+        function = call.get("function")
+        if isinstance(function, dict) and isinstance(function.get("name"), str):
+            return function["name"]
+        return ""
 
     async def _state_respond(self, ctx: TurnContext) -> str:
         """组装并返回出站消息。
@@ -1595,7 +1897,7 @@ class AgentLoop:
             return "ok"
 
         ctx.outbound = self._assemble_outbound(
-            ctx.msg, ctx.final_content, ctx.all_messages,
+            ctx.msg, ctx.final_content, self._turn_increment(ctx),
             ctx.exit_reason, ctx.had_injections,
             turn_latency_ms=ctx.turn_latency_ms,
         )
@@ -1603,11 +1905,36 @@ class AgentLoop:
 
     # --- 辅助方法 ---
 
+    @staticmethod
+    def _turn_increment(ctx: TurnContext) -> list[dict[str, Any]]:
+        """本轮新增消息（锚点 ``initial_messages`` 之后的部分）。
+
+        出站附件收集与轨迹落盘共用同一切片定义：只处理本轮产生的消息，历史消息
+        **不参与**——历史里的 ``message`` 工具调用属于已完成的投递，重复扫描会把
+        旧附件塞进之后每一轮的出站消息。历史也不做任何兼容处理（属数据噪音）。
+
+        切片前提不满足（无锚点 / 消息被裁短）时返回空列表：宁可少收，不可重投。
+
+        Args:
+            ctx: 当前 turn 上下文
+
+        Returns:
+            本轮新增消息列表；前提不满足时为空列表
+        """
+        boundary = len(ctx.initial_messages)
+        if boundary <= 0 or len(ctx.all_messages) < boundary:
+            logger.warning(
+                f"本轮增量切片前提不满足，跳过本轮增量处理（initial={boundary}, "
+                f"all={len(ctx.all_messages)}, context={ctx.context_id}）"
+            )
+            return []
+        return ctx.all_messages[boundary:]
+
     def _assemble_outbound(
         self,
         msg: InboundMessage,
         final_content: str | None,
-        all_msgs: list[dict[str, Any]],
+        turn_messages: list[dict[str, Any]],
         exit_reason: str,
         had_injections: bool,
         *,
@@ -1615,8 +1942,9 @@ class AgentLoop:
     ) -> OutboundMessage | None:
         """从轮次结果组装出站消息。
 
-        扫描 ``all_msgs`` 中的 ``message`` 工具调用，提取 ``media`` 路径
-        合并到出站消息中，让 LLM 可以结构化指定附件。
+        扫描 ``turn_messages``（**本轮新增消息**，由 :meth:`_turn_increment`
+        产出）中的 ``message`` 工具调用，收集其声明的附件路径合并到出站消息中。
+        正文的唯一来源是 ``final_content``——``message`` 工具只承载附件。
         """
         content = final_content or EMPTY_FINAL_RESPONSE_MESSAGE
 
@@ -1630,9 +1958,9 @@ class AgentLoop:
         # 通道据此决策：max_iterations 时卡片内容可能不完整，需追加通知。
         meta["exit_reason"] = exit_reason
 
-        # 收集 message 工具调用中的 media 路径
+        # 收集本轮 message 工具调用中声明的附件路径（历史不参与，见 _turn_increment）
         from nanobee.agent.tools.message import collect_message_tool_media
-        tool_content, tool_media = collect_message_tool_media(all_msgs or [])
+        tool_media = collect_message_tool_media(turn_messages or [])
         existing_media = getattr(msg, "media", [])
         combined_media = existing_media + tool_media
 

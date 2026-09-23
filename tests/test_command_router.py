@@ -7,8 +7,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from nanobee.agent.messages import InboundMessage, OutboundMessage
+from nanobee.agent.messages import InboundMessage
 from nanobee.kernel.command_router import CommandContext, CommandRouter
+from nanobee.outbound import OutboundMessage
 
 
 # ═══════════════════════════════════════════════════════════════════════

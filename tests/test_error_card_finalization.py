@@ -103,7 +103,7 @@ async def test_error_notification_preserves_partial_stream_buffer():
 
     from nanobee.builtin.channel_dingtalk.channel import DingTalkChannelPlugin
     from nanobee.builtin.channel_dingtalk.config import DingTalkConfig
-    from nanobee.channel.message import OutboundMessage
+    from nanobee.outbound import OutboundMessage
 
     plugin = DingTalkChannelPlugin.__new__(DingTalkChannelPlugin)
     plugin.__init__(metadata=SimpleNamespace(name="channel_dingtalk"))
@@ -153,7 +153,7 @@ async def test_error_turn_has_single_fail_card_exit():
 
     from nanobee.builtin.channel_dingtalk.channel import DingTalkChannelPlugin
     from nanobee.builtin.channel_dingtalk.config import DingTalkConfig
-    from nanobee.channel.message import OutboundMessage
+    from nanobee.outbound import OutboundMessage
 
     plugin = DingTalkChannelPlugin.__new__(DingTalkChannelPlugin)
     plugin.__init__(metadata=SimpleNamespace(name="channel_dingtalk"))
@@ -205,7 +205,7 @@ async def test_fail_card_failure_falls_back_to_text_response():
 
     from nanobee.builtin.channel_dingtalk.channel import DingTalkChannelPlugin
     from nanobee.builtin.channel_dingtalk.config import DingTalkConfig
-    from nanobee.channel.message import OutboundMessage
+    from nanobee.outbound import OutboundMessage
 
     plugin = DingTalkChannelPlugin.__new__(DingTalkChannelPlugin)
     plugin.__init__(metadata=SimpleNamespace(name="channel_dingtalk"))

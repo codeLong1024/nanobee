@@ -75,7 +75,6 @@ class HTTPPlugin(ChannelPlugin):
     async def start(self): pass
     async def stop(self): pass
     async def send(self, message, context_id="default"): pass
-    async def _process_incoming(self, message, context_manager): return []
 """, encoding="utf-8")
     (http_dir / "__init__.py").write_text("from .plugin import HTTPPlugin\n", encoding="utf-8")
     

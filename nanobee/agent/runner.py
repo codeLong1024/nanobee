@@ -48,6 +48,7 @@ from nanobee.utils.helpers import (
     estimate_prompt_tokens_chain,
     extract_reasoning,
     extract_tool_name,
+    find_legal_message_end,
     find_legal_message_start,
     strip_think,
 )
@@ -1230,7 +1231,14 @@ class AgentRunner:
         spec: AgentRunSpec,
         messages: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
-        """当估算 token 超出预算时，从历史末尾裁剪消息。"""
+        """当估算 token 超出预算时，从历史末尾裁剪消息。
+
+        裁剪后窗口仍需对 provider 合法：先对齐到首条 user，再丢掉头部孤儿工具
+        结果（``find_legal_message_start``）与尾部未完成的调用组
+        （``find_legal_message_end``）——后者若不裁，下游
+        ``_backfill_missing_tool_results`` 会为它补合成结果，等于把刚被裁掉的
+        内容又请回窗口（且发生在预算判定之后）。纯文本历史两侧均为 no-op。
+        """
         if not messages or not spec.context_window_tokens:
             return messages
 
@@ -1299,7 +1307,16 @@ class AgentRunner:
             start = find_legal_message_start(kept)
             if start:
                 kept = kept[start:]
+            # 尾部修复：预算裁剪可能停在"声明在窗口内、结果被裁掉"的调用组上。
+            # 不裁掉它，下游 _backfill_missing_tool_results 会为它补合成结果，
+            # 等于把刚被裁掉的内容又请回窗口（且是在预算判定之后）。
+            end = find_legal_message_end(kept)
+            if end < len(kept):
+                kept = kept[:end]
         if not kept:
+            # 兜底：前面什么都没保住时给出末尾窗口。此处刻意**不做尾部修复**——
+            # 它只在"已经没有任何合法窗口"时触发，再裁会退化成只剩 system（模型
+            # 完全失去上下文）；协议合法性由下游 _backfill_missing_tool_results 兜。
             kept = non_system[-min(len(non_system), 4) :]
             start = find_legal_message_start(kept)
             if start:

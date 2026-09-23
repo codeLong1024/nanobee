@@ -10,8 +10,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from nanobee.agent.messages import InboundMessage, OutboundMessage
+from nanobee.agent.messages import InboundMessage
 from nanobee.events.event_bus import EventBus
+from nanobee.outbound import OutboundMessage
 
 
 @pytest.fixture

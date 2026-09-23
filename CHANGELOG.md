@@ -260,3 +260,130 @@
 - `tests/test_mcp_manager.py`：随 MCP 生命周期重构删除。其 AsyncMock 替身
   无法复现 cancel scope 的宿主 task 语义，正是旧实现问题长期隐藏的原因；
   相关覆盖已由 `test_mcp_lifecycle.py` 接管。
+
+### Changed
+
+- **出站契约收敛为单一入口 `nanobee.outbound`**：出站模型此前有三条 import 路径
+  （`nanobee.outbound`、`nanobee.agent.messages` re-export、`nanobee.channel.message`
+  re-export），同一模型的字段与语义会在多个命名空间下各自演进，是「第二真相源」的温床。
+  现出站模型只保留 `nanobee.outbound` 一条入口，`agent.messages` 只承载 `InboundMessage`；
+  内核、通道基类、cron 与各通道插件的 import 全部改指唯一入口。
+  通道基类的出站分发改经 `outbound.publish_outbound`（事件型出站共三个发布者：
+  cron 结果、kernel 注入、子代理通知），正常回复仍走 `handle_message` 返回值直投。
+
+- **通道基类新增 `supports_push` 能力声明，出站守卫放宽到「正文与附件至少一个非空」**：
+  `supports_push: bool = True` 声明该通道能否被主动推送；pull 模型通道（HTTP 的 `send()`
+  为空实现，出站由调用方自行拉取）应置 `False`，发布侧据此如实报告「投递失败」，
+  而不是静默丢弃却判成功。基类 `_on_agent_outbound` 按契约整体透传 `media`，
+  守卫由「正文非空」放宽为「正文与附件至少一个非空」——纯附件（正文为空）是合法形态，
+  是否投递附件由各通道自行决定（钉钉走卡片 + 附件、CLI 已知取舍忽略并记 debug、HTTP 为 pull 模型）。
+  CLI 通道随入站旁路收口改为**直连内核**（用户输入 → `kernel.handle_message` → `send()`），
+  投递失败不再有旁路兜底。
+
+- **`message` 工具契约收窄为「只投递附件」**：删除 `content` 参数，`media` 必填且
+  `minItems: 1`（声明层拒绝，非法调用到不了执行体）。此前正文既可走本工具、又可走最终回复，
+  同一条信息两处都可承载，模型只能在两者间反复猜测；且原回执承诺了工具无法感知的投递结果。
+  现契约明确「要送达的正文必须写在最终回复里」，回执只陈述已经发生的事实
+  （登记了哪几个附件），不承诺尚未发生的投递；参数形状由 `ToolRegistry.prepare_call`
+  前置校验，工具内不再重复守卫。
+
+- **会话工具轨迹落盘（`agents.defaults.persist_tool_traces`，默认 `false`）**：
+  会话历史此前只落「user 原文 + assistant 终文本」，工具调用链全部丢失——回看历史时
+  只见「宣称完成」的终文本，看不到「先调工具才宣称完成」的因果链，失败轮与中断轮更是
+  只剩宣称、无任何执行痕迹。现按增量把本轮 `assistant(tool_calls)` 声明与 `tool(result)`
+  结果一并落盘：
+  ① **落盘顺序**：轨迹先落、终文本后落，失败/中断轮同样留痕；
+  ② **增量切片** `_turn_increment(ctx)` 尊重 runner 内部真实顺序（`max_iterations` 出口会先
+  追加终文本、再追加注入的 user 消息），轮内注入（drain）的 user 条目如实入账——
+  此前这类条目从未落盘；
+  ③ **配对校验 + 悬尾修复**：以已落盘历史为基准做声明/结果配对（兼容崩溃恢复后补落的孤儿结果
+  与跨 turn 重复落盘），对「声明已落盘、而增量与历史都无结果」的调用合成
+  `[tool call cancelled: turn interrupted before result]` 占位结果——工具被守卫拦截 / turn 中断 /
+  崩溃恢复三种成因下的历史断档就此消灭（悬尾判定必须看整段增量，逐条处理会把「还没轮到的结果」
+  误判为缺失而多落一条）；
+  ④ **三层清洗**：call id 归一为 `str`（避免 int id 半截匹配）、剔除未声明/重复的工具结果
+  （会直接导致后续 provider 请求协议报错）、部分 provider 对 tool 消息 `name` 非空的隐含要求
+  缺失即省略该键；
+  ⑤ **出生点脱敏先于截断**：顺序颠倒会被截断切断密钥形态而漏出半截凭证；触顶落
+  `(persist truncated)` 标记，与面向模型的 `truncate_text` 后缀区分，回查时能分辨
+  「落盘时被收紧」与「模型侧被截断」；
+  ⑥ **上界全部配置化**：`tool_result_persist_max_chars` / `tool_args_persist_max_chars`
+  （默认 8192，与面向模型的 `max_tool_result_chars` 解耦——持久语义更紧），思维链默认剥离，
+  联调需要时 `persist_reasoning: true`；
+  ⑦ **开关语义**：关闭时严格回退旧口径（只落 user 原文 + assistant 终文本），
+  读取侧自愈逻辑不受开关影响（「开关只控写入」）；
+  ⑧ **单一写入路径**：会话侧新增 `Session.add_protocol_message()`，非法 role / 缺协议键
+  当场 `raise`，不静默写坏历史；浅拷贝隔离调用方后续改动，协议键经 JSONL 序列化/加载往返保持原样。
+
+- **上下文裁剪的协议合法性修复（`_snip_history` + 回放窗口）**：预算裁剪可能停在
+  「声明在窗口内、结果被裁掉」的调用组上，而下游 `_backfill_missing_tool_results`
+  会为该调用补合成结果——等于把刚被裁掉的内容又请回窗口，且发生在预算判定之后。
+  新增 `utils.helpers.find_legal_message_end`（与既有 `find_legal_message_start` 成对），
+  裁剪后先对齐首条 user，再丢掉头部孤儿工具结果与尾部未完成的调用组。两个接入点：
+  runner 预算裁剪、BUILD 安全阀 `AgentLoop._repair_replay_window_head`（覆盖 memory skill
+  裁剪后的历史）。「已经没有任何合法窗口」的末路兜底**刻意不做尾部修复**——再裁会退化成
+  只剩 system、模型完全失去上下文，协议合法性交给下游兜底。纯文本历史（未开启轨迹落盘）
+  两侧均为 no-op。
+
+- **钉钉媒体读取安全策略（Phase 1 安全前置）**：媒体读取此前缺少白名单与体积约束，
+  SSRF 判定在钉钉侧另有一份字符串黑名单实现，与 `nanobee.security.network` 存在规则漂移。
+  现：① SSRF 判定收敛到仓内唯一实现 `nanobee.security.network`，钉钉侧删除自持黑名单；
+  ② 绕过写法（十进制/八进制/十六进制 IP、链接本地元数据段、IPv6 私网与映射）全部拒绝，
+  重定向逐跳复检；③ 本地附件读取受白名单根约束（`media_local_roots`，相对路径按 `data_dir`
+  解析；`data_dir` 与入站附件目录 `./media/dingtalk` 始终放行），`..` 穿越、符号链接逃逸、
+  `file://` 越界均拒绝；④ 体积上限 `media_max_mb`（远端与本地共用，`ge=1`）与总开关
+  `enable_media_upload` 生效，分块读取（1MB/块）避免大文件全量入内存，路径解析与判定走线程
+  不阻塞事件循环，预检与读取之间文件被替换/增长时仍拒绝（不返回被截断内容）；
+  ⑤ 策略注入点 `DingTalkSender.set_media_policy`（由通道 `start()` 调用）；
+  ⑥ 内核启动接线 `tools.ssrf_whitelist` → `configure_ssrf_whitelist`（传空列表即复位，
+  多实例/测试交替构造不残留），保证内网 CIDR 逃生通道在任何媒体读取前生效；
+  ⑦ 配置注释与实现对齐：显式标注 `enable_chunk_upload` / `chunk_size_kb` **尚未接线**
+  （分片上传本身已实现，阈值/块大小仍是代码内常量），避免「配置了却不生效」。
+
+- **cron 事件型出站如实报告投递结果**：目标通道显式声明 `supports_push=False`（pull 模型）时
+  直接判投递失败并记 warning，由调用方如实上报，不再「静默丢弃却报成功」；
+  同时放开纯附件投递（周报形态 `content=""` + 单个 MD 附件）。语义变化严格限定在
+  「已知且明确声明不可推送」这一种情形：通道未知/未加载、无 `plugin_manager`、
+  无有效投递目标一律维持现状（视为可推送），避免扩大爆炸半径。
+
+### Added
+
+- `nanobee/session/session_audit.py`：会话文件协议契约校验与度量（只读审计 CLI，
+  `python -m nanobee.session.session_audit <文件或目录>`）。协议消息一旦落错
+  （孤儿结果、悬尾声明、重复结果），发给 provider 会直接协议报错，而错误现场在会话文件里、
+  不在日志里——本模块提供「把会话文件当契约来查」的能力，覆盖六类违规（V1..V6）。
+  职责边界：只做「读文件 / 判契约 / 算度量」，不修复（修复属回放侧自愈）、不判定放行、
+  不写文件、不打印原始内容。两个落盘标记常量与 `loop` 侧由交叉一致性断言锁死，任一侧漂移即红。
+
+- 配置项：`agents.defaults.persist_tool_traces` / `persist_reasoning` /
+  `tool_result_persist_max_chars` / `tool_args_persist_max_chars`；
+  钉钉 `enable_media_upload` / `media_max_mb` / `media_local_roots`。
+
+- 测试 8 个新文件共 190 用例：`test_tool_trace_persistence.py`（31）、
+  `test_tool_trace_volume_baseline.py`（13，只锁机制硬不变量，经验数值留给评测集基线报告）、
+  `test_replay_window_legality.py`（19）、`test_session_protocol_messages.py`（15）、
+  `test_session_audit.py`（43）、`test_dingtalk_media_security.py`（53）、
+  `test_supports_push.py`（11）、`test_channel_cli_plugin.py`（5）。
+
+### Removed
+
+- **`tool_web` 插件下线**（web_search / web_fetch）。该插件自 2026-06-07 起即在
+  `plugin.toml` 中 `enabled = false`（实例日志可印证「已配置为禁用状态，跳过启用」），
+  搜索质量不满足使用要求，故整体移除而非继续维护。同步清理：README 内置插件表行、
+  `docs/plugin_development.md` 的 `requires` 依赖示例（改用 `tool_fs`）、
+  `skill-creator` 优雅降级示例中对 `web_fetch` / `readability-lxml` 的引用
+  （否则技能会指示模型调用已不存在的工具），以及唯一消费者依赖组 `nanobee[web]`
+  （`duckduckgo-search` / `readability-lxml` / `lxml`）与 `dev` 组里的 `nanobee[web]`。
+
+- `nanobee/utils/searchusage.py`：web 搜索提供商的用量查询（原供 `/status` 使用），
+  全仓零 import、零测试、未在 `utils/__init__.py` 导出，属搜索能力的同源残留，一并删除。
+
+- `nanobee/channel/message.py`（整文件）与 `nanobee/agent/messages.py` 的出站 re-export：
+  出站契约收敛到 `nanobee.outbound` 后的删除项（见 Changed）。
+
+- 通道基类死接口：`handle_incoming` / `_process_incoming` 入站旁路与 `ChannelMessage`
+  （该链路从不承载生产流量，唯一调用点在永不启动的 CLI 交互循环内）、
+  `send_delta` / `send_reasoning_delta` / `send_reasoning_end` / `StreamingDelta`
+  （全仓零调用零构造，流式实际走 `on_stream` / `on_stream_end` 回调）、
+  `supports_streaming` / `_stream_supported`（write-only，写入后无人读取）、
+  `pairing_code` / `is_allowed`（生产零赋值，恒为 no-op）。

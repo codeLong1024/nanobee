@@ -3,14 +3,11 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
 
 from pydantic import BaseModel
 
 from nanobee.channel.base import ChannelPlugin
-from nanobee.channel.message import ChannelMessage, OutboundMessage
-from nanobee.kernel.context_manager import ContextManager
-
+from nanobee.outbound import OutboundMessage
 from nanobee.utils.logger import logger
 
 
@@ -32,22 +29,18 @@ class ChannelCLIPlugin(ChannelPlugin):
     config_cls = ChannelCliConfig
 
     display_name = "命令行"
-    supports_streaming = True
     safe_for_gateway = False
 
     def __init__(self, metadata=None):
         super().__init__(metadata)
         self._running = False
         self._task: asyncio.Task[None] | None = None
-        self._context_manager: ContextManager | None = None
 
     # ====== 生命周期 ======
 
     async def start(self) -> None:
         """启动 CLI 通道（开始接收用户输入）"""
         self._running = True
-        if self.kernel is not None:
-            self._context_manager = self.kernel.context_manager
         logger.info("CLI 通道已启动")
         self._task = asyncio.create_task(self._interaction_loop())
 
@@ -66,63 +59,28 @@ class ChannelCLIPlugin(ChannelPlugin):
     # ====== 发送实现 ======
 
     async def send(self, message: OutboundMessage, context_id: str = "default") -> None:
-        """发送完整出站消息到 CLI。"""
+        """发送完整出站消息到 CLI。
+
+        终端没有附件投递能力：``message.media`` 非空时只记 debug（已知取舍），
+        不改变终端输出形态，也不影响正文打印。
+        """
         prefix = self.config.prompt_prefix
+        if message.media:
+            logger.debug(
+                "CLI 通道忽略 {} 个附件（终端无附件投递能力）: {}",
+                len(message.media), message.media,
+            )
         if message.content:
             print(f"\n{prefix}{message.content}")
-
-    # ====== 消息处理 ======
-
-    async def _process_incoming(
-        self,
-        message: ChannelMessage,
-        context_manager: ContextManager,
-    ) -> list[OutboundMessage]:
-        """处理 CLI 用户输入并返回回复。
-
-        注意：由于 CLI 是同步流式的，此处将消息交给内核处理后直接输出。
-        当前实现简化：如果内核可用则通过 handle_message 处理。
-        """
-        content = message.content.strip()
-        if content == "/exit":
-            self._running = False
-            return []
-
-        if self.kernel is not None:
-            async def _on_progress(delta: str, *, tool_hint: bool = False,
-                                   tool_events: list[dict] | None = None) -> None:
-                if tool_hint:
-                    print("\n🔧 正在调用工具...", flush=True)
-
-            response = await self.kernel.handle_message(
-                content, message.context_id,
-                channel=self.metadata.name,
-                session_id="cli:direct",
-                on_progress=_on_progress,
-            )
-            content_text = response.content if response else ""
-            return [
-                OutboundMessage(
-                    channel=self.metadata.name,
-                    chat_id=message.chat_id,
-                    content=content_text,
-                )
-            ]
-        else:
-            return [
-                OutboundMessage(
-                    channel=self.metadata.name,
-                    chat_id=message.chat_id,
-                    content="[内核未就绪]",
-                )
-            ]
 
     # ====== 交互循环 ======
 
     async def _interaction_loop(self) -> None:
-        """交互循环（读取用户输入并转发给内核）"""
+        """交互循环（读取用户输入并直连内核处理）"""
         loop = asyncio.get_event_loop()
         prefix_prompt = self.config.input_prefix
+        # 与历史入站路径保持一致：context_id = <channel>:<chat_id>
+        context_id = f"{self.metadata.name}:default"
 
         while self._running:
             try:
@@ -131,27 +89,43 @@ class ChannelCLIPlugin(ChannelPlugin):
                 if not self._running:
                     break
 
-                if user_input.strip() == "/exit":
+                content = user_input.strip()
+                if content == "/exit":
                     self._running = False
                     break
 
-                # 构造统一的 ChannelMessage
-                msg = ChannelMessage(
-                    channel=self.metadata.name,
-                    sender_id="user",
-                    chat_id="default",
-                    content=user_input,
-                )
-
-                # 通过 handle_incoming 走统一入口
-                if self.kernel is not None:
-                    cm = self.kernel.context_manager
-                    replies = await self.handle_incoming(msg, cm)
-                    for reply in replies:
-                        if reply.content:
-                            await self.send(reply, msg.context_id)
-                else:
+                if self.kernel is None:
                     logger.warning("内核未初始化，无法处理消息")
+                    await self.send(
+                        OutboundMessage(
+                            channel=self.metadata.name,
+                            chat_id="default",
+                            content="[内核未就绪]",
+                        ),
+                        context_id,
+                    )
+                    continue
+
+                async def _on_progress(delta: str, *, tool_hint: bool = False,
+                                       tool_events: list[dict] | None = None) -> None:
+                    if tool_hint:
+                        print("\n🔧 正在调用工具...", flush=True)
+
+                response = await self.kernel.handle_message(
+                    content, context_id,
+                    channel=self.metadata.name,
+                    session_id="cli:direct",
+                    on_progress=_on_progress,
+                )
+                if response and response.content:
+                    await self.send(
+                        OutboundMessage(
+                            channel=self.metadata.name,
+                            chat_id="default",
+                            content=response.content,
+                        ),
+                        context_id,
+                    )
 
             except EOFError:
                 self._running = False

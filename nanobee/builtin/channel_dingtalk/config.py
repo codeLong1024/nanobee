@@ -21,12 +21,20 @@ class DingTalkConfig(BaseModel):
     allow_remote_media_redirects: bool = False
     remote_media_redirect_allowed_hosts: list[str] = Field(default_factory=list)
 
-    # ============ 媒体上传配置 ============
+    # ============ 媒体配置（以下三项已接线，配置即生效）============
+    # enable_media_upload: 媒体读取总开关；false 时本地与远端附件均拒绝读取。
+    # media_max_mb: 远端与本地附件共用的体积上限（MB，>= 1；本地读取超限即中止）。
+    # media_local_roots: 本地附件白名单根目录（额外放行；相对路径按 data_dir 解析）。
+    #   data_dir 与入站附件目录（./media/dingtalk）始终放行。
     enable_media_upload: bool = True
-    media_max_mb: int = 20
+    media_max_mb: int = Field(default=20, ge=1)
+    media_local_roots: list[str] = Field(default_factory=list)
+
+    # ⚠️ 以下两项尚未接线（配置后不生效）——注意：分片上传本身**已实现**
+    # （media/upload.py 按 20MB 阈值自动切换到分片协议），但其阈值/块大小目前
+    # 是代码内常量（CHUNK_THRESHOLD / CHUNK_DEFAULT），不受这两个字段驱动。
     enable_chunk_upload: bool = True
     chunk_size_kb: int = 5120
-    media_local_roots: list[str] = Field(default_factory=list)
 
     # ============ 文件解析配置 ============
     enable_file_parsing: bool = False

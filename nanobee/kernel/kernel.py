@@ -21,6 +21,7 @@ from nanobee.kernel.plugin_manager import PluginManager
 from nanobee.kernel.router import ContextRouter, UnknownRouteError
 from nanobee.events.runtime_events import KernelBooted, RuntimeEventBus
 from nanobee.outbound import OutboundMessage, publish_outbound
+from nanobee.security.network import configure_ssrf_whitelist
 from nanobee.session.session_manager import SessionManager
 from nanobee.kernel.soul_guard import SoulGuard
 from nanobee.kernel.user_context import UserContext, UserMetadata
@@ -73,6 +74,10 @@ class NanobeeKernel:
             config = Config(**config)
         self.config = config or Config()
         self.data_dir = Path(self.config.data_dir).expanduser()
+
+        # SSRF 白名单（tools.ssrf_whitelist）接线：内网 CIDR 逃生通道必须在任何
+        # 媒体读取前生效。传空列表即复位——多实例/测试交替构造内核时不残留。
+        configure_ssrf_whitelist(list(self.config.tools.ssrf_whitelist or []))
 
         # 核心组件
         self.event_bus = EventBus()              # 字符串 key 事件（供插件使用）
@@ -405,7 +410,8 @@ class NanobeeKernel:
                 session_id=msg.session_id_override,
                 metadata=msg.metadata,
             )
-            if response is not None and response.content:
+            # 守卫与通道侧同源：正文与附件至少一个非空（纯附件是合法形态）
+            if response is not None and (response.content or getattr(response, "media", None)):
                 # 出站载荷由唯一契约模块构造（media 一并透传，杜绝发布者漏字段）
                 await publish_outbound(self.event_bus, OutboundMessage(
                     channel=response.channel,

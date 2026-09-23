@@ -6,9 +6,9 @@ import asyncio
 
 import pytest
 
-from nanobee.agent.messages import OutboundMessage
 from nanobee.kernel import NanobeeKernel
 from nanobee.kernel.core_parser import CoreMDParser
+from nanobee.outbound import OutboundMessage
 
 
 @pytest.fixture

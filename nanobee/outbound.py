@@ -7,10 +7,18 @@
 
 消费方约定：``agent.outbound`` 载荷中 ``media`` 为**可选**字段（缺省即空列表），
 语义同 :class:`OutboundMessage` —— 本地绝对路径或 http(s) URL；不带该字段的
-载荷按空列表处理，因此新增字段对既有消费方向后兼容。
+载荷按空列表处理，因此新增字段对既有消费方向后兼容。通道基类
+``ChannelPlugin._on_agent_outbound`` 按契约**整体透传**（含 media），守卫为
+「正文与附件至少一个非空」——纯附件（正文为空）是合法形态；是否投递附件由
+各通道自行决定（钉钉走卡片 + 附件、CLI 已知取舍忽略、HTTP 为 pull 模型）。
 
 依赖纪律：本模块是叶子模块，运行时仅依赖标准库（``dataclasses``/``typing``），
 ``EventBus`` 仅用于类型注解（TYPE_CHECKING），避免任何一侧导入时形成环。
+
+收敛记录（2026-09-16）：本模块是出站模型的**唯一 import 入口**——原
+``nanobee.channel.message``（整文件）与 ``nanobee.agent.messages`` 的 re-export
+已移除，后者只承载 ``InboundMessage``。禁止为「就近取用」再挂 re-export：同一
+模型的多条 import 路径会让字段/语义在两个命名空间下各自演进。
 """
 
 from __future__ import annotations

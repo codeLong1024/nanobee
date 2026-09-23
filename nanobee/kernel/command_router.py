@@ -11,8 +11,9 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Awaitable, Callable
 
 if TYPE_CHECKING:
-    from nanobee.agent.messages import InboundMessage, OutboundMessage
+    from nanobee.agent.messages import InboundMessage
     from nanobee.kernel.kernel import NanobeeKernel
+    from nanobee.outbound import OutboundMessage
 
 from nanobee.utils.logger import logger
 from nanobee.utils.notifications import build_notification, get_notification_content

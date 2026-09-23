@@ -356,11 +356,11 @@ def image_placeholder_text(path: str | None, *, empty: str = "[image]") -> str:
     return f"[image: {path}]" if path else empty
 
 
-def truncate_text(text: str, max_chars: int) -> str:
+def truncate_text(text: str, max_chars: int, *, suffix: str = "\n... (truncated)") -> str:
     """Truncate text with a stable suffix."""
     if max_chars <= 0 or len(text) <= max_chars:
         return text
-    return text[:max_chars] + "\n... (truncated)"
+    return text[:max_chars] + suffix
 
 
 def find_legal_message_start(messages: list[dict[str, Any]]) -> int:
@@ -379,6 +379,56 @@ def find_legal_message_start(messages: list[dict[str, Any]]) -> int:
                 start = i + 1
                 declared.clear()
     return start
+
+
+def find_legal_message_end(messages: list[dict[str, Any]]) -> int:
+    """Find the exclusive end index whose assistant tool calls are all fulfilled.
+
+    与 :func:`find_legal_message_start` 配对的尾部修复：后者修"结果先于声明"
+    的窗口头部，本函数修"声明在窗口内、结果被裁掉"的窗口尾部。返回可直接切片
+    的终点 ``messages[:end]``——窗口内每条带 ``tool_calls`` 的 assistant 都能在
+    窗口内找到对应 result。
+
+    只裁"尾部未完成的调用组"：一旦逆向扫描到某条 assistant 的调用在窗口内
+    已全部满足，其左侧属于更早的完整轮次，不再继续裁剪（窗口中途的孤立调用由
+    上游 ``_backfill_missing_tool_results`` 补合成结果，不在这里处理）。纯函数，
+    不改动入参；对纯文本序列恒返回 ``len(messages)``。
+
+    Args:
+        messages: 待检查的消息窗口。
+
+    Returns:
+        合法窗口的右开边界下标。``len(messages)`` 表示无需裁剪；**返回 0 表示该
+        窗口不存在合法的非空前缀**（整段都建立在未完成的调用之上，例如
+        ``[assistant(c1, c2), tool(c1)]``）——此时是否接受空窗口由调用方决定，
+        本函数只回答"哪里是合法的"。
+    """
+    fulfilled_after: set[str] = set()
+    end = len(messages)
+    for idx in range(len(messages) - 1, -1, -1):
+        message = messages[idx]
+        role = message.get("role")
+        if role == "tool":
+            tool_call_id = message.get("tool_call_id")
+            if tool_call_id:
+                fulfilled_after.add(str(tool_call_id))
+            continue
+        if role != "assistant":
+            # user/system 是轮次硬边界：其左侧属于更早的完整轮次，停止裁剪
+            break
+        call_ids = {
+            str(raw_call["id"])
+            for raw_call in message.get("tool_calls") or []
+            if isinstance(raw_call, dict) and raw_call.get("id")
+        }
+        if not call_ids:
+            break
+        if call_ids - fulfilled_after:
+            # 该条声明的调用在窗口内没有结果：连同其后内容整体裁掉（级联同组上游）
+            end = idx
+            continue
+        break
+    return end
 
 
 def stringify_text_blocks(content: list[dict[str, Any]]) -> str | None:

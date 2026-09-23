@@ -66,6 +66,7 @@ def _make_error_response() -> MagicMock:
     """
     resp = MagicMock()
     resp.content = "抱歉，处理消息时发生内部错误，请稍后重试或联系管理员。"
+    resp.media = []
     resp.metadata = {
         "notification_type": "system",
         "notification_kind": "turn_internal_error",
@@ -170,6 +171,7 @@ class TestSuccessPathUnchanged:
         """成功回复：返回 content，metadata 不携带系统错误标记。"""
         resp = MagicMock()
         resp.content = "任务完成"
+        resp.media = []
         resp.metadata = {"foo": "bar"}
         plugin = _make_plugin(tmp_path, handle_message_return=resp)
         job = _make_job()
@@ -194,9 +196,10 @@ class TestSuccessPathUnchanged:
 
     @pytest.mark.asyncio
     async def test_empty_content_is_silent(self, tmp_path: Path) -> None:
-        """空 content 同样静默（正常 cron 任务可能无输出）。"""
+        """空 content 且无附件时静默（正常 cron 任务可能无输出）。"""
         resp = MagicMock()
         resp.content = ""
+        resp.media = []  # 显式置空：MagicMock 的 auto-media 恒真，会误判为"有附件"
         resp.metadata = {}
         plugin = _make_plugin(tmp_path, handle_message_return=resp)
         job = _make_job()
@@ -215,6 +218,7 @@ class TestSuccessPathUnchanged:
         """
         resp = MagicMock()
         resp.content = "任务完成"
+        resp.media = []
         resp.metadata = {}
         plugin = _make_plugin(tmp_path, handle_message_return=resp)
         plugin.kernel.agent_loop.event_bus.publish = AsyncMock(
@@ -274,3 +278,78 @@ class TestBuildErrorNotice:
         assert "weather-monitor" in notice
         assert "job_err" in notice
         assert "something broke" in notice
+
+
+# ============================================================
+# 纯附件投递（周报形态：content="" + 单个 MD 附件，Phase 2 放开）
+# ============================================================
+
+
+def _make_response(content: str, media: list[str]) -> MagicMock:
+    """构造成功回复（显式置 media：MagicMock 的 auto-media 恒真，不可依赖）。"""
+    resp = MagicMock()
+    resp.content = content
+    resp.media = media
+    resp.metadata = {}
+    return resp
+
+
+class TestPureAttachmentDelivery:
+    """正文与附件至少一个非空即投递——纯附件不得被守卫吞掉。"""
+
+    @pytest.mark.asyncio
+    async def test_pure_attachment_is_published(self, tmp_path: Path) -> None:
+        """正文为空但带附件 → 事件照发，附件随载荷透传。"""
+        plugin = _make_plugin(
+            tmp_path,
+            handle_message_return=_make_response("", ["/data/周报.md"]),
+        )
+
+        result = await plugin._on_job_execute(_make_job())
+
+        assert result == ""
+        plugin.kernel.agent_loop.event_bus.publish.assert_awaited_once()
+        _event, data = plugin.kernel.agent_loop.event_bus.publish.await_args.args
+        assert data["content"] == ""
+        assert data["media"] == ["/data/周报.md"]
+
+    @pytest.mark.asyncio
+    async def test_empty_content_without_media_stays_silent(self, tmp_path: Path) -> None:
+        """正文与附件都为空 → 仍静默（不因放开守卫而放过空事件）。"""
+        plugin = _make_plugin(tmp_path, handle_message_return=_make_response("", []))
+
+        result = await plugin._on_job_execute(_make_job())
+
+        assert result == ""
+        plugin.kernel.agent_loop.event_bus.publish.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_content_and_media_both_delivered(self, tmp_path: Path) -> None:
+        """正文 + 附件：正文与附件同时进载荷。"""
+        plugin = _make_plugin(
+            tmp_path,
+            handle_message_return=_make_response("周报已生成", ["/data/周报.md"]),
+        )
+
+        result = await plugin._on_job_execute(_make_job())
+
+        assert result == "周报已生成"
+        _event, data = plugin.kernel.agent_loop.event_bus.publish.await_args.args
+        assert data["content"] == "周报已生成"
+        assert data["media"] == ["/data/周报.md"]
+
+    @pytest.mark.asyncio
+    async def test_pure_attachment_delivery_failure_raises_distinct_error(
+        self, tmp_path: Path,
+    ) -> None:
+        """纯附件形态下投递失败仍抛 CronJobError（与"执行失败"可区分）。"""
+        plugin = _make_plugin(
+            tmp_path,
+            handle_message_return=_make_response("", ["/data/周报.md"]),
+        )
+        plugin.kernel.agent_loop.event_bus.publish = AsyncMock(
+            side_effect=RuntimeError("publish fail")
+        )
+
+        with pytest.raises(CronJobError, match="结果投递失败"):
+            await plugin._on_job_execute(_make_job())

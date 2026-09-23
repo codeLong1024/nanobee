@@ -19,9 +19,14 @@ type = "channel"
 # ==== 代理 ====
 # proxy_url = ""
 
-# ==== 媒体 ====
-# enable_media_upload = true
-# media_max_mb = 20
+# ==== 媒体（以下三项已生效）====
+# enable_media_upload = true        # 媒体读取总开关（false = 本地与远端均拒绝）
+# media_max_mb = 20                 # 远端与本地附件共用的体积上限（MB，>= 1）
+# media_local_roots = []            # 本地附件白名单根（相对路径按 data_dir 解析；
+#                                   # data_dir 与入站附件目录始终放行）
+
+# ==== 媒体：以下两项尚未接线（配置无效）====
+# 注：分片上传已实现（>20MB 自动切换），阈值/块大小目前是代码内常量。
 # enable_chunk_upload = true
 # chunk_size_kb = 5120
 

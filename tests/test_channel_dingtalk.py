@@ -15,6 +15,7 @@ from collections import OrderedDict
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 from nanobee.builtin.channel_dingtalk.auth import (
@@ -694,7 +695,7 @@ class TestOnMessageResponseDelivery:
         self, dingtalk_plugin,
     ):
         """非流式模式：有内容有 media → sender.send 携带 content + media。"""
-        from nanobee.channel.message import OutboundMessage
+        from nanobee.outbound import OutboundMessage
 
         dingtalk_plugin.dingtalk_config.streaming = False
         dingtalk_plugin.sender = _make_sender()
@@ -724,7 +725,7 @@ class TestOnMessageResponseDelivery:
         self, dingtalk_plugin,
     ):
         """非流式但无 sender → 跳过 send（不崩溃）。"""
-        from nanobee.channel.message import OutboundMessage
+        from nanobee.outbound import OutboundMessage
 
         dingtalk_plugin.dingtalk_config.streaming = False
         dingtalk_plugin.sender = None
@@ -769,7 +770,7 @@ class TestOnMessageResponseDelivery:
         self, dingtalk_plugin,
     ):
         """流式但无 card_id → markdown fallback sender.send(content + media)。"""
-        from nanobee.channel.message import OutboundMessage
+        from nanobee.outbound import OutboundMessage
 
         dingtalk_plugin.dingtalk_config.streaming = True
         dingtalk_plugin.sender = _make_sender()
@@ -802,7 +803,7 @@ class TestOnMessageResponseDelivery:
         self, dingtalk_plugin,
     ):
         """流式 + card 存在但未被流式处理 → sender.send(content + media)。"""
-        from nanobee.channel.message import OutboundMessage
+        from nanobee.outbound import OutboundMessage
 
         dingtalk_plugin.dingtalk_config.streaming = True
         dingtalk_plugin.sender = _make_sender()
@@ -837,7 +838,7 @@ class TestOnMessageResponseDelivery:
         self, dingtalk_plugin,
     ):
         """流式 + card 已由流式处理 + 正常完成 → 跳过内容 send，仅投递 media。"""
-        from nanobee.channel.message import OutboundMessage
+        from nanobee.outbound import OutboundMessage
 
         dingtalk_plugin.dingtalk_config.streaming = True
         dingtalk_plugin.sender = _make_sender()
@@ -872,7 +873,7 @@ class TestOnMessageResponseDelivery:
         self, dingtalk_plugin,
     ):
         """流式 + card 已处理 + 正常完成 + 无 media → 完全不调用 send。"""
-        from nanobee.channel.message import OutboundMessage
+        from nanobee.outbound import OutboundMessage
 
         dingtalk_plugin.dingtalk_config.streaming = True
         dingtalk_plugin.sender = _make_sender()
@@ -903,7 +904,7 @@ class TestOnMessageResponseDelivery:
         self, dingtalk_plugin,
     ):
         """流式 + card 已处理 + max_iterations → finalize_card_with_notification + media。"""
-        from nanobee.channel.message import OutboundMessage
+        from nanobee.outbound import OutboundMessage
 
         dingtalk_plugin.dingtalk_config.streaming = True
         dingtalk_plugin.sender = _make_sender()
@@ -944,7 +945,7 @@ class TestOnMessageResponseDelivery:
         self, dingtalk_plugin,
     ):
         """error 系统通知 + 有 card → fail_card（卡片 FINISHED 终态 + 错误文案，不残留空卡片）。"""
-        from nanobee.channel.message import OutboundMessage
+        from nanobee.outbound import OutboundMessage
 
         dingtalk_plugin.dingtalk_config.streaming = True
         dingtalk_plugin.sender = _make_sender()
@@ -982,7 +983,7 @@ class TestOnMessageResponseDelivery:
         self, dingtalk_plugin,
     ):
         """info 系统通知 + 无 card → markdown 兜底 sender.send。"""
-        from nanobee.channel.message import OutboundMessage
+        from nanobee.outbound import OutboundMessage
 
         dingtalk_plugin.dingtalk_config.streaming = True
         dingtalk_plugin.sender = _make_sender()
@@ -1013,7 +1014,7 @@ class TestOnMessageResponseDelivery:
         self, dingtalk_plugin,
     ):
         """info 系统通知 + 有 card 且已被流式处理 → finalize_card_with_notification。"""
-        from nanobee.channel.message import OutboundMessage
+        from nanobee.outbound import OutboundMessage
 
         dingtalk_plugin.dingtalk_config.streaming = True
         dingtalk_plugin.sender = _make_sender()
@@ -1228,3 +1229,260 @@ class TestRichTextParsing:
         )
         assert content == "收到请回复"
         assert file_paths == []
+
+
+# ============================================================
+# 事件型出站（_on_agent_outbound）— AI Card + 附件接线（Phase 2）
+# ============================================================
+
+
+def _make_event_sender(*, card_ok: bool = True) -> MagicMock:
+    """事件路径用的 mock sender：可取 token、卡片结果可控。"""
+    sender = _make_sender()
+    sender.get_access_token = AsyncMock(return_value="fake-token")
+    sender.send_via_card = AsyncMock(return_value=card_ok)
+    return sender
+
+
+class TestOnAgentOutboundMedia:
+    """事件型出站：正文走 AI Card、附件随后投递；纯附件走既有回退路径。"""
+
+    @pytest.mark.asyncio
+    async def test_content_and_media_go_through_card(self, dingtalk_plugin):
+        """正文 + 附件：卡片一次带 media，成功后不回退。"""
+        dingtalk_plugin.sender = _make_event_sender(card_ok=True)
+
+        await dingtalk_plugin._on_agent_outbound({
+            "channel": "channel_dingtalk",
+            "chat_id": "conv-1",
+            "content": "周报已生成",
+            "media": ["/data/周报.md"],
+            "metadata": {},
+        })
+
+        dingtalk_plugin.sender.send_via_card.assert_awaited_once()
+        args, kwargs = dingtalk_plugin.sender.send_via_card.await_args
+        assert args[1] == "conv-1"
+        assert args[2] == "周报已生成"
+        assert kwargs["media"] == ["/data/周报.md"]
+        dingtalk_plugin.sender.send.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_legacy_event_without_media_key_passes_empty_list(
+        self, dingtalk_plugin,
+    ):
+        """旧式载荷（无 media 键）：按空列表处理，与改造前行为一致。"""
+        dingtalk_plugin.sender = _make_event_sender()
+
+        await dingtalk_plugin._on_agent_outbound({
+            "channel": "channel_dingtalk",
+            "chat_id": "conv-1",
+            "content": "hello",
+            "metadata": {},
+        })
+
+        _args, kwargs = dingtalk_plugin.sender.send_via_card.await_args
+        assert kwargs["media"] == []
+
+    @pytest.mark.asyncio
+    async def test_pure_attachment_falls_back_to_send(self, dingtalk_plugin):
+        """纯附件（正文为空）：不尝试建卡片，回退 send() 把附件投出。"""
+        dingtalk_plugin.sender = _make_event_sender()
+
+        await dingtalk_plugin._on_agent_outbound({
+            "channel": "channel_dingtalk",
+            "chat_id": "conv-1",
+            "content": "",
+            "media": ["/data/周报.md"],
+            "metadata": {},
+        })
+
+        dingtalk_plugin.sender.send_via_card.assert_not_awaited()
+        dingtalk_plugin.sender.send.assert_awaited_once()
+        internal_msg = dingtalk_plugin.sender.send.await_args[0][0]
+        assert internal_msg.content == ""
+        assert internal_msg.media == ["/data/周报.md"]
+
+    @pytest.mark.asyncio
+    async def test_card_failure_falls_back_with_media(self, dingtalk_plugin):
+        """卡片投递失败：回退 send()，附件不丢。"""
+        dingtalk_plugin.sender = _make_event_sender(card_ok=False)
+
+        await dingtalk_plugin._on_agent_outbound({
+            "channel": "channel_dingtalk",
+            "chat_id": "conv-1",
+            "content": "正文",
+            "media": ["/data/a.pdf"],
+            "metadata": {},
+        })
+
+        dingtalk_plugin.sender.send_via_card.assert_awaited_once()
+        internal_msg = dingtalk_plugin.sender.send.await_args[0][0]
+        assert internal_msg.media == ["/data/a.pdf"]
+
+    @pytest.mark.asyncio
+    async def test_empty_content_and_media_ignored(self, dingtalk_plugin):
+        """正文与附件都为空才忽略（放开守卫≠全放行）。"""
+        dingtalk_plugin.sender = _make_event_sender()
+
+        await dingtalk_plugin._on_agent_outbound({
+            "channel": "channel_dingtalk",
+            "chat_id": "conv-1",
+            "content": "",
+            "media": [],
+            "metadata": {},
+        })
+
+        dingtalk_plugin.sender.send_via_card.assert_not_awaited()
+        dingtalk_plugin.sender.send.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_other_channel_event_ignored(self, dingtalk_plugin):
+        """非本通道事件不处理。"""
+        dingtalk_plugin.sender = _make_event_sender()
+
+        await dingtalk_plugin._on_agent_outbound({
+            "channel": "channel_http",
+            "chat_id": "conv-1",
+            "content": "x",
+            "media": ["/data/a.pdf"],
+            "metadata": {},
+        })
+
+        dingtalk_plugin.sender.send_via_card.assert_not_awaited()
+        dingtalk_plugin.sender.send.assert_not_awaited()
+
+
+class TestSendViaCardMedia:
+    """send_via_card 的附件投递：复用唯一实现、顺序正确、异常隔离。"""
+
+    @staticmethod
+    def _prepare(sender, mock_card_manager) -> MagicMock:
+        mock_card_manager.create_card = AsyncMock(return_value="card-1")
+        mock_card_manager.start_streaming = AsyncMock()
+        return mock_card_manager
+
+    @pytest.mark.asyncio
+    async def test_media_sent_after_card_finalized_and_before_cleanup(
+        self, sender, mock_card_manager,
+    ):
+        """顺序：finish_streaming → 附件 → 上下文清理（附件先发、再清理）。"""
+        calls: list[str] = []
+        mock_card_manager.create_card = AsyncMock(return_value="card-1")
+        mock_card_manager.start_streaming = AsyncMock()
+        mock_card_manager.finish_streaming = AsyncMock(
+            side_effect=lambda *a, **k: calls.append("finish"),
+        )
+        sender._send_msg_media_refs = AsyncMock(
+            side_effect=lambda *a, **k: calls.append("media"),
+        )
+        sender._cleanup_chat_context = MagicMock(
+            side_effect=lambda *a, **k: calls.append("cleanup"),
+        )
+
+        ok = await sender.send_via_card(
+            "tok", "conv-1", "周报已生成", media=["/data/周报.md"],
+        )
+
+        assert ok is True
+        assert calls == ["finish", "media", "cleanup"]
+        media_args, media_kwargs = sender._send_msg_media_refs.await_args
+        assert media_args[1] == "conv-1"
+        assert media_args[2] == ["/data/周报.md"]
+        assert "sender_staff_id" in media_kwargs
+
+    @pytest.mark.asyncio
+    async def test_no_media_skips_media_refs(self, sender, mock_card_manager):
+        """无附件时不触碰附件投递实现。"""
+        self._prepare(sender, mock_card_manager)
+        sender._send_msg_media_refs = AsyncMock()
+
+        ok = await sender.send_via_card("tok", "conv-1", "正文")
+
+        assert ok is True
+        sender._send_msg_media_refs.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_empty_content_returns_false_and_sends_no_media(
+        self, sender, mock_card_manager,
+    ):
+        """空正文（纯附件形态）：卡片路径早退为 False，附件留给调用方回退投递。"""
+        self._prepare(sender, mock_card_manager)
+        sender._send_msg_media_refs = AsyncMock()
+
+        ok = await sender.send_via_card("tok", "conv-1", "", media=["/data/周报.md"])
+
+        assert ok is False
+        sender._send_msg_media_refs.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_multiple_media_forwarded_in_order(self, sender, mock_card_manager):
+        """多附件按原顺序整体交给唯一实现（逐个发送/单条失败不影响其余）。"""
+        self._prepare(sender, mock_card_manager)
+        sender._send_msg_media_refs = AsyncMock()
+
+        ok = await sender.send_via_card(
+            "tok", "conv-1", "正文", media=["/data/a.pdf", "/data/b.pdf"],
+        )
+
+        assert ok is True
+        assert sender._send_msg_media_refs.await_args[0][2] == ["/data/a.pdf", "/data/b.pdf"]
+
+
+class TestMediaRefsIsolation:
+    """`_send_msg_media_refs` 是附件投递唯一实现：逐条隔离、失败不打断其余、不上抛。"""
+
+    @pytest.mark.asyncio
+    async def test_transport_error_does_not_abort_remaining_refs(self, sender):
+        """首条附件传输异常：不外抛，第二条仍投递，失败条发兜底文案。"""
+        sender._send_media_ref = AsyncMock(
+            side_effect=[httpx.TransportError("boom"), True],
+        )
+        sender._send_markdown_text = AsyncMock()
+
+        await sender._send_msg_media_refs(
+            "tok", "conv-1", ["/data/a.pdf", "/data/b.pdf"],
+        )
+
+        assert sender._send_media_ref.await_count == 2
+        sender._send_markdown_text.assert_awaited_once()
+        assert "a.pdf" in sender._send_markdown_text.await_args[0][2]
+
+    @pytest.mark.asyncio
+    async def test_all_refs_delivered_in_order_when_ok(self, sender):
+        sender._send_media_ref = AsyncMock(return_value=True)
+
+        await sender._send_msg_media_refs("tok", "conv-1", ["/data/a.pdf", "/data/b.pdf"])
+
+        refs = [call.args[2] for call in sender._send_media_ref.await_args_list]
+        assert refs == ["/data/a.pdf", "/data/b.pdf"]
+
+
+class TestSendPureAttachmentFallback:
+    """纯附件经 `send()` 分支 5 真实投递（本次接线的关键回退路径）。"""
+
+    @pytest.mark.asyncio
+    async def test_pure_attachment_uses_media_refs(self, sender):
+        """无 _card_id、无正文、有附件 → 直接走 `_send_msg_media_refs`。"""
+        sender._send_msg_media_refs = AsyncMock()
+        msg = _make_msg(content="", chat_id="conv-1", metadata={}, media=["/data/周报.md"])
+
+        await sender.send(msg)
+
+        sender._send_msg_media_refs.assert_awaited_once()
+        assert sender._send_msg_media_refs.await_args[0][2] == ["/data/周报.md"]
+
+    @pytest.mark.asyncio
+    async def test_content_and_media_both_delivered(self, sender):
+        """正文 + 附件（无卡片）：markdown 与附件各一次。"""
+        sender._send_msg_media_refs = AsyncMock()
+        sender._send_markdown_text = AsyncMock(return_value=True)
+        msg = _make_msg(
+            content="周报已生成", chat_id="conv-1", metadata={}, media=["/data/周报.md"],
+        )
+
+        await sender.send(msg)
+
+        sender._send_markdown_text.assert_awaited_once()
+        sender._send_msg_media_refs.assert_awaited_once()
+        assert sender._send_msg_media_refs.await_args[0][2] == ["/data/周报.md"]

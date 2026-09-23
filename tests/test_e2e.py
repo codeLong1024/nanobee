@@ -34,7 +34,7 @@ history_size = 50
     (channel_cli_dir / "plugin.py").write_text("""from __future__ import annotations
 import asyncio
 import logging
-from nanobee.channel.message import OutboundMessage
+from nanobee.outbound import OutboundMessage
 from nanobee.channel.base import ChannelPlugin
 
 logger = logging.getLogger(__name__)
@@ -54,8 +54,6 @@ class CLIPlugin(ChannelPlugin):
         else:
             text = str(message)
         print(f"CLI: {text}")
-    async def _process_incoming(self, message, context_manager):
-        return []
 """, encoding="utf-8")
     (channel_cli_dir / "__init__.py").write_text("from .plugin import CLIPlugin\n", encoding="utf-8")
 

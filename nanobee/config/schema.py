@@ -75,6 +75,16 @@ class AgentDefaults(Base):
     temperature: float = 0.1
     fallback_models: list[FallbackCandidate] = []
     max_messages: int = 120
+    # 会话工具轨迹持久化：把本轮 assistant(tool_calls)/tool(result) 协议消息一并落盘，
+    # 使回放历史保留"先调工具才宣称完成"的因果链。关闭时严格回退旧口径
+    # （只落 user 原文 + assistant 终文本），读取侧自愈逻辑不受此开关影响。
+    persist_tool_traces: bool = False
+    # 是否把思维链（reasoning_content / thinking_blocks）一并落盘；默认剥离以省 token
+    persist_reasoning: bool = False
+    # 单条工具结果落盘字符上界；与面向模型的 max_tool_result_chars 解耦（持久语义更紧）
+    tool_result_persist_max_chars: int = 8192
+    # 单条工具参数落盘字符上界（write_file 类工具的参数体积可达数十 KB）
+    tool_args_persist_max_chars: int = 8192
     memory_store_threshold: int = 20
     max_iterations: int = 10
     max_concurrent_subagents: int = 4

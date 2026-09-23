@@ -56,7 +56,7 @@ class MockChannelPlugin(ChannelPlugin):
         pass
 
     async def send(self, message, context_id="default"):
-        from nanobee.channel.message import OutboundMessage
+        from nanobee.outbound import OutboundMessage
         if isinstance(message, str):
             message = OutboundMessage(
                 channel=self.metadata.name,
@@ -64,13 +64,6 @@ class MockChannelPlugin(ChannelPlugin):
                 content=message,
             )
         self.last_message = message.content if hasattr(message, "content") else str(message)
-
-    async def _process_incoming(
-        self,
-        message,
-        context_manager,
-    ):
-        return []
 
 
 def test_plugin_metadata():

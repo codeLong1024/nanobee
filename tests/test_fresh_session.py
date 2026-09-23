@@ -51,11 +51,25 @@ def _make_save_ctx(fresh_session: bool, turn_id: str = "user_a:123456") -> TurnC
     return ctx
 
 
-def _run_save(tmp_path: Path, ctx: TurnContext) -> SessionManager:
-    """用最小化 AgentLoop（object.__new__ 绕过重型构造器）执行 _state_save。"""
+def _new_bare_loop(tmp_path: Path) -> AgentLoop:
+    """构造最小化 AgentLoop（object.__new__ 绕过重型构造器）并补齐 _state_save 依赖。
+
+    轨迹落盘开关取默认关闭值：本文件只验证 fresh_session 回收语义（旧落盘口径），
+    轨迹落盘自身的行为另见 tests/test_tool_trace_persistence.py。
+    """
     loop = object.__new__(AgentLoop)
     loop.session_manager = SessionManager(tmp_path / "users")
     loop.event_bus = None
+    loop._persist_tool_traces = False
+    loop._persist_reasoning = False
+    loop._tool_result_persist_max_chars = 8192
+    loop._tool_args_persist_max_chars = 8192
+    return loop
+
+
+def _run_save(tmp_path: Path, ctx: TurnContext) -> SessionManager:
+    """用最小化 AgentLoop 执行 _state_save。"""
+    loop = _new_bare_loop(tmp_path)
     asyncio.run(loop._state_save(ctx))
     return loop.session_manager
 
@@ -101,8 +115,7 @@ class TestStateSaveFreshSessionCleanup:
         ctx = _make_save_ctx(fresh_session=True)
 
         # 用最小化 AgentLoop + 抛异常的 event_bus 触发 try 块中异常
-        loop = object.__new__(AgentLoop)
-        loop.session_manager = SessionManager(tmp_path / "users")
+        loop = _new_bare_loop(tmp_path)
 
         class _RaisingBus:
             async def publish(self, *args: object, **kwargs: object) -> None:

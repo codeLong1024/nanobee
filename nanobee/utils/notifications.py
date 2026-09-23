@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from nanobee.agent.messages import OutboundMessage
+    from nanobee.outbound import OutboundMessage
 
 
 @dataclass(frozen=True)
@@ -166,7 +166,7 @@ def build_notification(
     Returns:
         填充好 content 和 metadata 的 OutboundMessage。
     """
-    from nanobee.agent.messages import OutboundMessage
+    from nanobee.outbound import OutboundMessage
 
     notif = _CATALOG[kind]
     content = notif.content.format_map(_SafeDict(kwargs))

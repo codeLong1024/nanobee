@@ -6,7 +6,8 @@
 
 本测试锁定的契约（``nanobee.outbound`` 为唯一归属）：
 
-1. 模型唯一：三处 import 路径指向同一个类对象（re-export，不是复制定义）。
+1. 模型唯一：出站模型只有一个 import 入口 ``nanobee.outbound``；此前的 agent /
+   channel 侧 re-export 路径已收敛删除（2026-09-16）。
 2. 载荷唯一：键集合恒定（channel/chat_id/content/media/metadata），由
    :func:`outbound_payload` 单点构造。
 3. 不变量：``media`` 恒为 ``list[str]``（非序列 → 空列表、非字符串项丢弃）；
@@ -15,13 +16,17 @@
    发布内容与 :func:`outbound_payload` 严格一致。
 5. 发布者一致：三个发布者（cron / kernel 注入 / loop 子代理通知）产出的载荷
    键集合完全相同；cron 成功路径与 kernel 注入透传 media，cron 错误通知不带附件。
-6. 向后兼容：不带 ``media`` 键的旧式载荷仍可被通道基类消费；本次通道消费侧
-   未适配（延后），载荷带 media 时基类仍按空列表构造——该断言是延后项的
-   显式记录，通道适配落地时须连同此断言一起更新。
+   三处发布守卫与消费守卫同源：「正文与附件至少一个非空」——纯附件不得被
+   任何一层丢弃（2026-09-16 Phase 2 接线）。
+6. 通道消费（2026-09-16 Phase 2 落地）：基类 ``_on_agent_outbound`` 按契约整体
+   透传载荷，**含 media**——入口不得丢字段（通道是否投递附件是通道自己的选择）。
+   守卫为「正文与附件至少一个非空」：纯附件（正文为空）是合法形态，不得丢弃。
+   不带 ``media`` 键的旧式载荷仍按空列表处理（向后兼容）。
 """
 
 from __future__ import annotations
 
+import importlib.util
 import subprocess
 import sys
 from pathlib import Path
@@ -45,21 +50,25 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 # ============================================================
-# 契约 1：模型唯一（re-export 而非复制）
+# 契约 1：模型唯一（只保留一条 import 路径）
 # ============================================================
 
 
 class TestContractIdentity:
     """模型与事件名的唯一性。"""
 
-    def test_single_class_for_all_import_paths(self) -> None:
-        """agent / channel / 契约模块三处 import 指向同一类对象。"""
-        from nanobee.agent.messages import OutboundMessage as agent_side
-        from nanobee.channel.message import OutboundMessage as channel_side
-        from nanobee.outbound import OutboundMessage as contract_side
+    def test_model_has_single_import_path(self) -> None:
+        """出站模型只有一个 import 入口：``nanobee.outbound``（2026-09-16 收敛）。
 
-        assert agent_side is channel_side is contract_side
-        assert contract_side.__module__ == "nanobee.outbound"
+        原 ``nanobee.channel.message``（整文件，已删）与 ``nanobee.agent.messages``
+        的 re-export 均已移除。此处显式锁定「单一入口」，防止 re-export 路径被重新
+        引入——同一模型的多条 import 路径是定义/语义漂移的温床。
+        """
+        from nanobee.agent import messages as agent_messages
+
+        assert OutboundMessage.__module__ == "nanobee.outbound"
+        assert not hasattr(agent_messages, "OutboundMessage")
+        assert importlib.util.find_spec("nanobee.channel.message") is None
 
     def test_event_name_is_single_constant(self) -> None:
         """事件名由契约模块唯一声明。"""
@@ -407,6 +416,61 @@ class TestPublishersShareContract:
         assert set(captured[0]) == CONTRACT_KEYS
 
     @pytest.mark.asyncio
+    async def test_injected_pure_attachment_is_published(self) -> None:
+        """纯附件注入结果（正文为空 + media）不得被发布侧守卫丢弃。"""
+        bus = EventBus()
+        captured: list[dict] = []
+
+        async def spy(data):
+            captured.append(data)
+
+        bus.subscribe(OUTBOUND_EVENT, spy)
+
+        from nanobee.agent.messages import InboundMessage
+        from nanobee.kernel.kernel import NanobeeKernel
+
+        kernel = NanobeeKernel.__new__(NanobeeKernel)
+        kernel.event_bus = bus
+        kernel.handle_message = AsyncMock(return_value=OutboundMessage(
+            channel="cli", chat_id="direct", content="",
+            media=["/tmp/周报.md"],
+        ))
+
+        await kernel._handle_injected_message(InboundMessage(
+            channel="cli", sender_id="u", chat_id="direct", content="",
+        ))
+
+        assert len(captured) == 1
+        assert captured[0]["content"] == ""
+        assert captured[0]["media"] == ["/tmp/周报.md"]
+
+    @pytest.mark.asyncio
+    async def test_injected_empty_response_is_not_published(self) -> None:
+        """正文与附件都为空 → 不发布（放开守卫≠全放行）。"""
+        bus = EventBus()
+        captured: list[dict] = []
+
+        async def spy(data):
+            captured.append(data)
+
+        bus.subscribe(OUTBOUND_EVENT, spy)
+
+        from nanobee.agent.messages import InboundMessage
+        from nanobee.kernel.kernel import NanobeeKernel
+
+        kernel = NanobeeKernel.__new__(NanobeeKernel)
+        kernel.event_bus = bus
+        kernel.handle_message = AsyncMock(return_value=OutboundMessage(
+            channel="cli", chat_id="direct", content="", media=[],
+        ))
+
+        await kernel._handle_injected_message(InboundMessage(
+            channel="cli", sender_id="u", chat_id="direct", content="",
+        ))
+
+        assert captured == []
+
+    @pytest.mark.asyncio
     async def test_subagent_notice_has_empty_media_and_system_metadata(self) -> None:
         """子代理启动通知：无附件源 → media 空列表，metadata 三键保持原样。"""
         from nanobee.agent.loop import AgentLoop
@@ -433,7 +497,7 @@ class TestPublishersShareContract:
 
 
 # ============================================================
-# 契约 6：消费方向后兼容（通道消费本次未适配）
+# 契约 6：通道消费（基类透传 media + 纯附件形态）
 # ============================================================
 
 
@@ -449,9 +513,6 @@ def _make_stub_channel():
 
         async def send(self, message: OutboundMessage, context_id: str = "default") -> None:
             self.sent.append((message, context_id))
-
-        async def _process_incoming(self, message, context_manager) -> list:
-            return []
 
     return _RecordingChannel()
 
@@ -478,24 +539,53 @@ class TestConsumerBackwardCompat:
         assert context_id == "conv-1"
 
     @pytest.mark.asyncio
-    async def test_media_key_ignored_by_channel_base_until_adaptation(self) -> None:
-        """载荷带 media 时基类仍按空列表构造——通道适配延后项的显式记录。
-
-        通道消费 media 属于「通道适配」阶段（本次范围外）。该断言是延后项的
-        边界标记：通道适配落地时必须同步更新此用例，避免"半生效"（部分通道
-        送达附件、部分静默丢失）的状态被固化。
-        """
+    async def test_media_key_forwarded_by_channel_base(self) -> None:
+        """载荷带 media 时基类**原样透传**（Phase 2 接线；入口不丢字段）。"""
         channel = _make_stub_channel()
 
         await channel._on_agent_outbound({
             "channel": "stub_channel",
             "chat_id": "conv-1",
             "content": "正文",
-            "media": ["/tmp/report.md"],
+            "media": ["/tmp/report.md", "https://example.com/r.md"],
             "metadata": {},
         })
 
         assert len(channel.sent) == 1
         message, _ = channel.sent[0]
         assert message.content == "正文"
-        assert message.media == []
+        assert message.media == ["/tmp/report.md", "https://example.com/r.md"]
+
+    @pytest.mark.asyncio
+    async def test_pure_attachment_event_is_delivered(self) -> None:
+        """纯附件（正文为空 + media 非空）必须投递——周报形态，不得被守卫吞掉。"""
+        channel = _make_stub_channel()
+
+        await channel._on_agent_outbound({
+            "channel": "stub_channel",
+            "chat_id": "conv-1",
+            "content": "",
+            "media": ["/tmp/周报.md"],
+            "metadata": {},
+        })
+
+        assert len(channel.sent) == 1
+        message, context_id = channel.sent[0]
+        assert message.content == ""
+        assert message.media == ["/tmp/周报.md"]
+        assert context_id == "conv-1"
+
+    @pytest.mark.asyncio
+    async def test_empty_content_and_no_media_is_skipped(self) -> None:
+        """正文与附件都为空才跳过（放开集合守卫不等于全放行）。"""
+        channel = _make_stub_channel()
+
+        await channel._on_agent_outbound({
+            "channel": "stub_channel",
+            "chat_id": "conv-1",
+            "content": "",
+            "media": [],
+            "metadata": {},
+        })
+
+        assert channel.sent == []

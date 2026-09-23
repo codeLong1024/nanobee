@@ -35,7 +35,7 @@ from aiohttp import web
 from pydantic import BaseModel, Field
 
 from nanobee.channel.base import ChannelPlugin
-from nanobee.channel.message import OutboundMessage
+from nanobee.outbound import OutboundMessage
 
 from nanobee.utils.logger import logger
 
@@ -228,7 +228,10 @@ class HTTPChannelPlugin(ChannelPlugin):
     config_cls = ChannelHttpConfig
 
     display_name = "HTTP API"
-    supports_streaming = True
+
+    # pull 模型：出站响应在 handler 内直接返回，send() 为空实现，
+    # 事件型出站（cron/注入/子代理通知）无法送达 ⇒ 如实声明不可推送。
+    supports_push = False
 
     def __init__(self, metadata: Any = None) -> None:
         super().__init__(metadata)
@@ -290,11 +293,6 @@ class HTTPChannelPlugin(ChannelPlugin):
     async def send(self, message: OutboundMessage, context_id: str = "default") -> None:
         """HTTP 通道不使用 send（响应在 handler 中直接返回）。"""
         logger.debug("HTTP 通道 send() 被调用（无操作）: {}", context_id)
-
-    async def _process_incoming(self, message: Any, context_manager: Any) -> list[OutboundMessage]:
-        """HTTP 通道不使用 _process_incoming（由 handler 直接处理）。"""
-        logger.warning("HTTP 通道 _process_incoming 被调用（不应发生）")
-        return []
 
     # ====== 认证 ======
 

@@ -550,6 +550,23 @@ class ToolCronPlugin(ToolPlugin):
             chat_id = chat_id.split(":", 1)[-1]
         return job.payload.channel, chat_id
 
+    def _channel_can_push(self, channel: str) -> bool:
+        """目标通道能否被主动推送（声明式能力，见 ``ChannelPlugin.supports_push``）。
+
+        通道未加载 / 查询不到时按现状视为可以（返回 True）——把语义变化
+        严格限制在"已知且明确声明不可推送"这一种情形。
+        """
+        manager = getattr(self.kernel, "plugin_manager", None)
+        if manager is None:
+            return True
+        getter = getattr(manager, "get", None)
+        if not callable(getter):
+            return True
+        plugin = getter(channel)
+        if plugin is None:
+            return True
+        return bool(getattr(plugin, "supports_push", True))
+
     async def _deliver(
         self,
         job: CronJob,
@@ -575,17 +592,29 @@ class ToolCronPlugin(ToolPlugin):
                 错误通知路径不携带附件；附件投递是否成功不影响返回值语义
                 （返回值只表示正文是否投递成功，附件失败不得触发任务重试）。
 
+        目标通道声明不支持主动推送（``supports_push=False``）时直接判失败
+        （返回 False），由调用方如实上报"结果投递失败"。
+
         Returns:
             是否投递成功（跳过视为成功）
         """
         # 守卫与发布必须使用同一 event_bus 引用，避免"守卫通过但发布目标不可用"的不对称
         loop = self.kernel.agent_loop if self.kernel else None
-        if not content or loop is None or loop.event_bus is None:
+        # 放开纯附件：正文与附件至少一个非空即投递（周报形态 content="" + 单个 MD 附件）
+        if (not content and not media) or loop is None or loop.event_bus is None:
             return True
         target = self._delivery_target(job)
         if target is None:
             return True
         channel, chat_id = target
+        if not self._channel_can_push(channel):
+            # 目标通道是 pull 模型（如 HTTP）：事件型出站无法送达，
+            # 如实判投递失败，避免"静默丢弃却报成功"。
+            logger.warning(
+                "Cron: 任务 {} 目标通道 {} 不支持主动推送，结果未送达",
+                job.id, channel,
+            )
+            return False
         metadata = dict(job.payload.channel_meta or {})
         if severity == "error":
             metadata.update({

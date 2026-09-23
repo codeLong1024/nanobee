@@ -16,7 +16,7 @@ import mimetypes
 import time
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Sequence
 
 import httpx
 
@@ -65,6 +65,13 @@ class DingTalkSender:
     # Cap for _streamed_chats to prevent unbounded memory growth
     _STREAMED_CHAT_MAX = 5000
 
+    # 媒体读取安全策略的类级缺省值（实例级由 set_media_policy 覆盖）。
+    # 放在类上而非 __init__ 里，保证任何装配方式（含测试影子装配）都不会
+    # 因漏初始化属性而静默改变策略。
+    _media_max_bytes: int | None = None
+    _media_local_roots: tuple[str, ...] = ()
+    _media_allow_media: bool = True
+
     def __init__(
         self,
         config: Any,
@@ -101,8 +108,34 @@ class DingTalkSender:
         if card_manager is not None:
             self._card_manager = card_manager
 
+    def set_media_policy(
+        self,
+        *,
+        max_bytes: int | None = None,
+        local_roots: Sequence[str] | None = None,
+        allow_media: bool = True,
+    ) -> None:
+        """注入媒体读取安全策略（由通道插件按 DingTalkConfig 调用）。
+
+        Args:
+            max_bytes: 远端与本地共用的体积上限（字节）。
+            local_roots: 本地附件白名单根目录（绝对路径）。空 = 拒绝一切本地读取。
+            allow_media: ``False`` 时本地与远端一律拒绝（``enable_media_upload`` 总开关）。
+        """
+        self._media_max_bytes = max_bytes
+        self._media_local_roots = tuple(str(r) for r in (local_roots or ()))
+        self._media_allow_media = allow_media
+
     async def read_media_bytes(self, media_ref: str, **kwargs: Any) -> tuple[bytes | None, str | None, str | None]:
-        """Read media bytes from URL or local file. Delegates to :func:`media.fetch.read_media_bytes`."""
+        """Read media bytes from URL or local file.
+
+        Delegates to :func:`media.fetch.read_media_bytes`, injecting the channel's
+        media policy (size cap / local roots / total switch) unless the caller
+        overrides it explicitly.
+        """
+        kwargs.setdefault("max_bytes", self._media_max_bytes)
+        kwargs.setdefault("local_roots", self._media_local_roots)
+        kwargs.setdefault("allow_media", self._media_allow_media)
         return await read_media_bytes(self._http, media_ref, self.logger, **kwargs)
 
     def set_token_provider(self, provider: Callable[[], Awaitable[str | None]]) -> None:
@@ -288,8 +321,8 @@ class DingTalkSender:
                 return True
             self.logger.warning("'image url send failed, trying upload fallback: {}'", media_ref)
 
-        # Read and upload media
-        data, filename, content_type = await read_media_bytes(self._http, media_ref, self.logger)
+        # Read and upload media（走 self.read_media_bytes 以带上传安全策略）
+        data, filename, content_type = await self.read_media_bytes(media_ref)
         if not data:
             self.logger.error("'media read failed: {}'", media_ref)
             return False
@@ -344,12 +377,23 @@ class DingTalkSender:
         Each ref is processed by :meth:`_send_media_ref`; failures are logged
         and a fallback text message is sent instead.
 
+        附件投递的**唯一实现**，供全部投递入口（`send()` 五分支与事件路径的
+        `send_via_card`）复用。逐条隔离：单条附件的网络/文件异常只降级为告警 +
+        兜底文案，不中断其余附件、不向调用方上抛——正文与附件是两条独立语义
+        （附件失败不得改变投递结论，也不得触发任务重试）。
+
         Args:
             sender_staff_id: Passed through to _send_batch_message for
                 private chat user ID routing.
         """
         for media_ref in media_refs:
-            ok = await self._send_media_ref(token, chat_id, media_ref, sender_staff_id=sender_staff_id)
+            ok = False
+            try:
+                ok = await self._send_media_ref(token, chat_id, media_ref, sender_staff_id=sender_staff_id)
+            except (httpx.TransportError, OSError):
+                # 传输/文件层异常：附件投递本身可降级，绝不上抛打断正文与其余附件
+                # 预格式化单参数：loguru 无 %-占位，避免与 stdlib logging 规则误判
+                self.logger.exception(f"media send raised ref={media_ref}")
             if ok:
                 continue
             self.logger.error("'media send failed for {}'", media_ref)
@@ -585,20 +629,23 @@ class DingTalkSender:
     async def send_via_card(
         self, token: str, chat_id: str, content: str,
         sender_staff_id: str | None = None,
+        media: list[str] | None = None,
     ) -> bool:
-        """通过 AI Card 一键投递完整内容（创建→打字效果→关闭）。
+        """通过 AI Card 一键投递完整内容（创建→打字效果→关闭），随后投递附件。
 
-        用于子代理结果等异步触发的消息，为 DingTalk 用户提供 Card UI 体验。
-        Card 创建失败或 card_manager 不可用时返回 False，调用方应回退到 markdown。
+        用于子代理结果、cron 结果等异步触发的消息，为 DingTalk 用户提供 Card UI 体验。
+        Card 创建失败或 card_manager 不可用时返回 False，调用方应回退到 markdown
+        （纯附件形态即由此回退路径投递）。
 
         Args:
             token: DingTalk Access Token。
             chat_id: DingTalk 会话 ID（staff_id 或 openConversationId）。
             content: 要投递的 Markdown 内容。
             sender_staff_id: 发送者 staff_id（可选，用于私聊路由，缺失时用 chat_id）。
+            media: 附件引用列表（本地绝对路径或 http(s) URL），可选。
 
         Returns:
-            True 表示 Card 创建并投递成功。
+            True 表示 Card 创建并投递成功（附件失败不影响该结论）。
         """
         if not self._card_manager or not content or not content.strip():
             return False
@@ -617,6 +664,12 @@ class DingTalkSender:
             await self._card_manager.start_streaming(card_id)
             await self._card_manager.stream_content(card_id, content.strip())
             await self._card_manager.finish_streaming(card_id, content.strip())
+            # 附件在卡片终态之后、上下文清理之前投递（附件先发、再清理；
+            # 与 send() 共用唯一实现，逐条失败已在其内部隔离）
+            if media:
+                await self._send_msg_media_refs(
+                    token, chat_id, media, sender_staff_id=sender_staff_id,
+                )
             self._cleanup_chat_context(chat_id)
             return True
         except Exception:
