@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 from collections import OrderedDict
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -681,6 +682,30 @@ def _make_sender():
     return sender
 
 
+def _legacy_handle(
+    plugin: Any,
+    card_id: str,
+    *,
+    msg_id: str = "",
+    chat_id: str = "conv-test",
+):
+    """构造 legacy 交付实现的卡片句柄（turn 级所有权载体，替代裸 card_id 入参）。"""
+    from nanobee.builtin.channel_dingtalk.card_pipeline import (
+        CardHandle,
+        LegacyCardPipeline,
+    )
+
+    pipeline = LegacyCardPipeline(
+        sender=plugin.sender,
+        card_manager=plugin.card_manager,
+        channel_name=plugin.name,
+        logger=plugin.logger,
+    )
+    return CardHandle(
+        card_id=card_id, chat_id=chat_id, msg_id=msg_id, pipeline=pipeline,
+    )
+
+
 class TestOnMessageResponseDelivery:
     """测试 _on_message 的 5 个响应投递分支。
 
@@ -788,7 +813,7 @@ class TestOnMessageResponseDelivery:
             sender_id="u1",
             sender_name="Alice",
             chat_id="conv-test",
-            card_id=None,  # 无 card
+            handle=None,  # 无 card
         )
 
         dingtalk_plugin.sender.send.assert_awaited_once()
@@ -822,7 +847,7 @@ class TestOnMessageResponseDelivery:
             sender_id="u1",
             sender_name="Alice",
             chat_id="conv-test",
-            card_id="card-001",
+            handle=_legacy_handle(dingtalk_plugin, "card-001"),
         )
 
         dingtalk_plugin.sender.send.assert_awaited_once()
@@ -830,6 +855,99 @@ class TestOnMessageResponseDelivery:
         assert call_args.content == "not handled by streaming"
         assert call_args.media == ["file.xlsx"]
         assert call_args.metadata["_card_id"] == "card-001"
+
+    # ---- 兜底 metadata 由交付实现声明（评审 #1：防 legacy/v2 协议串台）----
+
+    class _V2LikePipeline:
+        """实现 CardPipeline 协议的最小 v2 形替身（仅用于 metadata 契约）。"""
+
+        uses_emoji = False
+
+        async def open(self, *args: Any, **kwargs: Any) -> None:
+            return None
+
+        async def stream_delta(self, *args: Any, **kwargs: Any) -> bool:
+            return False
+
+        async def progress(self, *args: Any, **kwargs: Any) -> bool:
+            return False
+
+        async def stream_end(self, *args: Any, **kwargs: Any) -> bool:
+            return False
+
+        async def finish(self, *args: Any, **kwargs: Any) -> bool:
+            return False
+
+        async def fail(self, *args: Any, **kwargs: Any) -> bool:
+            return False
+
+        def is_streaming(self, *args: Any, **kwargs: Any) -> bool:
+            return True
+
+        def fallback_metadata(self, handle: Any) -> dict:
+            return {"msg_id": handle.msg_id}
+
+    @pytest.mark.asyncio
+    async def test_terminal_fallback_metadata_delegates_to_pipeline(
+        self, dingtalk_plugin,
+    ):
+        """v2 兜底：metadata 由 pipeline 声明，不携带 legacy 协议键 _card_id。"""
+        from nanobee.builtin.channel_dingtalk.card_pipeline import CardHandle
+        from nanobee.outbound import OutboundMessage
+
+        dingtalk_plugin.dingtalk_config.streaming = True
+        dingtalk_plugin.sender = _make_sender()
+        response = OutboundMessage(
+            channel="channel_dingtalk", chat_id="conv-test",
+            content="v2 fallback text", media=[],
+        )
+        dingtalk_plugin._kernel.handle_message.return_value = response
+        handle = CardHandle(
+            card_id="card_v2_1", chat_id="conv-test", msg_id="msg-9",
+            pipeline=self._V2LikePipeline(),
+        )
+
+        await dingtalk_plugin._on_message(
+            content="hi", sender_id="u1", sender_name="Alice",
+            chat_id="conv-test", handle=handle,
+        )
+
+        dingtalk_plugin.sender.send.assert_awaited_once()
+        call_args = dingtalk_plugin.sender.send.await_args[0][0]
+        assert call_args.metadata == {"msg_id": "msg-9"}
+        assert "_card_id" not in call_args.metadata
+
+    @pytest.mark.asyncio
+    async def test_media_delivery_metadata_delegates_to_pipeline(
+        self, dingtalk_plugin,
+    ):
+        """媒体投递：metadata 同样由 pipeline 声明（v2 不串 legacy 卡原语）。"""
+        from nanobee.builtin.channel_dingtalk.card_pipeline import CardHandle
+        from nanobee.outbound import OutboundMessage
+
+        dingtalk_plugin.dingtalk_config.streaming = True
+        dingtalk_plugin.sender = _make_sender()
+        response = OutboundMessage(
+            channel="channel_dingtalk", chat_id="conv-test",
+            content="v2 done", media=["doc.pdf"],
+        )
+        dingtalk_plugin._kernel.handle_message.return_value = response
+        handle = CardHandle(
+            card_id="card_v2_2", chat_id="conv-test", msg_id="msg-8",
+            pipeline=self._V2LikePipeline(),
+        )
+
+        # 替身 finish 返回 True → 正常完成分支 → _send_media
+        await dingtalk_plugin._on_message(
+            content="hi", sender_id="u1", sender_name="Alice",
+            chat_id="conv-test", handle=handle,
+        )
+
+        dingtalk_plugin.sender.send.assert_awaited_once()
+        call_args = dingtalk_plugin.sender.send.await_args[0][0]
+        assert call_args.media == ["doc.pdf"]
+        assert call_args.metadata == {"msg_id": "msg-8"}
+        assert "_card_id" not in call_args.metadata
 
     # ---- Branch B: streaming + card_id + handled + normal ----
 
@@ -857,7 +975,7 @@ class TestOnMessageResponseDelivery:
             sender_id="u1",
             sender_name="Alice",
             chat_id="conv-test",
-            card_id="card-002",
+            handle=_legacy_handle(dingtalk_plugin, "card-002"),
         )
 
         # 正常完成不应调用 finalize_card_with_notification
@@ -892,7 +1010,7 @@ class TestOnMessageResponseDelivery:
             sender_id="u1",
             sender_name="Alice",
             chat_id="conv-test",
-            card_id="card-003",
+            handle=_legacy_handle(dingtalk_plugin, "card-003"),
         )
 
         dingtalk_plugin.sender.send.assert_not_called()
@@ -925,8 +1043,7 @@ class TestOnMessageResponseDelivery:
             sender_id="u1",
             sender_name="Alice",
             chat_id="conv-test",
-            card_id="card-004",
-            msg_id="msg-004",
+            handle=_legacy_handle(dingtalk_plugin, "card-004", msg_id="msg-004"),
         )
 
         dingtalk_plugin.sender.finalize_card_with_notification.assert_awaited_once_with(
@@ -968,8 +1085,9 @@ class TestOnMessageResponseDelivery:
             sender_id="u1",
             sender_name="Alice",
             chat_id="conv-test",
-            card_id="card-err-001",
-            msg_id="msg-err-001",
+            handle=_legacy_handle(
+                dingtalk_plugin, "card-err-001", msg_id="msg-err-001",
+            ),
         )
 
         dingtalk_plugin.card_manager.fail_card.assert_awaited_once_with(
@@ -1001,7 +1119,7 @@ class TestOnMessageResponseDelivery:
             sender_id="u1",
             sender_name="Alice",
             chat_id="conv-test",
-            card_id=None,
+            handle=None,
         )
 
         dingtalk_plugin.sender.send.assert_awaited_once()
@@ -1033,8 +1151,9 @@ class TestOnMessageResponseDelivery:
             sender_id="u1",
             sender_name="Alice",
             chat_id="conv-test",
-            card_id="card-info-001",
-            msg_id="msg-info-001",
+            handle=_legacy_handle(
+                dingtalk_plugin, "card-info-001", msg_id="msg-info-001",
+            ),
         )
 
         dingtalk_plugin.sender.finalize_card_with_notification.assert_awaited_once_with(

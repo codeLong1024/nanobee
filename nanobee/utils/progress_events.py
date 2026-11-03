@@ -56,8 +56,41 @@ def build_tool_event_start_payload(tool_call: Any) -> dict[str, Any]:
         "call_id": str(getattr(tool_call, "id", "") or ""),
         "name": getattr(tool_call, "name", ""),
         "arguments": getattr(tool_call, "arguments", {}) or {},
+        "detail": "",
         "result": None,
         "error": None,
+        "files": [],
+        "embeds": [],
+    }
+
+
+def build_tool_event_end_payload(
+    tool_call: Any, event: dict[str, Any],
+) -> dict[str, Any]:
+    """构造工具结束进度事件（phase=end/error）。
+
+    与 :func:`build_tool_event_start_payload` 字段对称；工具结果不跨层传递
+    （可能达数十 KB），摘要走 ``detail``。``files``/``embeds`` 恒为空列表:
+    进度事件只承载「步骤状态」，不承载产物清单。
+
+    Args:
+        tool_call: 工具调用请求（提供 id/name/arguments）。
+        event: 工具流水线产出的执行事件（含 ``status``/``detail``）。
+
+    Returns:
+        进度事件载荷（``phase`` 由 ``event["status"]`` 推导）。
+    """
+    phase = "end" if event.get("status") == "ok" else "error"
+    detail = str(event.get("detail", "") or "")
+    return {
+        "version": 1,
+        "phase": phase,
+        "call_id": str(getattr(tool_call, "id", "") or ""),
+        "name": getattr(tool_call, "name", ""),
+        "arguments": getattr(tool_call, "arguments", {}) or {},
+        "detail": detail,
+        "result": None,
+        "error": None if phase == "end" else detail,
         "files": [],
         "embeds": [],
     }

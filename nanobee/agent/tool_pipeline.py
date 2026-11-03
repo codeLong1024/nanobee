@@ -26,6 +26,7 @@ from nanobee.utils.file_edit_events import (
 )
 from nanobee.utils.logger import logger
 from nanobee.utils.progress_events import (
+    build_tool_event_end_payload,
     build_tool_event_start_payload,
     invoke_file_edit_progress,
     invoke_on_progress,
@@ -169,9 +170,14 @@ class ToolPipeline:
         await self._notify_tool_start(spec, tool_call)
 
         # 核心执行 + 统一错误处理
-        return await self._execute_core_and_handle(
+        result_str, event, fatal = await self._execute_core_and_handle(
             spec, tool_call, tool, params, fe_tracker, workspace_violation_counts,
         )
+
+        # 通知通道：工具执行结束（与 start 对称；守卫拦截路径未发 start，故也不发 end）
+        await self._notify_tool_end(spec, tool_call, event)
+
+        return result_str, event, fatal
 
     # =========================================================================
     # 日志关联键
@@ -482,9 +488,12 @@ class ToolPipeline:
 
     @staticmethod
     async def _notify_tool_start(spec: AgentRunSpec, tool_call: ToolCallRequest) -> None:
-        """通知通道工具开始执行（触发视觉反馈）。"""
-        # message 是 LLM 输出投递载体，非真正工具，无需通知通道触发视觉反馈
-        if tool_call.name == "message":
+        """通知通道工具开始执行（触发视觉反馈）。
+
+        免通知工具名由 ``spec.silent_progress_tools`` 注入（调用方策略），
+        工具流水线只读该集合，不硬编码任何工具名。
+        """
+        if tool_call.name in spec.silent_progress_tools:
             return
         if spec.progress_callback is not None:
             await invoke_on_progress(
@@ -492,6 +501,32 @@ class ToolPipeline:
                 tool_hint=True,
                 tool_events=[build_tool_event_start_payload(tool_call)],
             )
+
+    @staticmethod
+    async def _notify_tool_end(
+        spec: AgentRunSpec,
+        tool_call: ToolCallRequest,
+        event: dict[str, Any],
+    ) -> None:
+        """通知通道工具执行结束（phase=end/error）。
+
+        与 ``_notify_tool_start`` 严格对称：同样跳过免通知工具、同样仅在配置了
+        ``progress_callback`` 时发送。通道（如钉钉进度卡）按 ``call_id`` 关联
+        同一步骤行，把「执行中」原地更新为「已完成/失败」。
+
+        payload 由 ``progress_events.build_tool_event_end_payload`` 构造（唯一
+        真值来源）；``tool_hint=False``——该标记只表达「新工具开始」，结束事件
+        不得复用（否则通道会把表情回设为已结束的工具名）。
+        """
+        if tool_call.name in spec.silent_progress_tools:
+            return
+        if spec.progress_callback is None:
+            return
+        await invoke_on_progress(
+            spec.progress_callback, "",
+            tool_hint=False,
+            tool_events=[build_tool_event_end_payload(tool_call, event)],
+        )
 
     # =========================================================================
     # 事件构建

@@ -183,6 +183,16 @@ channels:
     #   - "extra_media"        # 相对 data_dir
     # 注：enable_chunk_upload / chunk_size_kb 尚未接线（分片上传已实现，
     #     阈值/块大小当前是代码内常量）
+    # ==== v2 结构化进度卡（Codex 式工具进度观察）====
+    # 卡片渲染模式："legacy"=旧 AI 卡片（单 markdown 正文，默认）；
+    # "v2"=官方 v2 结构化模板（blockList）：工具步骤逐条打勾、
+    # 打字机正文、状态行（agent/工具数/耗时/状态）。出问题切回 legacy。
+    # card_render_mode: "v2"
+    # v2 模板 ID（默认官方公共模板，应用可直接使用；如无权限需导入
+    # 官方仓库 dingtalk-aicard 的 card-template-v2.json 后指定自有模板）
+    # card_template_id: "675cde2f-f526-40cb-b828-f5b2b57b8b77.schema"
+    # 是否展示状态行
+    # card_show_metadata: true
   channel_http:
     enabled: false
     # 监听地址（默认 127.0.0.1，建议保持默认仅本地访问）

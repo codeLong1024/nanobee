@@ -55,5 +55,16 @@ class DingTalkConfig(BaseModel):
     # 首帧始终立即推送。0 = 逐 delta 推送（旧行为，用于回退）。
     stream_push_min_interval: float = 1.0
 
+    # ============ v2 结构化进度卡配置 ============
+    # 卡片渲染模式："legacy"=旧 AI 卡片（单 markdown 正文）；
+    # "v2"=官方 v2 结构化模板（blockList），支持工具步骤/状态行/打字机正文。
+    # legacy 路径零改动，v2 出问题随时切回。
+    card_render_mode: str = "legacy"
+    # v2 模板 ID（默认官方公共模板；如应用无权限使用公共模板，需导入
+    # 官方仓库 docs/assets/card-template-v2.json 后指定自有模板）
+    card_template_id: str = "675cde2f-f526-40cb-b828-f5b2b57b8b77.schema"
+    # 是否在卡片上展示状态行（agent/工具数/耗时/状态）
+    card_show_metadata: bool = True
+
     # ============ 消息标题配置 ============
     markdown_title: str = "智能体回复"

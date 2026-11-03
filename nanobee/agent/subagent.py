@@ -18,6 +18,7 @@ from typing import Any, Callable
 
 from nanobee.agent.hook import AgentHook, AgentHookContext
 from nanobee.agent.runner import AgentRunner, AgentRunSpec
+from nanobee.agent.specs import SILENT_PROGRESS_TOOLS
 from nanobee.agent.tools.registry import ToolRegistry
 from nanobee.config.schema import AgentDefaults, ToolsConfig
 from nanobee.kernel.context_sandbox_var import bind_sandbox, reset_sandbox
@@ -390,6 +391,7 @@ class SubagentManager:
                     context_id=ctx_id,
                     workspace=root,
                     llm_timeout_s=llm_timeout,
+                    silent_progress_tools=SILENT_PROGRESS_TOOLS,
                 ))
             finally:
                 reset_sandbox(sandbox_token)

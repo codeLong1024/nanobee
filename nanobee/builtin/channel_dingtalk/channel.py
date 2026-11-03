@@ -25,11 +25,13 @@ from .auth import (
 )
 from .card_client import DingTalkCardClient
 from .card_manager import CardManager
+from .card_pipeline import CardHandle, CardPipeline, FinishMode, LegacyCardPipeline
 from .config import DingTalkConfig
 from .media.download import get_download_root
 from .message import NanobeeDingTalkHandler
 from .rate_limiter import RateLimiter
 from .sender import DingTalkSender
+from .v2_card_session import V2CardPipeline
 
 from nanobee.utils.logger import logger
 
@@ -52,7 +54,8 @@ class DingTalkChannelPlugin(ChannelPlugin):
         # Rate limiter
         self.rate_limiter = RateLimiter(max_qps=20)
 
-        # Card manager + card client (lazy — init in start())
+        # 卡片交付实现（legacy / v2；start() 按配置构造一次，运行期零模式判断）
+        self.card_pipeline: CardPipeline | None = None
         self.card_client: DingTalkCardClient | None = None
         self.card_manager: CardManager | None = None
 
@@ -178,6 +181,26 @@ class DingTalkChannelPlugin(ChannelPlugin):
         )
         self.card_manager = CardManager(self.card_client)
 
+        # 卡片交付实现：构造期一次选择（运行期不再有任何模式判断）
+        if self.dingtalk_config.card_render_mode == "v2":
+            self.card_pipeline = V2CardPipeline(
+                self.card_client,
+                push_interval=self.dingtalk_config.stream_push_min_interval,
+                template_id=self.dingtalk_config.card_template_id,
+                agent_name=self.metadata.name,
+                model="",  # 模型名由内核注入进度事件前不可得，留空省略展示
+                show_metadata=self.dingtalk_config.card_show_metadata,
+                rate_limiter=self.rate_limiter,
+            )
+            self.logger.info("[V2CARD] 结构化进度卡模式已启用")
+        else:
+            self.card_pipeline = LegacyCardPipeline(
+                sender=self.sender,
+                card_manager=self.card_manager,
+                channel_name=self.name,
+                logger=self.logger,
+            )
+
         # 把 card_manager 回写给 sender
         self.sender.setup(self._http, self.card_manager)
 
@@ -281,14 +304,18 @@ class DingTalkChannelPlugin(ChannelPlugin):
         sender_staff_id: str | None = None,
         is_dm: bool = False,
         session_key: str | None = None,
-        card_id: str | None = None,
+        handle: CardHandle | None = None,
         msg_id: str | None = None,
     ) -> None:
         """处理入站消息 — 路由到 nanobee 内核并投递响应。
 
         消息处理分为两步：
         1. 调用内核 handle_message（流式/非流式两种模式）
-        2. 将响应投递到钉钉通道（5 种分支场景）
+        2. 将响应经卡片交付实现投递（终态 / markdown 兜底 + media）
+
+        ``handle`` 是本次 turn 的卡片所有权句柄（由 ``_handle_message`` 开卡
+        得到），随回调闭包流动——不使用任何全局键查找，因此并发消息之间不会
+        互相覆盖卡片。
         """
         try:
             self.logger.info("inbound: {} from {}", content, sender_name)
@@ -306,9 +333,9 @@ class DingTalkChannelPlugin(ChannelPlugin):
                 response = await self.kernel.handle_message(
                     str(content), context_id,
                     channel=self.metadata.name,
-                    on_stream=self._make_stream_callback(chat_id, card_id=card_id, msg_id=msg_id),
-                    on_stream_end=self._make_stream_end_callback(chat_id, card_id=card_id, msg_id=msg_id),
-                    on_progress=self._make_progress_callback(chat_id, msg_id=msg_id),
+                    on_stream=self._make_stream_callback(handle),
+                    on_stream_end=self._make_stream_end_callback(handle),
+                    on_progress=self._make_progress_callback(handle),
                     sender_id=sender_id,
                     session_id=f"dingtalk:{chat_id}",
                     metadata={
@@ -323,7 +350,7 @@ class DingTalkChannelPlugin(ChannelPlugin):
                 response = await self.kernel.handle_message(
                     str(content), context_id,
                     channel=self.metadata.name,
-                    on_progress=self._make_progress_callback(chat_id, msg_id=msg_id),
+                    on_progress=self._make_progress_callback(handle),
                     sender_id=sender_id,
                     session_id=f"dingtalk:{chat_id}",
                     metadata={
@@ -336,161 +363,90 @@ class DingTalkChannelPlugin(ChannelPlugin):
                 )
 
             # 2. 投递响应
-            await self._deliver_response(response, chat_id, card_id, msg_id, use_streaming, media)
+            await self._deliver_response(response, handle, chat_id, use_streaming, media)
         except Exception:
             self.logger.exception("Error processing DingTalk message")
-            await self._fail_pending_card(card_id)
+            await self._fail_pending_card(handle)
 
     # ------------------------------------------------------------------
     # 响应投递 — 5 种分支场景
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _build_resp_metadata(card_id: str | None, msg_id: str | None) -> dict[str, str]:
-        """构造响应 metadata，嵌入 card_id 和 msg_id 供 sender 使用。"""
-        metadata: dict[str, str] = {}
-        if card_id:
-            metadata["_card_id"] = card_id
-        if msg_id:
-            metadata["msg_id"] = msg_id
-        return metadata
-
     async def _deliver_response(
         self,
         response: Any,
+        handle: CardHandle | None,
         chat_id: str,
-        card_id: str | None,
-        msg_id: str | None,
         use_streaming: bool,
         media: list[str] | None,
     ) -> None:
-        """投递内核响应到钉钉通道。
+        """投递内核响应 —— 出口分支语义的唯一判定点。
 
-        6 种场景，用 guard clause 扁平化处理：
-        S) 系统通知（命令响应 / 错误通知）→ _deliver_system_notification（不走卡片流式）
-        E) 非流式 → sender.send(content + media)
-        D) 流式 + 无 card → markdown fallback sender.send
-        C) 流式 + card + 未被流式处理 → sender.send(content + media)
-        A) 流式 + card + 已处理 + max_iterations → finalize_card + media
-        B) 流式 + card + 已处理 + 正常完成 → 仅 media（内容已在流式中送达）
+        分支语义（legacy 与 v2 完全一致，各实现只负责映射到自己的卡片原语）：
+        S) 系统通知：error → 失败终态；info/warning → 终态追加通知
+        E) 非流式 → markdown
+        D) 流式但无卡片 → markdown
+        C) 卡片未经流式处理（终态化会得到空卡）→ markdown
+        A) max_iterations → 终态追加通知 + media
+        B) 正常完成 → 终态（正文已由流式送达）+ media
+
+        卡片侧返回 False 时统一回落 markdown，避免内容丢失。
         """
         if not response or not self.sender:
             return
-
-        # 系统通知（命令响应 / 错误通知）：不走 LLM 卡片流式路径。
-        # 错误场景在 4.3 提前返回，卡片从 INPUTING 直接被 fail_card 拉到 FAILED，
-        # 不再触发 _stream_end 的空卡片终态化。
-        resp_metadata = getattr(response, "metadata", {}) or {}
-        if resp_metadata.get("notification_type") == "system":
-            await self._deliver_system_notification(
-                response, chat_id, card_id, msg_id, resp_metadata,
-            )
-            return
-
-        content_reply = str(response.content or "")
+        resp_meta = getattr(response, "metadata", {}) or {}
+        content = str(response.content or "")
         outbound_media = getattr(response, "media", []) or media or []
-        resp_metadata = self._build_resp_metadata(card_id, msg_id)
+        # 兜底 metadata 由交付实现声明（卡片协议键如 legacy 的 _card_id 不跨实现传递）
+        resp_metadata = handle.pipeline.fallback_metadata(handle) if handle else {}
 
-        # Branch E: 非流式
-        if not use_streaming:
+        # S) 系统通知（命令响应 / 错误通知）：不走 LLM 卡片流式路径
+        if resp_meta.get("notification_type") == "system":
+            delivered = False
+            if handle is not None:
+                if resp_meta.get("severity", "info") == "error":
+                    delivered = await handle.pipeline.fail(handle, content)
+                else:
+                    delivered = await handle.pipeline.finish(
+                        handle, content=content, mode="append",
+                    )
+            if delivered:
+                return
             await self._deliver_text_response(
-                chat_id, content_reply, outbound_media, resp_metadata,
-                branch_label="non-streaming",
+                chat_id, content, outbound_media, resp_metadata,
+                branch_label="system-notification-markdown",
             )
             return
 
-        # Branch D: 流式但无 card_id
-        if not card_id:
+        # E/D) 非流式或没有卡片可用 → markdown 直发
+        if not use_streaming or handle is None:
             await self._deliver_text_response(
-                chat_id, content_reply, outbound_media, resp_metadata,
-                branch_label="markdown-fallback",
+                chat_id, content, outbound_media, resp_metadata,
+                branch_label="non-streaming" if not use_streaming else "markdown-fallback",
             )
             return
 
-        # Branch C: 流式 + card 未被流式处理
-        if not self.sender.is_card_handled_by_streaming(card_id):
+        # C) 卡片未经流式处理：终态化只会得到空卡，回落 markdown
+        if not handle.pipeline.is_streaming(handle):
             await self._deliver_text_response(
-                chat_id, content_reply, outbound_media, resp_metadata,
+                chat_id, content, outbound_media, resp_metadata,
                 branch_label="unhandled-card",
             )
             return
 
-        # Branch A/B: 流式 + card 已被流式处理，按 exit_reason 分流
-        exit_reason = (getattr(response, "metadata", {}) or {}).get("exit_reason")
-        if exit_reason == "max_iterations":
-            await self._deliver_max_iterations(card_id, chat_id, msg_id, content_reply, outbound_media)
-        else:
-            await self._deliver_normal_completion(card_id, chat_id, outbound_media)
-
-    async def _deliver_system_notification(
-        self, response: Any, chat_id: str, card_id: str | None,
-        msg_id: str | None, meta: dict[str, Any],
-    ) -> None:
-        """投递系统通知（命令响应 / 错误通知），不走 LLM 卡片流式路径。
-
-        - error 场景：卡片 FAILED + 非空文案，不残留空 FINISHED 卡片。
-        - info/warning 场景（如 /new /stop）：卡片若有流式内容则终态化，否则 markdown。
-
-        Args:
-            response: 系统通知 OutboundMessage（含 content / media / metadata）。
-            chat_id: 会话 ID。
-            card_id: 已创建的 AI Card 实例 ID（可能为 None）。
-            msg_id: 消息唯一 ID（用于卡片终态化与情感表情跟踪）。
-            meta: 系统通知 metadata（含 severity 等）。
-        """
-        severity = meta.get("severity", "info")
-        content = str(response.content or "")
-        outbound_media = getattr(response, "media", []) or []
-        resp_metadata = self._build_resp_metadata(card_id, msg_id)
-
-        if card_id and severity == "error":
-            # 错误完结的唯一出口：fail_card（用流式 isError 语义终态化）。
-            # 若卡片已通过流式推过部分内容（工具执行出错等中途失败），
-            # 保留半截进度，追加失败提示；否则仅展示失败文案。
-            # 错误不再经 on_stream_end 流式链路表达，避免双路径二次终态化。
-            if self.card_manager:
-                error_text = content
-                if self.sender is not None:
-                    partial = self.sender.take_stream_buffer(card_id)
-                    if partial.strip():
-                        error_text = f"{partial.strip()}\n\n---\n⚠️ {content}"
-                logger.debug(
-                    "'[CARD-DEBUG] error notification card={} error_text={!r}'",
-                    card_id, error_text[:200],
-                )
-                delivered = await self.card_manager.fail_card(card_id, error_text)
-                if not delivered:
-                    # fail_card 两步均失败：卡片无法渲染，回落 markdown 兜底，
-                    # 避免卡片永久停在 INPUTING 且用户看不到任何错误提示。
-                    await self._deliver_text_response(
-                        chat_id, content, outbound_media, resp_metadata,
-                        branch_label="system-error-fallback",
-                    )
-            else:
-                await self._deliver_text_response(
-                    chat_id, content, outbound_media, resp_metadata,
-                    branch_label="system-error-fallback",
-                )
-            return
-
-        if card_id:
-            # info/warning 通知：卡片若有流式内容则终态化，否则 markdown 兜底
-            if self.sender.is_card_handled_by_streaming(card_id):
-                await self.sender.finalize_card_with_notification(
-                    card_id, msg_id or chat_id, content,
-                )
-            else:
-                await self._deliver_text_response(
-                    chat_id, content, outbound_media, resp_metadata,
-                    branch_label="system-notification-markdown",
-                )
-            return
-
-        # 无卡片：直接 markdown
-        await self._deliver_text_response(
-            chat_id, content, outbound_media, resp_metadata,
-            branch_label="system-notification-markdown",
+        # A/B) 卡片终态：max_iterations 追加通知，其余为正常完成
+        exit_reason = resp_meta.get("exit_reason")
+        finish_mode: FinishMode = "append" if exit_reason == "max_iterations" else "complete"
+        delivered = await handle.pipeline.finish(
+            handle, content=content, mode=finish_mode,
         )
+        if not delivered:
+            await self._deliver_text_response(
+                chat_id, content, outbound_media, resp_metadata,
+                branch_label="terminal-fallback",
+            )
+            return
+        await self._send_media(handle, outbound_media)
 
     async def _deliver_text_response(
         self, chat_id: str, content_reply: str, outbound_media: list[str],
@@ -514,53 +470,32 @@ class DingTalkChannelPlugin(ChannelPlugin):
             metadata=resp_metadata, media=outbound_media,
         ))
 
-    async def _deliver_normal_completion(
-        self, card_id: str, chat_id: str, outbound_media: list[str],
-    ) -> None:
-        """Branch B: 流式正常完成，内容已通过 card 送达，仅投递 media。"""
-        self.logger.debug(
-            "[STREAM] Card {} handled by streaming, skipping duplicate send "
-            "(chat={})", card_id, chat_id)
-        if outbound_media:
-            await self._send_media(card_id, chat_id, outbound_media)
-
-    async def _deliver_max_iterations(
-        self, card_id: str, chat_id: str, msg_id: str | None,
-        content_reply: str, outbound_media: list[str],
-    ) -> None:
-        """Branch A: 流式被 max_iterations 打断，在卡片上追加通知并投递 media。"""
-        self.logger.debug(
-            "[STREAM] Card {} truncated by max_iterations, appending notification "
-            "(chat={})", card_id, chat_id)
-        await self.sender.finalize_card_with_notification(
-            card_id, msg_id or chat_id, content_reply,
-        )
-        if outbound_media:
-            await self._send_media(card_id, chat_id, outbound_media)
-
     async def _send_media(
-        self, card_id: str, chat_id: str, outbound_media: list[str],
+        self, handle: CardHandle, outbound_media: list[str],
     ) -> None:
-        """投递媒体附件到指定 card。"""
+        """投递媒体附件（复用既有 sender 出站通道，正文为空仅带附件）。"""
+        if not outbound_media:
+            return
         await self.sender.send(SimpleNamespace(
-            channel=self.name, chat_id=chat_id,
-            content="", metadata={"_card_id": card_id},
+            channel=self.name, chat_id=handle.chat_id,
+            content="", metadata=handle.pipeline.fallback_metadata(handle),
             media=outbound_media,
         ))
 
-    async def _fail_pending_card(self, card_id: str | None = None) -> None:
-        """出错时清理挂起的 AI Card，避免永久 INPUTING。
+    async def _fail_pending_card(self, handle: CardHandle | None) -> None:
+        """出错时清理挂起的卡片，避免卡片永久停在「生成中」。
 
-        card_id 由 message.py 直接传入，无需共享 dict。
+        统一走交付实现的 ``fail``（协议保证错误文案在卡片上可见）。
         """
-        if card_id and self.card_manager:
-            try:
-                await self.card_manager.fail_card(card_id, "Internal processing error")
-            except Exception:
-                pass
+        if handle is None:
+            return
+        try:
+            await handle.pipeline.fail(handle, "Internal processing error")
+        except Exception:
+            self.logger.exception("[CARD] 失败终态推送异常 card={}", handle.card_id)
 
-    def _make_progress_callback(self, chat_id: str, *, msg_id: str | None = None) -> Any:
-        """创建进度回调：当工具开始执行时更新 DingTalk emotion 显示工具名。
+    def _make_progress_callback(self, handle: CardHandle | None) -> Any:
+        """创建进度回调：把工具进度事件转交卡片交付实现。
 
         返回的闭包签名与 ``on_progress`` 兼容：
         async (delta: str, *, tool_hint: bool = False, tool_events=None) -> None
@@ -570,59 +505,28 @@ class DingTalkChannelPlugin(ChannelPlugin):
             tool_hint: bool = False,
             tool_events: list[dict] | None = None,
         ) -> None:
-            if tool_hint and self.sender and tool_events:
-                for event in tool_events:
-                    tool_name = event.get("name", "")
-                    if tool_name:
-                        # 显示工具名称细节（如 "🔧list_dir"），
-                        # 不走标准 state 查找，直接作为原始 emotion 名称
-                        lookup_id = msg_id or chat_id
-                        await self.sender._trigger_emotion(
-                            lookup_id, f"🔧{tool_name}",
-                        )
-                        break
+            if handle is None or not tool_events:
+                return
+            await handle.pipeline.progress(handle, tool_events)
         return _on_progress
 
-    def _make_stream_callback(
-        self, chat_id: str, *, card_id: str | None = None, msg_id: str | None = None,
-    ) -> Any:
-        """创建流式回调：LLM 每段 text delta → DingTalk AI Card 增量更新。
+    def _make_stream_callback(self, handle: CardHandle | None) -> Any:
+        """创建流式回调：LLM 每段 text delta → 卡片交付实现。
 
-        card_id 通过闭包嵌入 metadata，sender 直接使用，无需查共享 dict。
+        handle 随闭包携带，交付实现直接使用——无需任何全局键查找。
         """
         async def _on_stream(delta: str) -> None:
-            if self.sender and delta:
-                metadata: dict[str, Any] = {"_stream_delta": True}
-                if card_id:
-                    metadata["_card_id"] = card_id
-                if msg_id:
-                    metadata["msg_id"] = msg_id
-                await self.sender.send(SimpleNamespace(
-                    channel=self.name, chat_id=chat_id,
-                    content=delta, media=(),
-                    metadata=metadata,
-                ))
+            if handle is None or not delta:
+                return
+            await handle.pipeline.stream_delta(handle, delta)
         return _on_stream
 
-    def _make_stream_end_callback(
-        self, chat_id: str, *, card_id: str | None = None, msg_id: str | None = None,
-    ) -> Any:
-        """创建流结束回调：通知 sender 流暂停（工具调用）或流结束。
-
-        card_id 通过闭包嵌入 metadata，sender 直接使用。
-        """
+    def _make_stream_end_callback(self, handle: CardHandle | None) -> Any:
+        """创建流结束回调：通知交付实现流暂停（工具调用）或流结束。"""
         async def _on_stream_end(*, resuming: bool) -> None:
-            if self.sender:
-                metadata: dict[str, Any] = {"_stream_end": True, "_resuming": resuming}
-                if card_id:
-                    metadata["_card_id"] = card_id
-                if msg_id:
-                    metadata["msg_id"] = msg_id
-                await self.sender.send(SimpleNamespace(
-                    channel=self.name, chat_id=chat_id,
-                    content="", media=(),
-                    metadata=metadata,
-                ))
+            if handle is None:
+                return
+            await handle.pipeline.stream_end(handle, resuming=resuming)
         return _on_stream_end
 
     def _get_robot_code(self) -> str:

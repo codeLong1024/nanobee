@@ -1,0 +1,169 @@
+[
+  {
+    "version": "v1.0",
+    "createSurface": {
+      "surfaceId": "nanobee-progress-demo",
+      "catalogId": "https://dingtalk.com/card/a2ui/catalogs/public/catalog.json"
+    }
+  },
+  {
+    "version": "v1.0",
+    "updateDataModel": {
+      "surfaceId": "nanobee-progress-demo",
+      "path": "/",
+      "value": {
+        "answer": {
+          "text": "正在分析季度数据，请稍候…"
+        },
+        "tools": {
+          "db_text": "正在执行 SQL：按月份聚合 128 行销售记录"
+        }
+      }
+    }
+  },
+  {
+    "version": "v1.0",
+    "updateComponents": {
+      "surfaceId": "nanobee-progress-demo",
+      "components": [
+        {
+          "id": "root",
+          "component": "Column",
+          "children": ["executionPanel", "answer"]
+        },
+        {
+          "id": "executionPanel",
+          "component": "CollapsiblePanel",
+          "title": "正在处理请求",
+          "variant": "reasoning",
+          "defaultExpanded": false,
+          "children": ["executionTimeline"],
+          "fallbackMarkdown": "执行步骤",
+          "textEffect": "shimmer"
+        },
+        {
+          "id": "executionTimeline",
+          "component": "Column",
+          "children": ["step1", "step2", "toolGroup_db"]
+        },
+        {
+          "id": "step1",
+          "component": "Text",
+          "text": "读取文件 report.md · 已完成",
+          "maxLine": 2
+        },
+        {
+          "id": "step2",
+          "component": "Text",
+          "text": "查询数据库 ebsql · 执行中",
+          "maxLine": 2
+        },
+        {
+          "id": "toolGroup_db",
+          "component": "CollapsiblePanel",
+          "title": "查询详情",
+          "defaultExpanded": false,
+          "children": ["toolRow_db"],
+          "fallbackMarkdown": "工具调用详情"
+        },
+        {
+          "id": "toolRow_db",
+          "component": "Row",
+          "children": ["toolIcon_db", "toolText_db"]
+        },
+        {
+          "id": "toolIcon_db",
+          "component": "Icon",
+          "name": "CodeProgram_L_outlined",
+          "colorToken": "common_level2_base_color"
+        },
+        {
+          "id": "toolText_db",
+          "component": "Text",
+          "text": { "path": "/tools/db_text" },
+          "maxLine": 2,
+          "weight": 1
+        },
+        {
+          "id": "answer",
+          "component": "Markdown",
+          "content": { "path": "/answer/text" }
+        }
+      ]
+    }
+  },
+  {
+    "version": "v1.0",
+    "updateComponents": {
+      "surfaceId": "nanobee-progress-demo",
+      "components": [
+        {
+          "id": "executionTimeline",
+          "component": "Column",
+          "children": ["step1", "step2", "step3", "toolGroup_db"]
+        },
+        {
+          "id": "step2",
+          "component": "Text",
+          "text": "查询数据库 ebsql · 已完成",
+          "maxLine": 2
+        },
+        {
+          "id": "step3",
+          "component": "Text",
+          "text": "生成汇总图表 · 已完成",
+          "maxLine": 2
+        }
+      ]
+    }
+  },
+  {
+    "version": "v1.0",
+    "updateDataModel": {
+      "surfaceId": "nanobee-progress-demo",
+      "path": "/tools/db_text",
+      "value": "SQL 完成：返回 128 行，按月份聚合耗时 0.4s"
+    }
+  },
+  {
+    "version": "v1.0",
+    "updateDataModel": {
+      "surfaceId": "nanobee-progress-demo",
+      "path": "/answer/text",
+      "value": "数据库查询返回 128 行记录，已按月份聚合。\n\n汇总结论：\n- 一季度同比增长 12%\n- 库存周转天数下降 3 天"
+    }
+  },
+  {
+    "version": "v1.0",
+    "updateComponents": {
+      "surfaceId": "nanobee-progress-demo",
+      "components": [
+        {
+          "id": "executionPanel",
+          "component": "CollapsiblePanel",
+          "title": "执行完成",
+          "variant": "reasoning",
+          "defaultExpanded": false,
+          "children": ["executionTimeline"],
+          "fallbackMarkdown": "执行步骤"
+        },
+        {
+          "id": "toolGroup_db",
+          "component": "CollapsiblePanel",
+          "title": "查询完成",
+          "defaultExpanded": false,
+          "children": ["toolRow_db"],
+          "fallbackMarkdown": "工具调用详情"
+        }
+      ]
+    }
+  },
+  {
+    "version": "v1.0",
+    "updateDataModel": {
+      "surfaceId": "nanobee-progress-demo",
+      "path": "/answer/text",
+      "value": "**汇总完成**\n\n- 一季度同比增长 12%\n- 库存周转天数下降 3 天\n- 明细见 report.md，共 3 个章节"
+    }
+  }
+]

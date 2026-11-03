@@ -29,7 +29,12 @@ from nanobee.agent.tools.subagent import ListSubagentsTool, SpawnSubagentTool
 from nanobee.exceptions import LoopStateError
 from nanobee.agent.hook import AgentHook, CompositeHook
 from nanobee.agent.runner import _MAX_INJECTIONS_PER_TURN, AgentRunner, AgentRunSpec, PluginHooks
-from nanobee.agent.specs import ExitReason, TurnLedger, TurnReport
+from nanobee.agent.specs import (
+    SILENT_PROGRESS_TOOLS,
+    ExitReason,
+    TurnLedger,
+    TurnReport,
+)
 from nanobee.agent.tools.registry import ToolRegistry, ToolPluginAdapter
 from nanobee.providers.base import LLMProvider
 from nanobee.providers.factory import ProviderSnapshot
@@ -1118,6 +1123,7 @@ class AgentLoop:
             throttled_tool_names=self._throttled_tool_groups,
             exec_capable_tools=self._exec_capable_tools,
             file_edit_tools=self._file_edit_tools,
+            silent_progress_tools=SILENT_PROGRESS_TOOLS,
         ))
 
         if result.exit_reason == ExitReason.MAX_ITERATIONS:

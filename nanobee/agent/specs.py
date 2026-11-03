@@ -19,6 +19,10 @@ from nanobee.utils.logger import logger
 # 避免模板文案 + 此兜底文案叠加造成"双重道歉"。
 _DEFAULT_ERROR_MESSAGE = "LLM 调用失败：模型返回错误且未提供诊断内容。"
 
+# 不产生工具进度事件的工具名（如 ``message`` 是 LLM 输出投递载体，不是真工具）。
+# 由 AgentRunSpec 的构造方显式注入：工具流水线只读 spec 字段，不硬编码工具名。
+SILENT_PROGRESS_TOOLS: frozenset[str] = frozenset({"message"})
+
 
 class ExitReason(str, Enum):
     """Agent 迭代循环的退出原因（纯控制流，与成功/失败正交）。
@@ -93,6 +97,8 @@ class AgentRunSpec:
     exec_capable_tools: set[str] = field(default_factory=set)
     # 具有文件编辑能力的工具名集合，从插件 metadata.file_edit_capability 构建
     file_edit_tools: set[str] = field(default_factory=set)
+    # 不产生工具进度事件的工具名集合（策略由构造方注入，机制层只读）
+    silent_progress_tools: frozenset[str] = frozenset()
 
 
 @dataclass(slots=True)

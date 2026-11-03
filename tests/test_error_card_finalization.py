@@ -8,7 +8,7 @@ runner 经 ``on_stream_end`` 把错误卡片终态化（FINISHED），loop 又�
 契约（本测试锁定的目标行为）：
 1. runner 的 ``on_stream_end`` 只负责"流结束"传输信号，不携带 error、错误时
    不触发——由 tests/test_runner_error_streaming.py 锁定（强断言：未被调用）。
-2. 错误完结只有一个出口：``loop → _deliver_system_notification → fail_card``。
+2. 错误完结只有一个出口：``_deliver_response → CardPipeline.fail → fail_card``。
 3. ``fail_card`` 两步式：先 ``stream_content`` 渲染错误文案，再置 FINISHED
    （不得用 FAILED 态），保证钉钉卡片 UI（只渲染 /card/streaming）能显示错误文案。
 4. 流式中途出错（buffer 已有半截内容）时，``fail_card`` 保留半截 + 追加失败提示，
@@ -18,11 +18,28 @@ runner 经 ``on_stream_end`` 把错误卡片终态化（FINISHED），loop 又�
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from nanobee.builtin.channel_dingtalk.card_manager import CardManager
+
+
+def _legacy_handle(plugin: Any, card_id: str, msg_id: str) -> Any:
+    """构造 legacy 交付实现的 handle（错误完结路径已收敛到 CardPipeline.fail）。"""
+    from nanobee.builtin.channel_dingtalk.card_pipeline import (
+        CardHandle,
+        LegacyCardPipeline,
+    )
+
+    pipeline = LegacyCardPipeline(
+        sender=plugin.sender, card_manager=plugin.card_manager,
+        channel_name=plugin.name, logger=plugin.logger,
+    )
+    return CardHandle(
+        card_id=card_id, chat_id="conv-test", msg_id=msg_id, pipeline=pipeline,
+    )
 
 
 # ============================================================
@@ -127,9 +144,9 @@ async def test_error_notification_preserves_partial_stream_buffer():
         metadata={"notification_type": "system", "severity": "error"},
     )
 
-    await plugin._deliver_system_notification(
-        response, "conv-test", "card-err-2", "msg-err-2",
-        response.metadata,
+    await plugin._deliver_response(
+        response, _legacy_handle(plugin, "card-err-2", "msg-err-2"),
+        "conv-test", use_streaming=True, media=None,
     )
 
     # 完结文案 = 半截进度 + 分割线 + 失败提示
@@ -138,7 +155,7 @@ async def test_error_notification_preserves_partial_stream_buffer():
 
 
 # ============================================================
-# 契约 4：错误 turn 唯一出口是 _deliver_system_notification 的 fail_card
+# 契约 4：错误 turn 唯一出口是交付实现的 fail（fail_card）
 # ============================================================
 
 
@@ -146,8 +163,8 @@ async def test_error_notification_preserves_partial_stream_buffer():
 async def test_error_turn_has_single_fail_card_exit():
     """错误完结的唯一出口是 fail_card，不得再有 on_stream_end 终态化。
 
-    验证：channel 侧 _deliver_system_notification 的 error 分支，
-    对同一 card_id 只调用 fail_card 一次，且不再走 finalize_card_with_notification。
+    验证：channel 侧错误系统通知分支对同一 card_id 只调用 fail_card 一次，
+    且不再走 finalize_card_with_notification。
     """
     from types import SimpleNamespace
 
@@ -178,9 +195,9 @@ async def test_error_turn_has_single_fail_card_exit():
         metadata={"notification_type": "system", "severity": "error"},
     )
 
-    await plugin._deliver_system_notification(
-        response, "conv-test", "card-err-1", "msg-err-1",
-        response.metadata,
+    await plugin._deliver_response(
+        response, _legacy_handle(plugin, "card-err-1", "msg-err-1"),
+        "conv-test", use_streaming=True, media=None,
     )
 
     # 唯一出口：fail_card 一次
@@ -229,9 +246,9 @@ async def test_fail_card_failure_falls_back_to_text_response():
         metadata={"notification_type": "system", "severity": "error"},
     )
 
-    await plugin._deliver_system_notification(
-        response, "conv-test", "card-err-3", "msg-err-3",
-        response.metadata,
+    await plugin._deliver_response(
+        response, _legacy_handle(plugin, "card-err-3", "msg-err-3"),
+        "conv-test", use_streaming=True, media=None,
     )
 
     # fail_card 失败 → 回落 markdown 兜底投递

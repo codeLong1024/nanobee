@@ -18,7 +18,7 @@ from .auth import (
     CallbackMessage,
     DINGTALK_AVAILABLE,
 )
-from .card_manager import CardManager
+from .card_pipeline import CardHandle
 from .emotion_handler import (
     add_thinking_emoji,
     recall_thinking_emoji,
@@ -347,7 +347,12 @@ class NanobeeDingTalkHandler(ChatbotHandler):
             else None
         )
 
-        if http and token_provider:
+        # 表情机制由交付实现的声明式标记决定：legacy 用表情承载工具进度；
+        # v2 用卡片步骤行承载，不启动表情（启动后无人回收会残留「思考中」）。
+        pipeline = self.channel.card_pipeline
+        use_emoji = bool(pipeline is not None and pipeline.uses_emoji)
+
+        if use_emoji and http and token_provider:
             await add_thinking_emoji(
                 http, token_provider, robot_code, msg_id, open_conv_id,
             )
@@ -358,13 +363,14 @@ class NanobeeDingTalkHandler(ChatbotHandler):
             robot_code=robot_code,
             open_msg_id=msg_id,
             open_conversation_id=open_conv_id,
-        ) if http and token_provider else None
+        ) if (use_emoji and http and token_provider) else None
         if emotion_ctx and self.channel.sender:
             self.channel.sender._emotion_contexts[parsed.msg_id] = emotion_ctx
 
-        card_instance_id: str | None = None
-        card_manager = self.channel.card_manager
-        if card_manager and http and token_provider and config.streaming:
+        # 开卡：交付实现产出的 handle 是本次 turn 的卡片所有权载体，随回调
+        # 闭包流动；不开全局注册表，故并发消息之间不会互相覆盖卡片。
+        handle: CardHandle | None = None
+        if pipeline is not None and http and token_provider and config.streaming:
             try:
                 is_group = parsed.conversation_type == "2"
                 target = (
@@ -372,19 +378,17 @@ class NanobeeDingTalkHandler(ChatbotHandler):
                     if is_group
                     else {"receiverUserId": parsed.sender_id}
                 )
-                track_id = CardManager.generate_track_id()
-                cid = await card_manager.create_card(
-                    card_instance_id=track_id,
-                    robot_code=robot_code,
-                    target=target,
+                handle = await pipeline.open(
+                    parsed.chat_id, msg_id=msg_id,
+                    robot_code=robot_code, target=target,
                 )
-                card_instance_id = cid
-                self.channel.logger.info(
-                    "[CARD] Created AI Card {} for chat={}", cid, parsed.chat_id,
-                )
-                await card_manager.start_streaming(cid, "思考中...")
+                if handle is not None:
+                    self.channel.logger.info(
+                        "[CARD] Created card {} for chat={}",
+                        handle.card_id, parsed.chat_id,
+                    )
             except Exception as e:
-                self.channel.logger.warning("[CARD] AI Card setup failed: {}", e)
+                self.channel.logger.warning("[CARD] card setup failed: {}", e)
 
         try:
             is_dm = parsed.conversation_type != "2"
@@ -398,7 +402,7 @@ class NanobeeDingTalkHandler(ChatbotHandler):
                     media=parsed.media,
                     is_dm=is_dm,
                     session_key=parsed.session_key,
-                    card_id=card_instance_id,
+                    handle=handle,
                     msg_id=parsed.msg_id,
                 )
             self.channel.logger.info(
@@ -406,12 +410,12 @@ class NanobeeDingTalkHandler(ChatbotHandler):
             )
         except Exception as e:
             self.channel.logger.exception("[ERROR] Processing message failed: {}", e)
-            if card_manager and card_instance_id:
+            if handle is not None:
                 try:
-                    await card_manager.fail_card(card_instance_id, str(e))
+                    await handle.pipeline.fail(handle, str(e))
                 except Exception:
                     pass
-            if http and token_provider:
+            if use_emoji and http and token_provider:
                 await recall_thinking_emoji(
                     http, token_provider, robot_code, msg_id, open_conv_id,
                 )
